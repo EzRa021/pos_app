@@ -1,0 +1,306 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap');
+
+/* ============================================================================
+   Quantum POS — Global Stylesheet & Design Token System
+   Tailwind CSS v4  ·  @tailwindcss/vite
+
+   CANONICAL COLOR PALETTE  (from CLAUDE.md — never deviate from these)
+   ─────────────────────────────────────────────────────────────────────
+   Token                   Hex        Usage
+   ─────────────────────────────────────────────────────────────────────
+   bg-background           #09090b    Page / window background
+   bg-card                 #111113    Panels, sidebar, modals, drawers
+   bg-muted                #27272a    Inactive tabs, disabled, skeleton
+   bg-primary              #3b82f6    Active items, primary buttons, rings
+   bg-success              #16a34a    Charge/Pay button ONLY, success states
+   bg-destructive          #ef4444    Delete, void, refund, cancel
+   bg-warning              #f59e0b    Low-stock, unpaid, pending badges
+   text-foreground         #fafafa    All primary text
+   text-muted-foreground   #a1a1aa    Secondary / helper text only
+   border-border           #27272a    All borders and dividers
+   ─────────────────────────────────────────────────────────────────────
+
+   Rules:
+   • NEVER hardcode hex, rgb, or hsl directly in components.
+   • ALWAYS use Tailwind utility classes (bg-primary, text-foreground, etc.)
+   • bg-success is for the Charge/Pay button ONLY — never use as generic blue
+   • text-muted-foreground is for labels/hints — never for prices or key data
+   • Opacity modifiers (bg-primary/15) are fine for decorative icon backgrounds
+   ============================================================================ */
+
+@import "tailwindcss";
+
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   @theme — maps CSS custom-property tokens → Tailwind color utility classes
+   The "inline" keyword tells Tailwind v4 to resolve these at build time.
+   ────────────────────────────────────────────────────────────────────────── */
+@theme inline {
+  /* Border radius scale  (base --radius = 0.5rem / 8px) */
+  --radius-xs:  calc(var(--radius) - 4px);   /* 4px  */
+  --radius-sm:  calc(var(--radius) - 2px);   /* 6px  */
+  --radius-md:  var(--radius);               /* 8px  */
+  --radius-lg:  calc(var(--radius) + 2px);   /* 10px */
+  --radius-xl:  calc(var(--radius) + 4px);   /* 12px */
+  --radius-2xl: calc(var(--radius) + 8px);   /* 16px */
+  --radius-3xl: calc(var(--radius) + 16px);  /* 24px */
+
+  /* ── Core surfaces ──────────────────────────────────────────────────────── */
+  --color-background:         var(--background);
+  --color-foreground:         var(--foreground);
+
+  --color-card:               var(--card);
+  --color-card-foreground:    var(--card-foreground);
+
+  --color-popover:            var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  /* ── Brand ──────────────────────────────────────────────────────────────── */
+  --color-primary:            var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  /* ── Muted / neutral ────────────────────────────────────────────────────── */
+  --color-secondary:            var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted:                var(--muted);
+  --color-muted-foreground:     var(--muted-foreground);
+  --color-accent:               var(--accent);
+  --color-accent-foreground:    var(--accent-foreground);
+
+  /* ── Semantic ───────────────────────────────────────────────────────────── */
+  --color-destructive:            var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success:                var(--success);
+  --color-success-foreground:     var(--success-foreground);
+  --color-warning:                var(--warning);
+  --color-warning-foreground:     var(--warning-foreground);
+
+  /* ── Form / focus ───────────────────────────────────────────────────────── */
+  --color-border: var(--border);
+  --color-input:  var(--input);
+  --color-ring:   var(--ring);
+
+  /* ── Data visualisation (charts) ────────────────────────────────────────── */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* ── Sidebar-specific tokens ────────────────────────────────────────────── */
+  /* shadcn's sidebar primitives consume these automatically.                 */
+  --color-sidebar:                    var(--sidebar);
+  --color-sidebar-foreground:         var(--sidebar-foreground);
+  --color-sidebar-primary:            var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent:             var(--sidebar-accent);
+  --color-sidebar-accent-foreground:  var(--sidebar-accent-foreground);
+  --color-sidebar-border:             var(--sidebar-border);
+  --color-sidebar-ring:               var(--sidebar-ring);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Design tokens — Quantum POS is ALWAYS DARK.
+   :root and .dark are identical; both are declared so shadcn's class strategy
+   and bare renders both resolve correctly.
+   ────────────────────────────────────────────────────────────────────────── */
+:root,
+.dark {
+  /* ── Global radius base ─────────────────────────────────────────────────── */
+  --radius: 0.5rem;  /* 8px */
+
+  /* ── Background:  #09090b  ──────────────────────────────────────────────── */
+  /* oklch(0.097 0.003 286)  — near-black with a faint zinc tint             */
+  --background:      oklch(0.097 0.003 286);
+  --foreground:      oklch(0.985 0.000 0);    /* #fafafa */
+
+  /* ── Card / panel:  #111113  ────────────────────────────────────────────── */
+  /* Sidebar, modals, drawers, dropdown menus                                 */
+  --card:            oklch(0.130 0.003 286);
+  --card-foreground: oklch(0.985 0.000 0);
+
+  --popover:            oklch(0.130 0.003 286);
+  --popover-foreground: oklch(0.985 0.000 0);
+
+  /* ── Primary blue:  #3b82f6  ────────────────────────────────────────────── */
+  /* Active nav items, primary CTA buttons, focus rings, progress             */
+  --primary:            oklch(0.623 0.214 259.8);
+  --primary-foreground: oklch(0.985 0.000 0);
+
+  /* ── Muted / disabled:  #27272a  ────────────────────────────────────────── */
+  /* Inactive tabs, skeleton loaders, ghost hover backgrounds                 */
+  --secondary:            oklch(0.218 0.003 286);
+  --secondary-foreground: oklch(0.985 0.000 0);
+  --muted:                oklch(0.218 0.003 286);
+  --muted-foreground:     oklch(0.704 0.000 0); /* #a1a1aa */
+  --accent:               oklch(0.218 0.003 286);
+  --accent-foreground:    oklch(0.985 0.000 0);
+
+  /* ── Destructive:  #ef4444  ─────────────────────────────────────────────── */
+  /* Delete, void, refund, cancel, error states                               */
+  --destructive:            oklch(0.628 0.258 27.3);
+  --destructive-foreground: oklch(0.985 0.000 0);
+
+  /* ── Success:  #16a34a  ─────────────────────────────────────────────────── */
+  /* Charge/Pay button ONLY — connection success — transaction complete        */
+  --success:            oklch(0.527 0.154 149.6);
+  --success-foreground: oklch(0.985 0.000 0);
+
+  /* ── Warning:  #f59e0b  ─────────────────────────────────────────────────── */
+  /* Low-stock alerts, unpaid invoices, pending approvals                     */
+  --warning:            oklch(0.769 0.188 70.1);
+  --warning-foreground: oklch(0.097 0.003 286); /* dark text on amber */
+
+  /* ── Form / focus ───────────────────────────────────────────────────────── */
+  /* Border:  #27272a — every divider, card border, input border              */
+  --border: oklch(0.218 0.003 286);
+  /* Input background slightly lifted above card background                   */
+  --input:  oklch(0.162 0.003 286);
+  /* Ring: primary blue for keyboard focus indicators                         */
+  --ring:   oklch(0.623 0.214 259.8);
+
+  /* ── Chart palette ──────────────────────────────────────────────────────── */
+  /* Follows semantic colours so charts integrate naturally with the UI       */
+  --chart-1: oklch(0.623 0.214 259.8);  /* primary blue   */
+  --chart-2: oklch(0.527 0.154 149.6);  /* success green  */
+  --chart-3: oklch(0.769 0.188 70.1);   /* warning amber  */
+  --chart-4: oklch(0.628 0.258 27.3);   /* destructive red */
+  --chart-5: oklch(0.680 0.180 300.0);  /* purple accent   */
+
+  /* ── Sidebar-specific tokens ────────────────────────────────────────────── */
+  /*
+     sidebar     = card background (#111113)
+     accent      = muted (#27272a) — the generic hover bg for non-active items
+     primary     = brand blue (#3b82f6) — consumed by shadcn Rail active styles
+     border/ring = same as global tokens
+
+     Active nav item override is done in component CSS:
+       bg-primary/15  +  text-primary  (not sidebar-accent)
+     so the sidebar-accent only applies to dropdown triggers and non-nav hovers.
+  */
+  --sidebar:                    oklch(0.130 0.003 286);   /* #111113 */
+  --sidebar-foreground:         oklch(0.985 0.000 0);     /* #fafafa */
+  --sidebar-primary:            oklch(0.623 0.214 259.8); /* #3b82f6 */
+  --sidebar-primary-foreground: oklch(0.985 0.000 0);
+  --sidebar-accent:             oklch(0.218 0.003 286);   /* #27272a */
+  --sidebar-accent-foreground:  oklch(0.985 0.000 0);
+  --sidebar-border:             oklch(0.218 0.003 286);   /* #27272a */
+  --sidebar-ring:               oklch(0.623 0.214 259.8); /* #3b82f6 */
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Global base reset
+   ────────────────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: oklch(0.097 0.003 286); /* --background */
+  color: oklch(0.985 0.000 0);              /* --foreground  */
+  font-family:
+  "DM Sans",
+  system-ui,
+  -apple-system,
+  sans-serif;
+-webkit-font-smoothing: antialiased;
+-moz-osx-font-smoothing: grayscale;
+text-rendering: optimizeLegibility;
+font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Custom scrollbar  (Webkit / Blink)
+   Thin, low-contrast bars that don't distract from content.
+   ────────────────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar              { width: 5px; height: 5px; }
+::-webkit-scrollbar-track        { background: transparent; }
+::-webkit-scrollbar-thumb        {
+  background: oklch(0.218 0.003 286);   /* --border */
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover  {
+  background: oklch(0.704 0.000 0);     /* --muted-foreground */
+}
+::-webkit-scrollbar-corner       { background: transparent; }
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Keyframe animations
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Loading spinner — used by the splash screen Q-logo and Loader2 icons */
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+
+/* Subtle scale-pulse for the online/connected badge indicator dot */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1;    transform: scale(1);    }
+  50%       { opacity: 0.45; transform: scale(0.8);  }
+}
+
+/* Fade + lift entrance used by setup screens and modals */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+/* Horizontal shimmer for skeleton loaders */
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position:  200% 0; }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Utility animation classes
+   Applied directly in JSX where Tailwind's animate-* classes don't reach.
+   ────────────────────────────────────────────────────────────────────────── */
+.spinning    { animation: spin-slow  1.2s linear infinite; }
+.pulse-dot   { animation: pulse-dot  1.8s ease-in-out infinite; }
+.animate-fade-in { animation: fade-in-up 0.22s ease both; }
+
+/* Skeleton loader shimmer — apply alongside bg-muted */
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    oklch(0.218 0.003 286) 25%,
+    oklch(0.260 0.003 286) 50%,
+    oklch(0.218 0.003 286) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Sidebar layout guard
+   Prevents a flash of unstyled content before Tailwind paints the sidebar bg.
+   ────────────────────────────────────────────────────────────────────────── */
+[data-sidebar="sidebar"] {
+  background-color: oklch(0.130 0.003 286); /* --card / --sidebar */
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Tauri drag region
+   The top of the window is draggable unless an element is interactive.
+   Add data-tauri-drag-region to the top-bar if custom window chrome is needed.
+   ────────────────────────────────────────────────────────────────────────── */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input {
+  -webkit-app-region: no-drag;
+}

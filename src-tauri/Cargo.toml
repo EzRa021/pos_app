@@ -1,0 +1,84 @@
+[package]
+name = "pos-app"
+version = "0.1.0"
+description = "Quantum POS — Point of Sale System"
+authors = ["Quantum POS"]
+edition = "2021"
+
+[lib]
+name = "pos_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ── Tauri Core ────────────────────────────────────────────────────────────────
+tauri                     = { version = "2", features = [] }
+tauri-plugin-opener       = "2"
+tauri-plugin-store        = "2"
+tauri-plugin-fs           = "2"
+tauri-plugin-dialog       = "2"
+tauri-plugin-notification = "2"
+
+# ── Async Runtime ─────────────────────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "chrono",
+    "uuid",
+    "json",
+    "macros",
+    "rust_decimal"
+] }
+
+# ── Decimal (financial precision) ─────────────────────────────────────────────
+rust_decimal         = { version = "1", features = ["serde-with-str"] }
+rust_decimal_macros  = "1"
+
+# ── Authentication ─────────────────────────────────────────────────────────────
+jsonwebtoken = "9"
+bcrypt       = "0.15"
+
+# ── Serialization ─────────────────────────────────────────────────────────────
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ── Error Handling ─────────────────────────────────────────────────────────────
+thiserror = "2"
+anyhow    = "1"
+
+# ── Date / Time ───────────────────────────────────────────────────────────────
+chrono = { version = "0.4", features = ["serde"] }
+
+# ── UUID ──────────────────────────────────────────────────────────────────────
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# ── Crypto / Random ───────────────────────────────────────────────────────────
+rand = "0.8"
+sha2 = "0.10"
+hex  = "0.4"
+
+# ── Excel ─────────────────────────────────────────────────────────────────────
+rust_xlsxwriter = "0.81"
+calamine        = { version = "0.26", features = ["dates"] }
+
+# ── QR Code (receipt scan codes) ─────────────────────────────────────────────
+qrcode = "0.14"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# ── Network ───────────────────────────────────────────────────────────────────
+local-ip-address = "0.6"
+
+# ── HTTP API Server ────────────────────────────────────────────────────────────
+axum       = { version = "0.7", features = ["json"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

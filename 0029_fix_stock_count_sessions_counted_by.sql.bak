@@ -1,0 +1,48 @@
+-- ============================================================================
+-- MIGRATION 0029: Fix stock_count_sessions counted_by NOT NULL conflict
+-- ============================================================================
+-- Migration 0014 created counted_by INT NOT NULL.
+-- Migration 0027 added started_by as the new canonical column (nullable).
+-- All Rust commands now insert via started_by only, leaving counted_by NULL
+-- and violating its NOT NULL constraint.
+--
+-- Fix: give counted_by a default, back-fill NULLs, and add a trigger to keep
+-- both columns in sync automatically.
+-- ============================================================================
+
+-- 1. Make counted_by accept the same user id as started_by on insert.
+--    We set a temporary DEFAULT of 0 — the trigger below will immediately
+--    replace it with the real value before the row is written.
+ALTER TABLE stock_count_sessions
+    ALTER COLUMN counted_by SET DEFAULT 0;
+
+-- 2. Back-fill any rows where counted_by is NULL (safety net)
+UPDATE stock_count_sessions
+SET counted_by = COALESCE(started_by, counted_by, 0)
+WHERE counted_by IS NULL;
+
+-- 3. Trigger: keep counted_by = started_by automatically
+CREATE OR REPLACE FUNCTION sync_stock_count_sessions_counted_by()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    -- Mirror started_by → counted_by when counted_by is not explicitly provided
+    IF NEW.counted_by IS NULL OR NEW.counted_by = 0 THEN
+        NEW.counted_by := COALESCE(NEW.started_by, 0);
+    END IF;
+    -- Mirror counted_by → started_by when started_by is not explicitly provided
+    IF NEW.started_by IS NULL THEN
+        NEW.started_by := NEW.counted_by;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_sync_scs_counted_by ON stock_count_sessions;
+CREATE TRIGGER trg_sync_scs_counted_by
+    BEFORE INSERT OR UPDATE ON stock_count_sessions
+    FOR EACH ROW EXECUTE FUNCTION sync_stock_count_sessions_counted_by();
+
+-- 4. Back-fill started_by for old rows where it is still NULL
+UPDATE stock_count_sessions
+SET started_by = counted_by
+WHERE started_by IS NULL AND counted_by IS NOT NULL AND counted_by != 0;

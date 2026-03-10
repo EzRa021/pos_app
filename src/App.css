@@ -1,0 +1,5 @@
+/* App.css — minimal shim; all design now lives in index.css + Tailwind */
+
+@keyframes spin-slow {
+    to { transform: rotate(360deg); }
+}
