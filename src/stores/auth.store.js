@@ -109,20 +109,52 @@ export const useAuthStore = create((set, get) => ({
     set({ user: null, token: null, expiresAt: null, error: null });
   },
 
-  // ── Restore session (called once from App.jsx after API base URL is set) ──
+  // ── Restore session ────────────────────────────────────────────────────────
+  // Called once from App.jsx after the API base URL is set.
+  //
+  // Guards against two failure modes:
+  //   1. React Strict Mode fires useEffect twice in dev — two concurrent
+  //      restoreSession calls would race; the loser sets user:null last.
+  //      Fix: deduplicate via _restoreInFlight promise.
+  //   2. Transient errors (DB not yet ready, brief network blip) caused
+  //      user:null even for a perfectly valid refresh token.
+  //      Fix: retry up to MAX_RETRY times with exponential back-off before
+  //      giving up. isInitialized stays false during retries so the app
+  //      shows the splash instead of flashing to login.
+  _restoreInFlight: null,
+
   async restoreSession() {
+    // If a restore is already in flight (Strict Mode double-invoke), wait for
+    // the same promise instead of starting a second concurrent attempt.
+    const existing = get()._restoreInFlight;
+    if (existing) return existing;
+
+    const promise = get()._doRestoreSession(0);
+    set({ _restoreInFlight: promise });
+    try {
+      return await promise;
+    } finally {
+      set({ _restoreInFlight: null });
+    }
+  },
+
+  async _doRestoreSession(attempt) {
+    const MAX_RETRY  = 4;   // 1 s → 2 s → 4 s → 8 s
+    const RETRY_BASE = 1000;
+
     const savedRefresh = localStorage.getItem(REFRESH_KEY);
     if (!savedRefresh) {
       set({ isInitialized: true });
       return false;
     }
 
-    // Optimistic: show cached user immediately so the UI isn't blank while we
-    // wait for the network. We do NOT trigger branch init here — only after
-    // the server confirms the token is valid.
-    const cachedUser = getSavedUser();
-    if (cachedUser) set({ user: cachedUser, isLoading: true });
-    else             set({ isLoading: true });
+    // Optimistic: paint cached user immediately so the splash fades out faster.
+    // We only do this on the first attempt to avoid flickering on retries.
+    if (attempt === 0) {
+      const cachedUser = getSavedUser();
+      if (cachedUser) set({ user: cachedUser, isLoading: true });
+      else             set({ isLoading: true });
+    }
 
     try {
       const result = await rpc("refresh_token", { refresh_token: savedRefresh });
@@ -139,16 +171,44 @@ export const useAuthStore = create((set, get) => ({
         isInitialized: true,
       });
 
-      scheduleRefresh(result.expires_in, get().restoreSession);
+      scheduleRefresh(result.expires_in, () => get().restoreSession());
 
-      // Same as login — kick off branch + shift init outside React's commit
-      // phase so we never hit forceStoreRerender inside a useEffect.
       useBranchStore.getState().initForUser(result.user);
 
       return true;
-    } catch {
-      setAuthToken(null);
-      clearStorage();
+    } catch (err) {
+      const errMsg = (typeof err === "string" ? err : (err?.message ?? "")).toLowerCase();
+
+      // Permanent rejection: the token is genuinely invalid/expired or the
+      // account was deleted. Clear stored credentials so the user can log in
+      // with fresh ones.
+      const isTokenRejected =
+        errMsg.includes("invalid") ||
+        errMsg.includes("expired") ||
+        errMsg.includes("unauthorized") ||
+        errMsg.includes("not found or inactive") ||
+        errMsg.includes("signature");
+
+      if (isTokenRejected) {
+        setAuthToken(null);
+        clearStorage();
+        set({ user: null, token: null, expiresAt: null, isLoading: false, isInitialized: true });
+        return false;
+      }
+
+      // Transient error (DB not connected yet, network blip, server starting
+      // up). Do NOT clear the tokens and do NOT set user:null — retry first.
+      if (attempt < MAX_RETRY) {
+        const delay = RETRY_BASE * Math.pow(2, attempt); // 1s 2s 4s 8s
+        console.warn(`[auth] restoreSession attempt ${attempt + 1} failed ("${errMsg}") — retrying in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        return get()._doRestoreSession(attempt + 1);
+      }
+
+      // All retries exhausted — something is genuinely wrong. Keep tokens in
+      // storage so the next cold launch can try again, but send the user to
+      // the login screen for now.
+      console.error(`[auth] restoreSession failed after ${MAX_RETRY + 1} attempts:`, err);
       set({ user: null, token: null, expiresAt: null, isLoading: false, isInitialized: true });
       return false;
     }
@@ -165,4 +225,9 @@ export const useAuthStore = create((set, get) => ({
 
   clearError()    { set({ error: null }); },
   isGlobalUser()  { return get().user?.is_global === true; },
+
+  // ── POS PIN lock ──────────────────────────────────────────────────────────
+  isPosLocked: false,
+  lockPos()   { set({ isPosLocked: true }); },
+  unlockPos() { set({ isPosLocked: false }); },
 }));

@@ -11,6 +11,7 @@ import {
   getTransactionReturns,
   createReturn,
 } from "@/commands/returns";
+import { invalidateAfterReturn } from "@/lib/invalidations";
 
 export const returnListKey   = (filters) => ["returns", "list",   filters];
 export const returnKey       = (id)      => ["returns", "detail", id];
@@ -125,13 +126,10 @@ export function useTransactionReturns(txId) {
 
 // ── useCreateReturn ────────────────────────────────────────────────────────────
 export function useCreateReturn() {
-  const qc = useQueryClient();
+  const storeId = useBranchStore((s) => s.activeStore?.id);
 
   return useMutation({
     mutationFn: (payload) => createReturn(payload),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["returns"] });
-      qc.invalidateQueries({ queryKey: ["transactions"] });
-    },
+    onSuccess: () => invalidateAfterReturn(storeId),
   });
 }

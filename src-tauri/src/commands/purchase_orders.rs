@@ -51,9 +51,12 @@ async fn fetch_po_items(pool: &sqlx::PgPool, po_id: i32) -> AppResult<Vec<Purcha
         r#"SELECT poi.id, poi.po_id, poi.item_id,
                   i.item_name, i.sku,
                   poi.quantity_ordered, poi.quantity_received,
-                  poi.unit_cost, poi.line_total
+                  poi.unit_cost, poi.line_total,
+                  COALESCE(poi.unit_type, ist.unit_type)       AS unit_type,
+                  ist.measurement_type                         AS "measurement_type: Option<String>"
            FROM   purchase_order_items poi
            JOIN   items i ON i.id = poi.item_id
+           LEFT JOIN item_settings ist ON ist.item_id = poi.item_id
            WHERE  poi.po_id = $1
            ORDER  BY poi.id"#,
         po_id
@@ -184,10 +187,45 @@ pub async fn create_purchase_order(
     .flatten()
     .unwrap_or_else(|| format!("PO-{}", chrono::Utc::now().timestamp()));
 
-    // Calculate total
-    let total: Decimal = payload.items.iter()
-        .map(|i| to_dec(i.quantity) * to_dec(i.unit_cost))
-        .sum();
+    // Validate all item quantities before inserting
+    struct ValidatedLine {
+        item_id:   uuid::Uuid,
+        unit_type: Option<String>,
+        qty:       Decimal,
+        cost:      Decimal,
+        line_tot:  Decimal,
+    }
+    let mut validated_lines: Vec<ValidatedLine> = Vec::with_capacity(payload.items.len());
+    for item in &payload.items {
+        let meta = sqlx::query!(
+            r#"SELECT i.item_name,
+                      ist.measurement_type AS "measurement_type: Option<String>",
+                      ist.unit_type        AS "unit_type: Option<String>"
+               FROM   items i
+               LEFT JOIN item_settings ist ON ist.item_id = i.id
+               WHERE  i.id = $1"#,
+            item.item_id,
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+
+        let qty = crate::utils::qty::validate_qty_opt(
+            to_dec(item.quantity),
+            meta.measurement_type.as_deref(),
+            &meta.item_name,
+        )?;
+        let cost     = to_dec(item.unit_cost);
+        let line_tot = qty * cost;
+        validated_lines.push(ValidatedLine {
+            item_id:   item.item_id,
+            unit_type: meta.unit_type.flatten(),
+            qty,
+            cost,
+            line_tot,
+        });
+    }
+
+    let total: Decimal = validated_lines.iter().map(|l| l.line_tot).sum();
 
     let po_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO purchase_orders
@@ -203,20 +241,17 @@ pub async fn create_purchase_order(
     .fetch_one(&mut *db_tx)
     .await?;
 
-    for item in &payload.items {
-        let qty       = to_dec(item.quantity);
-        let cost      = to_dec(item.unit_cost);
-        let line_tot  = qty * cost;
-
+    for line in &validated_lines {
         sqlx::query!(
             r#"INSERT INTO purchase_order_items
-                   (po_id, item_id, quantity_ordered, unit_cost, line_total)
-               VALUES ($1,$2,$3,$4,$5)"#,
+                   (po_id, item_id, quantity_ordered, unit_cost, line_total, unit_type)
+               VALUES ($1,$2,$3,$4,$5,$6)"#,
             po_id,
-            item.item_id,
-            qty,
-            cost,
-            line_tot,
+            line.item_id,
+            line.qty,
+            line.cost,
+            line.line_tot,
+            line.unit_type,
         )
         .execute(&mut *db_tx)
         .await?;
@@ -251,9 +286,44 @@ pub async fn receive_purchase_order(
     let mut db_tx = pool.begin().await?;
 
     for receive in &payload.items {
-        let qty_recv = to_dec(receive.quantity_received);
+        let qty_raw = to_dec(receive.quantity_received);
 
-        // Update PO item received quantity
+        // Fetch item_id, measurement_type, and unit metadata FIRST so we can
+        // validate the quantity before writing anything.
+        struct PoLineMeta {
+            item_id: uuid::Uuid,
+            item_name: String,
+            unit_type: Option<String>,
+            measurement_type: Option<String>,
+        }
+        let po_meta = sqlx::query_as!(
+            PoLineMeta,
+            r#"SELECT poi.item_id,
+                      i.item_name,
+                      poi.unit_type,
+                      ist.measurement_type
+               FROM   purchase_order_items poi
+               JOIN   items i ON i.id = poi.item_id
+               LEFT JOIN item_settings ist ON ist.item_id = poi.item_id
+               WHERE  poi.id = $1"#,
+            receive.po_item_id,
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        let item_id = po_meta.item_id;
+
+        // Validate/round qty according to measurement type BEFORE any writes.
+        // - "quantity"               → must be a whole number
+        // - "weight"|"volume"|"length" → rounded to 3 decimal places
+        // - unknown / None           → pass-through
+        let qty_recv = crate::utils::qty::validate_qty_opt(
+            qty_raw,
+            po_meta.measurement_type.as_deref(),
+            &po_meta.item_name,
+        )?;
+
+        // Persist the validated (rounded) quantity so PO records and stock
+        // always agree on the exact number received.
         sqlx::query!(
             "UPDATE purchase_order_items SET quantity_received = $1 WHERE id = $2",
             qty_recv,
@@ -262,13 +332,18 @@ pub async fn receive_purchase_order(
         .execute(&mut *db_tx)
         .await?;
 
-        // Get item_id for this PO line
-        let item_id: uuid::Uuid = sqlx::query_scalar!(
-            "SELECT item_id FROM purchase_order_items WHERE id = $1",
-            receive.po_item_id,
+        // Snapshot stock before receiving
+        let qty_before: Decimal = sqlx::query_scalar!(
+            "SELECT COALESCE(quantity, 0) FROM item_stock WHERE item_id = $1 AND store_id = $2",
+            item_id,
+            order.store_id,
         )
-        .fetch_one(&mut *db_tx)
-        .await?;
+        .fetch_optional(&mut *db_tx)
+        .await?
+        .flatten()
+        .unwrap_or_default();
+
+        let qty_after = qty_before + qty_recv;
 
         // Add to item stock
         sqlx::query!(
@@ -284,16 +359,30 @@ pub async fn receive_purchase_order(
         .execute(&mut *db_tx)
         .await?;
 
-        // Record history
+        // Record history with event-style columns and unit label
+        let unit_label = po_meta
+            .unit_type
+            .as_deref()
+            .unwrap_or("unit(s)");
+        let desc = format!(
+            "PO Receipt: {} — {} {}",
+            order.po_number, qty_recv, unit_label
+        );
         sqlx::query!(
             r#"INSERT INTO item_history
-                   (item_id, store_id, change_type, adjustment, reason, created_by)
-               VALUES ($1,$2,'purchase',$3,$4,$5)"#,
+                   (item_id, store_id, event_type, event_description,
+                    quantity_before, quantity_after, quantity_change,
+                    performed_by, reference_type, reference_id, notes)
+               VALUES ($1,$2,'PURCHASE',$3,$4,$5,$6,$7,'purchase_order',$8,$9)"#,
             item_id,
             order.store_id,
+            desc,
+            qty_before,
+            qty_after,
             qty_recv,
-            format!("PO Receipt: {}", order.po_number),
             claims.user_id,
+            order.id.to_string(),
+            payload.notes,
         )
         .execute(&mut *db_tx)
         .await?;

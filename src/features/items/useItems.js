@@ -17,9 +17,10 @@ import { useBranchStore } from "@/stores/branch.store";
 import {
   getItems, getItem, getItemHistory,
   createItem, updateItem,
-  activateItem, deactivateItem, archiveItem, adjustStock,
+  activateItem, deactivateItem, archiveItem, adjustStock, removeItemImage,
 } from "@/commands/items";
 import { getInventorySummary } from "@/commands/inventory";
+import { invalidateStock } from "@/lib/invalidations";
 
 // ── Query key factories ────────────────────────────────────────────────────────
 export const itemListKey    = (filters) => ["items",        filters];
@@ -72,9 +73,8 @@ export function useItems({
   });
 
   const invalidateAll = useCallback(() => {
-    qc.invalidateQueries({ queryKey: ["items"] });
-    qc.invalidateQueries({ queryKey: invSummaryKey(branchStoreId) });
-  }, [qc, branchStoreId]);
+    invalidateStock(branchStoreId);
+  }, [branchStoreId]);
 
   const create = useMutation({
     mutationFn: (payload) => createItem({ store_id: branchStoreId, ...payload }),
@@ -112,6 +112,14 @@ export function useItems({
     },
   });
 
+  const removeImage = useMutation({
+    mutationFn: (id) => removeItemImage(id),
+    onSuccess: (updated) => {
+      qc.setQueryData(itemKey(updated.id), updated);
+      invalidateAll();
+    },
+  });
+
   return {
     storeId:     branchStoreId,
     items:       useMemo(() => data?.data        ?? [], [data]),
@@ -128,6 +136,7 @@ export function useItems({
     deactivate,
     archive,
     adjustStock: stockAdjust,
+    removeImage,
     invalidateAll,
   };
 }
@@ -146,8 +155,7 @@ export function useItem(id) {
 
   const invalidate = useCallback(() => {
     qc.invalidateQueries({ queryKey: itemKey(id) });
-    qc.invalidateQueries({ queryKey: ["items"] });
-    qc.invalidateQueries({ queryKey: invSummaryKey(branchStoreId) });
+    invalidateStock(branchStoreId);
   }, [qc, id, branchStoreId]);
 
   const update = useMutation({
@@ -179,6 +187,14 @@ export function useItem(id) {
     },
   });
 
+  const removeImage = useMutation({
+    mutationFn: () => removeItemImage(id),
+    onSuccess: (updated) => {
+      qc.setQueryData(itemKey(id), updated);
+      invalidate();
+    },
+  });
+
   return {
     item:        item ?? null,
     isLoading,
@@ -189,14 +205,23 @@ export function useItem(id) {
     deactivate,
     archive,
     adjustStock: stockAdjust,
+    removeImage,
   };
 }
 
 // ── useItemHistory ────────────────────────────────────────────────────────────
-export function useItemHistory(itemId, page = 1, limit = 20) {
+export function useItemHistory(itemId, { page = 1, limit = 20, dateFrom, dateTo, eventType } = {}) {
+  const filters = useMemo(() => ({
+    page,
+    limit,
+    date_from:  dateFrom  || null,
+    date_to:    dateTo    || null,
+    event_type: eventType || null,
+  }), [page, limit, dateFrom, dateTo, eventType]);
+
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey:  itemHistoryKey(itemId, page),
-    queryFn:   () => getItemHistory(itemId, page, limit),
+    queryKey:  ["item_history", itemId, filters],
+    queryFn:   () => getItemHistory(itemId, filters),
     enabled:   !!itemId,
     staleTime: 60 * 1000,
   });

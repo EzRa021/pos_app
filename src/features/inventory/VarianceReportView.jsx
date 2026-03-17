@@ -21,7 +21,7 @@ import {
 
 import { useVarianceReport } from "@/features/inventory/useInventory";
 import { useBranchStore }    from "@/stores/branch.store";
-import { formatCurrency, formatDecimal, formatDateTime } from "@/lib/format";
+import { formatCurrency, formatQuantity, formatDateTime } from "@/lib/format";
 import { cn }                from "@/lib/utils";
 
 // ── Summary card ──────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ function SummaryCard({ label, value, sub, icon: Icon, accent }) {
 }
 
 // ── Variance badge ────────────────────────────────────────────────────────────
-function VarianceBadge({ qty, value }) {
+function VarianceBadge({ qty, value, measurementType, unitType }) {
   const q = parseFloat(qty ?? 0);
   const v = parseFloat(value ?? 0);
   if (q === 0) return (
@@ -60,7 +60,7 @@ function VarianceBadge({ qty, value }) {
   return (
     <div className={cn("flex items-center gap-1 text-xs font-semibold tabular-nums", isOver ? "text-emerald-400" : "text-rose-400")}>
       {isOver ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-      {isOver ? "+" : ""}{formatDecimal(q)}
+      {isOver ? "+" : ""}{formatQuantity(q, measurementType, unitType)}
       <span className="text-[10px] font-normal opacity-70">({formatCurrency(Math.abs(v))})</span>
     </div>
   );
@@ -165,20 +165,20 @@ export function VarianceReportView({ sessionId }) {
       key:    "system_quantity",
       header: "System",
       align:  "center",
-      render: (row) => <span className="text-xs tabular-nums text-muted-foreground">{formatDecimal(row.system_quantity)}</span>,
+      render: (row) => <span className="text-xs tabular-nums text-muted-foreground">{formatQuantity(parseFloat(row.system_quantity), row.measurement_type, row.unit_type)}</span>,
     },
     {
       key:    "counted_quantity",
       header: "Counted",
       align:  "center",
-      render: (row) => <span className="text-xs font-semibold tabular-nums text-foreground">{formatDecimal(row.counted_quantity)}</span>,
+      render: (row) => <span className="text-xs font-semibold tabular-nums text-foreground">{formatQuantity(parseFloat(row.counted_quantity), row.measurement_type, row.unit_type)}</span>,
     },
     {
       key:    "variance_quantity",
       header: "Variance",
       align:  "center",
       sortable: true,
-      render: (row) => <VarianceBadge qty={row.variance_quantity} value={row.variance_value} />,
+      render: (row) => <VarianceBadge qty={row.variance_quantity} value={row.variance_value} measurementType={row.measurement_type} unitType={row.unit_type} />,
     },
     {
       key:    "variance_percentage",

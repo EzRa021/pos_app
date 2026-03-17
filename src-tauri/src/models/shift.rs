@@ -79,6 +79,21 @@ pub struct CashMovement {
     pub created_at:        DateTime<Utc>,
 }
 
+// ── Shift Detail Stats (items sold, top item, customers, credit sales) ─────────
+
+#[derive(Debug, Serialize)]
+pub struct ShiftDetailStats {
+    pub shift_id:             i32,
+    pub total_items_sold:     f64,          // SUM(quantity) from transaction_items
+    pub unique_customers:     i64,          // COUNT(DISTINCT customer_id)
+    pub credit_sales_count:   i64,          // number of credit transactions
+    pub credit_sales_amount:  rust_decimal::Decimal, // total value of credit sales
+    pub top_item_name:        Option<String>,        // most sold item by quantity
+    pub top_item_qty:         f64,          // quantity of the top item sold
+    pub return_count:         i64,          // voided / refunded transactions
+    pub total_returns_amount: rust_decimal::Decimal, // total value of returns
+}
+
 // ── Shift Summary (for close-shift modal) ────────────────────────────────────
 
 #[derive(Debug, Serialize)]

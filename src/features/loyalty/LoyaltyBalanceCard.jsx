@@ -1,6 +1,6 @@
-// features/loyalty/LoyaltyBalanceCard.jsx — Shows points balance + adjust button
+// features/loyalty/LoyaltyBalanceCard.jsx
 import { useState } from "react";
-import { Star, SlidersHorizontal, Loader2, AlertCircle } from "lucide-react";
+import { Star, Plus, Minus, Loader2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input }  from "@/components/ui/input";
@@ -9,9 +9,10 @@ import {
   Dialog, DialogContent, DialogHeader,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
-import { useLoyaltyBalance, useLoyaltyActions } from "./useLoyalty";
+import { useCustomerLoyalty } from "./useLoyalty";
 import { formatCurrency } from "@/lib/format";
 
+// ── Adjust points dialog ──────────────────────────────────────────────────────
 function AdjustDialog({ open, onOpenChange, onAdjust }) {
   const [points, setPoints] = useState("");
   const [notes,  setNotes]  = useState("");
@@ -19,12 +20,12 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
 
   const handleSave = async () => {
     const pts = parseInt(points, 10);
-    if (isNaN(pts) || pts === 0) { toast.error("Enter a non-zero points amount."); return; }
+    if (isNaN(pts) || pts === 0) { toast.error("Enter a non-zero point adjustment."); return; }
     if (!notes.trim())           { toast.error("Reason is required."); return; }
     setBusy(true);
     try {
       await onAdjust({ points: pts, notes: notes.trim() });
-      toast.success(`Points adjusted by ${pts > 0 ? "+" : ""}${pts.toLocaleString()}.`);
+      toast.success(`Points ${pts > 0 ? "added" : "deducted"} successfully.`);
       setPoints(""); setNotes("");
       onOpenChange(false);
     } catch (e) {
@@ -41,7 +42,7 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
         <div className="p-6 space-y-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-warning/25 bg-warning/10">
-              <SlidersHorizontal className="h-5 w-5 text-warning" />
+              <Star className="h-5 w-5 text-warning" />
             </div>
             <div>
               <DialogTitle className="text-base font-semibold">Adjust Loyalty Points</DialogTitle>
@@ -52,18 +53,19 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
           </div>
           <div className="space-y-1.5">
             <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Points</label>
-            <Input type="number" value={points} onChange={(e) => setPoints(e.target.value)}
-              placeholder="e.g. 50 or -25" className="h-8 text-sm" autoFocus />
+            <Input type="number" step="1" value={points}
+              onChange={(e) => setPoints(e.target.value)}
+              placeholder="e.g. 50 or -20" className="h-8 text-sm" autoFocus />
           </div>
           <div className="space-y-1.5">
             <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Reason *</label>
             <Input value={notes} onChange={(e) => setNotes(e.target.value)}
-              placeholder="e.g. Goodwill adjustment" className="h-8 text-sm" />
+              placeholder="Reason for adjustment" className="h-8 text-sm" />
           </div>
         </div>
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} disabled={busy || !notes} className="gap-1.5">
+          <Button size="sm" onClick={handleSave} disabled={busy || !notes || !points} className="gap-1.5">
             {busy ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</> : "Save Adjustment"}
           </Button>
         </DialogFooter>
@@ -72,24 +74,19 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
   );
 }
 
+// ── LoyaltyBalanceCard ────────────────────────────────────────────────────────
 export function LoyaltyBalanceCard({ customerId, canManage = true }) {
   const [adjustOpen, setAdjustOpen] = useState(false);
-  const { balance, isLoading, error } = useLoyaltyBalance(customerId);
-  const { adjust } = useLoyaltyActions(customerId);
+  const { balance, isLoading, adjust } = useCustomerLoyalty(customerId);
 
   if (isLoading) return (
     <div className="flex items-center gap-2 py-4 text-muted-foreground text-sm">
-      <Loader2 className="h-4 w-4 animate-spin" /> Loading points…
-    </div>
-  );
-  if (error) return (
-    <div className="flex items-center gap-1.5 text-xs text-destructive py-2">
-      <AlertCircle className="h-3.5 w-3.5" /> {String(error)}
+      <Loader2 className="h-4 w-4 animate-spin" /> Loading loyalty…
     </div>
   );
 
-  const points     = parseFloat(balance?.points     ?? 0);
-  const nairaValue = parseFloat(balance?.naira_value ?? 0);
+  const points    = parseInt(balance?.points     ?? 0, 10);
+  const nairaVal  = parseFloat(balance?.naira_value ?? 0);
 
   return (
     <>
@@ -101,24 +98,24 @@ export function LoyaltyBalanceCard({ customerId, canManage = true }) {
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Loyalty Points</p>
             <p className={cn("text-2xl font-bold tabular-nums mt-1", points > 0 ? "text-warning" : "text-muted-foreground")}>
-              {Math.round(points).toLocaleString()} pts
+              {points.toLocaleString()} pts
             </p>
-            {nairaValue > 0 && (
+            {nairaVal > 0 && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Worth <span className="font-semibold text-foreground">{formatCurrency(nairaValue)}</span> in redemptions
+                Redeemable value: <span className="font-semibold text-foreground">{formatCurrency(nairaVal)}</span>
               </p>
             )}
           </div>
           <Star className={cn("h-8 w-8 shrink-0", points > 0 ? "text-warning/40" : "text-muted-foreground/20")} />
         </div>
       </div>
+
       {canManage && (
-        <div className="mt-3">
-          <Button size="sm" variant="outline" onClick={() => setAdjustOpen(true)} className="gap-1.5">
-            <SlidersHorizontal className="h-3.5 w-3.5" />Adjust Points
-          </Button>
-        </div>
+        <Button size="sm" variant="outline" onClick={() => setAdjustOpen(true)} className="gap-1.5">
+          <Star className="h-3.5 w-3.5" />Adjust Points
+        </Button>
       )}
+
       <AdjustDialog
         open={adjustOpen}
         onOpenChange={setAdjustOpen}

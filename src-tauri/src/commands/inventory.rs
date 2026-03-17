@@ -70,6 +70,7 @@ pub(crate) async fn get_inventory_inner(
                   i.cost_price, i.selling_price,
                   ist.is_active, ist.track_stock,
                   istock.last_count_date,
+                  ist.measurement_type, ist.unit_type,
                   istock.updated_at,
                   CASE
                     WHEN ist.min_stock_level IS NOT NULL
@@ -116,6 +117,7 @@ pub(crate) async fn get_inventory_item_inner(
                   c.id AS category_id, c.category_name,
                   d.id AS department_id, d.department_name,
                   ist.track_stock, ist.min_stock_level, ist.max_stock_level, ist.allow_negative_stock,
+                  ist.measurement_type, ist.unit_type,
                   COALESCE(istock.quantity, 0)            AS quantity,
                   istock.reserved_quantity,
                   COALESCE(istock.available_quantity, 0)  AS available_quantity,
@@ -146,7 +148,8 @@ pub(crate) async fn get_inventory_item_inner(
                   h.event_type, h.event_description,
                   h.quantity_before, h.quantity_after, h.quantity_change,
                   h.reference_type, h.reference_id,
-                  h.performed_by, u.username AS performed_by_username,
+                  h.performed_by,
+                  CASE WHEN u.id IS NOT NULL THEN u.username END AS performed_by_username,
                   h.performed_at, h.notes
            FROM   item_history h
            JOIN   items i ON i.id = h.item_id
@@ -213,14 +216,28 @@ pub(crate) async fn restock_item_inner(
     let qty = to_dec(payload.quantity);
     let mut tx = pool.begin().await?;
 
-    // Verify item exists in this store
-    let item_name: String = sqlx::query_scalar!(
-        "SELECT item_name FROM items WHERE id = $1 AND store_id = $2",
-        payload.item_id, payload.store_id,
+    // Verify item exists in this store and fetch unit metadata
+    struct ItemMeta {
+        item_name: String,
+        measurement_type: Option<String>,
+        unit_type: Option<String>,
+    }
+    let meta = sqlx::query_as!(
+        ItemMeta,
+        r#"SELECT i.item_name,
+                  ist.measurement_type,
+                  ist.unit_type
+           FROM   items i
+           LEFT JOIN item_settings ist ON ist.item_id = i.id
+           WHERE  i.id = $1 AND i.store_id = $2"#,
+        payload.item_id,
+        payload.store_id,
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound("Item not found or does not belong to this store".into()))?;
+    let item_name = meta.item_name;
+    let qty = crate::utils::qty::validate_qty_opt(qty, meta.measurement_type.as_deref(), &item_name)?;
 
     let qty_before: Decimal = sqlx::query_scalar!(
         "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2",
@@ -240,7 +257,11 @@ pub(crate) async fn restock_item_inner(
     .execute(&mut *tx)
     .await?;
 
-    let description = format!("Restocked {} unit(s) of {item_name}", payload.quantity);
+    let unit_label = meta
+        .unit_type
+        .as_deref()
+        .unwrap_or("unit(s)");
+    let description = format!("Restocked {} {} of {item_name}", payload.quantity, unit_label);
     sqlx::query!(
         r#"INSERT INTO item_history
                (item_id, store_id, event_type, event_description,
@@ -285,10 +306,16 @@ pub(crate) async fn adjust_inventory_inner(
     let adj = to_dec(payload.adjustment_quantity);
     let mut tx = pool.begin().await?;
 
-    // Verify item and get allow_negative_stock flag
-    struct ItemInfo { item_name: String, allow_negative_stock: Option<bool> }
+    // Verify item and get allow_negative_stock flag and unit metadata
+    struct ItemInfo {
+        item_name: String,
+        allow_negative_stock: Option<bool>,
+        measurement_type: Option<String>,
+        unit_type: Option<String>,
+    }
     let info = sqlx::query!(
-        r#"SELECT i.item_name, ist.allow_negative_stock
+        r#"SELECT i.item_name, ist.allow_negative_stock,
+                  ist.measurement_type, ist.unit_type
            FROM items i
            LEFT JOIN item_settings ist ON ist.item_id = i.id
            WHERE i.id = $1 AND i.store_id = $2"#,
@@ -301,6 +328,8 @@ pub(crate) async fn adjust_inventory_inner(
     let item_name = info.item_name;
     // allow_negative_stock is BOOLEAN NOT NULL in the schema → bool (not Option<bool>)
     let allow_negative = info.allow_negative_stock;
+
+    let adj = crate::utils::qty::validate_qty_signed_opt(adj, Some(info.measurement_type.as_str()), &item_name)?;
 
     let qty_before: Decimal = sqlx::query_scalar!(
         "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2",
@@ -326,7 +355,14 @@ pub(crate) async fn adjust_inventory_inner(
     .await?;
 
     let sign  = if adj >= Decimal::ZERO { "+" } else { "" };
-    let desc  = format!("Stock adjustment ({reason}): {sign}{adj} unit(s)", reason = payload.reason);
+    let unit_label = info
+        .unit_type
+        .as_deref()
+        .unwrap_or("unit(s)");
+    let desc  = format!(
+        "Stock adjustment ({reason}): {sign}{adj} {unit_label}",
+        reason = payload.reason
+    );
     let notes = match &payload.notes {
         Some(n) => format!("Reason: {} - {n}", payload.reason),
         None    => format!("Reason: {}", payload.reason),
@@ -398,7 +434,8 @@ pub(crate) async fn get_movement_history_inner(
                   h.event_type, h.event_description,
                   h.quantity_before, h.quantity_after, h.quantity_change,
                   h.reference_type, h.reference_id,
-                  h.performed_by, u.username AS performed_by_username,
+                  h.performed_by,
+                  CASE WHEN u.id IS NOT NULL THEN u.username END AS performed_by_username,
                   h.performed_at, h.notes
            FROM   item_history h
            JOIN   items i ON i.id = h.item_id
@@ -533,33 +570,51 @@ pub(crate) async fn record_count_inner(
         return Err(AppError::Validation("Store ID mismatch".into()));
     }
 
-    // Get current system quantity and cost price
-    let stock = sqlx::query!(
-        r#"SELECT st.quantity, i.cost_price
-           FROM item_stock st
-           JOIN items i ON i.id = st.item_id
-           WHERE st.item_id = $1 AND st.store_id = $2"#,
-        payload.item_id, store_id
+    // Get current system quantity, cost price and unit/measurement metadata
+    struct StockRow {
+        quantity: Decimal,
+        cost_price: Decimal,
+        item_name: String,
+        measurement_type: Option<String>,
+        unit_type: Option<String>,
+    }
+    let stock = sqlx::query_as!(
+        StockRow,
+        r#"SELECT st.quantity,
+                  i.cost_price,
+                  i.item_name,
+                  ist.measurement_type,
+                  ist.unit_type
+           FROM   item_stock st
+           JOIN   items i          ON i.id = st.item_id
+           LEFT  JOIN item_settings ist ON ist.item_id = i.id
+           WHERE  st.item_id = $1 AND st.store_id = $2"#,
+        payload.item_id,
+        store_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound("Item stock record not found".into()))?;
 
+    let counted = crate::utils::qty::validate_qty_opt(counted, stock.measurement_type.as_deref(), &stock.item_name)?;
+
     // Upsert stock count item
     let count_item_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO stock_count_items
-               (session_id, item_id, store_id, system_quantity, counted_quantity, cost_price, counted_by, notes)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               (session_id, item_id, store_id, system_quantity, counted_quantity,
+                cost_price, counted_by, notes, unit_type)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (session_id, item_id)
            DO UPDATE SET
                counted_quantity = EXCLUDED.counted_quantity,
                counted_by       = EXCLUDED.counted_by,
                counted_at       = CURRENT_TIMESTAMP,
-               notes            = EXCLUDED.notes
+               notes            = EXCLUDED.notes,
+               unit_type        = EXCLUDED.unit_type
            RETURNING id"#,
         session_id, payload.item_id, store_id,
         stock.quantity, counted, stock.cost_price,
-        claims.user_id, payload.notes,
+        claims.user_id, payload.notes, stock.unit_type,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -672,10 +727,13 @@ pub(crate) async fn get_variance_report_inner(
                   ci.cost_price, ci.counted_by, ci.counted_at, ci.notes,
                   ci.is_adjusted, ci.adjustment_id,
                   i.item_name, i.sku, i.barcode,
-                  c.category_name
+                  c.category_name,
+                  ist.measurement_type,
+                  COALESCE(ci.unit_type, ist.unit_type) AS unit_type
            FROM   stock_count_items ci
            JOIN   items i ON i.id = ci.item_id
-           LEFT JOIN categories c ON c.id = i.category_id
+           LEFT JOIN categories    c   ON c.id   = i.category_id
+           LEFT JOIN item_settings ist ON ist.item_id = ci.item_id
            WHERE  ci.session_id = $1
            ORDER  BY ABS(COALESCE(ci.variance_value, 0)) DESC, i.item_name ASC"#,
         session_id
@@ -845,10 +903,13 @@ async fn fetch_count_item(pool: &sqlx::PgPool, id: i32) -> AppResult<StockCountI
                   ci.cost_price, ci.counted_by, ci.counted_at, ci.notes,
                   ci.is_adjusted, ci.adjustment_id,
                   i.item_name, i.sku, i.barcode,
-                  c.category_name
+                  c.category_name,
+                  ist.measurement_type,
+                  COALESCE(ci.unit_type, ist.unit_type) AS unit_type
            FROM   stock_count_items ci
            JOIN   items i ON i.id = ci.item_id
-           LEFT JOIN categories c ON c.id = i.category_id
+           LEFT JOIN categories    c   ON c.id   = i.category_id
+           LEFT JOIN item_settings ist ON ist.item_id = ci.item_id
            WHERE  ci.id = $1"#,
         id
     )
@@ -865,7 +926,7 @@ async fn apply_variances_tx(
     store_id:   i32,
 ) -> AppResult<()> {
     let count_items = sqlx::query!(
-        r#"SELECT id, item_id, counted_quantity, variance_quantity
+        r#"SELECT id, item_id, counted_quantity, variance_quantity, unit_type
            FROM stock_count_items
            WHERE session_id = $1 AND is_adjusted = FALSE
              AND variance_quantity IS NOT NULL AND variance_quantity != 0"#,
@@ -897,7 +958,14 @@ async fn apply_variances_tx(
         .await?;
 
         let direction = if variance > Decimal::ZERO { "overage" } else { "shortage" };
-        let desc = format!("Stock count adjustment: {direction} of {}", variance.abs());
+        let unit_label = ci
+            .unit_type
+            .as_deref()
+            .unwrap_or("unit(s)");
+        let desc = format!(
+            "Stock count adjustment: {direction} of {} {unit_label}",
+            variance.abs()
+        );
 
         let history_id: i32 = sqlx::query_scalar!(
             r#"INSERT INTO item_history
@@ -928,24 +996,37 @@ async fn apply_variances_tx(
 /// Deduct stock from a sale. Called from within an existing transaction context.
 /// Matches quantum-pos-app `inventoryService.deductStockFromSale(client, ...)`.
 pub(crate) async fn deduct_stock_from_sale(
-    tx:        &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    item_id:   Uuid,
-    store_id:  i32,
-    quantity:  Decimal,
-    sale_id:   String,
+    tx:         &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    item_id:    Uuid,
+    store_id:   i32,
+    quantity:   Decimal,
+    sale_id:    String,
     cashier_id: i32,
 ) -> AppResult<StockDeductResult> {
     if quantity <= Decimal::ZERO {
         return Err(AppError::Validation("Invalid quantity for stock deduction".into()));
     }
 
-    let item_name: String = sqlx::query_scalar!(
-        "SELECT item_name FROM items WHERE id = $1 AND store_id = $2",
-        item_id, store_id
+    struct ItemMeta {
+        item_name: String,
+        measurement_type: Option<String>,
+        unit_type: Option<String>,
+    }
+    let meta = sqlx::query_as!(
+        ItemMeta,
+        r#"SELECT i.item_name,
+                  ist.measurement_type,
+                  ist.unit_type
+           FROM   items i
+           LEFT JOIN item_settings ist ON ist.item_id = i.id
+           WHERE  i.id = $1 AND i.store_id = $2"#,
+        item_id,
+        store_id
     )
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| AppError::NotFound("Item not found".into()))?;
+    let item_name = meta.item_name;
 
     let qty_before: Decimal = sqlx::query_scalar!(
         "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2",
@@ -964,7 +1045,11 @@ pub(crate) async fn deduct_stock_from_sale(
     .execute(&mut **tx)
     .await?;
 
-    let desc = format!("Sold {} unit(s) of {item_name}", quantity);
+    let unit_label = meta
+        .unit_type
+        .as_deref()
+        .unwrap_or("unit(s)");
+    let desc = format!("Sold {} {} of {item_name}", quantity, unit_label);
     sqlx::query!(
         r#"INSERT INTO item_history
                (item_id, store_id, event_type, event_description,

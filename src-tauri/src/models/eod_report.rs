@@ -38,6 +38,71 @@ pub struct EodReport {
     pub is_locked:          bool,
 }
 
+// ── Breakdown sub-structs (live queries, not stored) ─────────────────────────
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EodDeptSummary {
+    pub department_name:   String,
+    pub transaction_count: i32,
+    pub qty_sold:          Decimal,
+    pub gross_sales:       Decimal,
+    pub net_sales:         Decimal,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EodCategorySummary {
+    pub category_name:     String,
+    pub department_name:   Option<String>,
+    pub transaction_count: i32,
+    pub qty_sold:          Decimal,
+    pub gross_sales:       Decimal,
+    pub net_sales:         Decimal,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EodItemSummary {
+    pub item_name:     String,
+    pub sku:           String,
+    pub category_name: String,
+    pub qty_sold:      Decimal,
+    pub gross_sales:   Decimal,
+    pub net_sales:     Decimal,
+    pub avg_price:     Decimal,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EodPaymentSummary {
+    pub payment_method: String,
+    pub count:          i64,
+    pub total:          Decimal,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EodHourlySummary {
+    pub hour:              i32,
+    pub transaction_count: i32,
+    pub sales:             Decimal,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EodCashierSummary {
+    pub cashier_name:      String,
+    pub transaction_count: i32,
+    pub total_sales:       Decimal,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EodBreakdown {
+    pub departments:     Vec<EodDeptSummary>,
+    pub categories:      Vec<EodCategorySummary>,
+    pub top_items:       Vec<EodItemSummary>,
+    pub payment_methods: Vec<EodPaymentSummary>,
+    pub hourly:          Vec<EodHourlySummary>,
+    pub cashiers:        Vec<EodCashierSummary>,
+}
+
+// ── Filters ───────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
 pub struct EodHistoryFilters {
     pub store_id:  i32,

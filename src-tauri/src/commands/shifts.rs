@@ -17,7 +17,7 @@ use chrono::Utc;
 use crate::{
     error::{AppError, AppResult},
     models::shift::{
-        Shift, CashMovement, ShiftSummary,
+        Shift, CashMovement, ShiftSummary, ShiftDetailStats,
         OpenShiftDto, CloseShiftDto, SuspendShiftDto, CreateCashMovementDto,
         ShiftFilters,
     },
@@ -955,4 +955,107 @@ pub async fn reconcile_shift(
     notes: Option<String>,
 ) -> AppResult<Shift> {
     reconcile_shift_inner(&state, token, id, notes).await
+}
+
+// ── get_shift_detail_stats ────────────────────────────────────────────────────────────────────────
+// Returns derived stats for the shift detail page that are NOT stored on the
+// shifts row itself: total_items_sold, top item, unique customers, credit sales.
+
+pub(crate) async fn get_shift_detail_stats_inner(
+    state:    &AppState,
+    token:    String,
+    shift_id: i32,
+) -> AppResult<ShiftDetailStats> {
+    let claims = guard(state, &token).await?;
+    let pool   = state.pool().await?;
+
+    let shift = fetch_shift(&pool, shift_id).await?;
+    if shift.opened_by != claims.user_id && !claims.is_global {
+        return Err(AppError::Forbidden);
+    }
+
+    // Time window for this shift
+    let opened_at = shift.opened_at;
+    let closed_at = shift.closed_at.unwrap_or_else(Utc::now);
+
+    // ── Aggregate stats from completed transactions ──────────────────────
+    let agg = sqlx::query!(
+        r#"SELECT
+            COALESCE(SUM(ti.quantity), 0)                                        AS "total_items_sold!: rust_decimal::Decimal",
+            COUNT(DISTINCT t.customer_id) FILTER (WHERE t.customer_id IS NOT NULL) AS "unique_customers!: i64",
+            COUNT(*) FILTER (WHERE t.payment_method = 'credit')                  AS "credit_sales_count!: i64",
+            COALESCE(SUM(t.total_amount) FILTER (WHERE t.payment_method = 'credit'), 0) AS "credit_sales_amount!: rust_decimal::Decimal"
+           FROM transactions t
+           LEFT JOIN transaction_items ti ON ti.tx_id = t.id
+           WHERE t.cashier_id = $1
+             AND t.store_id   = $2
+             AND t.created_at >= $3
+             AND t.created_at <= $4
+             AND t.status     = 'completed'"#,
+        shift.opened_by,
+        shift.store_id,
+        opened_at,
+        closed_at,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    // ── Top item by quantity sold ─────────────────────────────────────────────
+    let top = sqlx::query!(
+        r#"SELECT ti.item_name, SUM(ti.quantity) AS "total_qty!: rust_decimal::Decimal"
+           FROM transaction_items ti
+           JOIN transactions t ON t.id = ti.tx_id
+           WHERE t.cashier_id = $1
+             AND t.store_id   = $2
+             AND t.created_at >= $3
+             AND t.created_at <= $4
+             AND t.status     = 'completed'
+           GROUP BY ti.item_name
+           ORDER BY "total_qty!: rust_decimal::Decimal" DESC
+           LIMIT 1"#,
+        shift.opened_by,
+        shift.store_id,
+        opened_at,
+        closed_at,
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    // Returns are already tracked on the Shift row — reuse those fields
+    let return_count         = shift.return_count.unwrap_or(0);
+    let total_returns_amount = shift.total_returns.unwrap_or(rust_decimal::Decimal::ZERO);
+
+    let total_items_sold = agg.total_items_sold
+        .to_string()
+        .parse::<f64>()
+        .unwrap_or(0.0);
+
+    let (top_item_name, top_item_qty) = match top {
+        Some(row) => {
+            let qty = row.total_qty.to_string().parse::<f64>().unwrap_or(0.0);
+            (Some(row.item_name), qty)
+        }
+        None => (None, 0.0),
+    };
+
+    Ok(ShiftDetailStats {
+        shift_id,
+        total_items_sold,
+        unique_customers:    agg.unique_customers,
+        credit_sales_count:  agg.credit_sales_count,
+        credit_sales_amount: agg.credit_sales_amount,
+        top_item_name,
+        top_item_qty,
+        return_count,
+        total_returns_amount,
+    })
+}
+
+#[tauri::command]
+pub async fn get_shift_detail_stats(
+    state:    State<'_, AppState>,
+    token:    String,
+    shift_id: i32,
+) -> AppResult<ShiftDetailStats> {
+    get_shift_detail_stats_inner(&state, token, shift_id).await
 }

@@ -21,7 +21,7 @@ import {
 import { useCountSession }     from "@/features/inventory/useInventory";
 import { useInventory }        from "@/features/inventory/useInventory";
 import { useBranchStore }      from "@/stores/branch.store";
-import { formatDecimal, formatDateTime, formatCurrency } from "@/lib/format";
+import { formatDateTime, formatCurrency, formatQuantity, stepForType } from "@/lib/format";
 import { cn }                  from "@/lib/utils";
 
 // ── Progress ring ─────────────────────────────────────────────────────────────
@@ -47,6 +47,11 @@ function ProgressRing({ counted, total }) {
 
 // ── Item count row ────────────────────────────────────────────────────────────
 function ItemCountRow({ item, onRecord }) {
+  const measureType  = item.measurement_type ?? null;
+  const unitType     = item.unit_type ?? null;
+  const minIncrement = item.min_increment != null ? parseFloat(item.min_increment) : null;
+  const step         = stepForType(measureType, minIncrement);
+  const defaultQty   = item.default_qty != null ? parseFloat(item.default_qty) : 0;
   const [qty, setQty] = useState("");
   const [open, setOpen] = useState(false);
   const currentQty = parseFloat(item.quantity ?? 0);
@@ -65,7 +70,9 @@ function ItemCountRow({ item, onRecord }) {
           <div className="text-[10px] font-mono text-muted-foreground">{item.sku}</div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-xs text-muted-foreground tabular-nums">System: {formatDecimal(currentQty)}</div>
+          <div className="text-xs text-muted-foreground tabular-nums">
+            System: {formatQuantity(currentQty, measureType, unitType)}
+          </div>
         </div>
         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       </div>
@@ -85,7 +92,9 @@ function ItemCountRow({ item, onRecord }) {
             <div className="mb-4 grid grid-cols-2 gap-3">
               <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-center">
                 <p className="text-[10px] text-muted-foreground">System Qty</p>
-                <p className="text-lg font-bold tabular-nums">{formatDecimal(currentQty)}</p>
+                <p className="text-lg font-bold tabular-nums">
+                  {formatQuantity(currentQty, measureType, unitType)}
+                </p>
               </div>
               <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-center">
                 <p className="text-[10px] text-muted-foreground">Category</p>
@@ -99,14 +108,14 @@ function ItemCountRow({ item, onRecord }) {
               </label>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="icon" className="h-9 w-9 shrink-0"
-                  onClick={() => setQty((v) => String(Math.max(0, parseFloat(v || 0) - 1)))}>
+                  onClick={() => setQty((v) => String(Math.max(0, parseFloat(v || 0) - step)))}>
                   <Minus className="h-4 w-4" />
                 </Button>
-                <Input type="number" min={0} step="0.01"
+                <Input type="number" min={0} step={step}
                   value={qty} onChange={(e) => setQty(e.target.value)}
-                  className="text-center text-lg font-bold h-9" placeholder="0" autoFocus />
+                  className="text-center text-lg font-bold h-9" placeholder={String(defaultQty || 0)} autoFocus />
                 <Button variant="outline" size="icon" className="h-9 w-9 shrink-0"
-                  onClick={() => setQty((v) => String(parseFloat(v || 0) + 1))}>
+                  onClick={() => setQty((v) => String(parseFloat(v || 0) + step))}>
                   <PlusIcon className="h-4 w-4" />
                 </Button>
               </div>
@@ -118,7 +127,7 @@ function ItemCountRow({ item, onRecord }) {
                     parseFloat(qty) - currentQty > 0 ? "text-emerald-400" :
                     parseFloat(qty) - currentQty < 0 ? "text-rose-400" : "text-muted-foreground",
                   )}>
-                    {parseFloat(qty) - currentQty >= 0 ? "+" : ""}{formatDecimal(parseFloat(qty) - currentQty)}
+                    {parseFloat(qty) - currentQty >= 0 ? "+" : ""}{formatQuantity(parseFloat(qty) - currentQty, measureType, unitType)}
                   </span>
                 </div>
               )}

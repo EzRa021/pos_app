@@ -21,9 +21,11 @@ import {
 } from "@/components/ui/select";
 
 import { useInventory }          from "@/features/inventory/useInventory";
+import { ItemImage }             from "@/components/shared/ItemImage";
 import { RestockDialog }         from "@/features/inventory/RestockDialog";
 import { AdjustInventoryDialog } from "@/features/inventory/AdjustInventoryDialog";
-import { formatCurrency, formatDecimal, formatDate } from "@/lib/format";
+import { formatCurrency, formatQuantity, formatPricePerUnit, formatDate } from "@/lib/format";
+import { MEASUREMENT_TYPE_OPTIONS } from "@/lib/constants";
 import { cn }                    from "@/lib/utils";
 
 // ── Stat card ─────────────────────────────────────────────────────────────────
@@ -68,9 +70,10 @@ function StockStatusBadge({ status }) {
 export function InventoryDashboard() {
   const navigate = useNavigate();
 
-  const [page,     setPage]     = useState(1);
-  const [search,   setSearch]   = useState("");
-  const [lowStock, setLowStock] = useState(false);
+  const [page,            setPage]            = useState(1);
+  const [search,          setSearch]          = useState("");
+  const [lowStock,        setLowStock]        = useState(false);
+  const [measurementType, setMeasurementType] = useState(null);
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
   const [restockItem, setRestockItem] = useState(null);
@@ -80,13 +83,18 @@ export function InventoryDashboard() {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
-  useEffect(() => setPage(1), [debouncedSearch, lowStock]);
+  useEffect(() => setPage(1), [debouncedSearch, lowStock, measurementType]);
 
   const {
     storeId, records, total, totalPages, currentPage,
     isLoading, isFetching, error, summary, lowStockList,
     restock, adjust,
-  } = useInventory({ page, limit: 25, search: debouncedSearch || undefined, lowStock: lowStock || undefined });
+  } = useInventory({
+    page, limit: 25,
+    search:          debouncedSearch || undefined,
+    lowStock:        lowStock        || undefined,
+    measurementType: measurementType || undefined,
+  });
 
   const columns = useMemo(() => [
     {
@@ -95,16 +103,11 @@ export function InventoryDashboard() {
       sortable: true,
       render:   (row) => (
         <div className="flex items-center gap-2.5">
-          <div className={cn(
-            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-[10px] font-bold uppercase",
-            row.stock_status === "low"
-              ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
-              : row.stock_status === "high"
-                ? "border-sky-500/30 bg-sky-500/10 text-sky-400"
-                : "border-primary/30 bg-primary/10 text-primary",
-          )}>
-            {(row.item_name ?? "?").slice(0, 2).toUpperCase()}
-          </div>
+          <ItemImage
+            item={row}
+            size="sm"
+            rounded="md"
+          />
           <div>
             <div className="text-xs font-semibold text-foreground">{row.item_name}</div>
             <div className="text-[10px] font-mono text-muted-foreground">{row.sku}</div>
@@ -130,7 +133,7 @@ export function InventoryDashboard() {
             "text-sm font-bold tabular-nums",
             q === 0 ? "text-red-400" : m > 0 && q <= m ? "text-amber-400" : "text-foreground",
           )}>
-            {formatDecimal(q)}
+            {formatQuantity(q, row.measurement_type, row.unit_type)}
           </span>
         );
       },
@@ -139,7 +142,7 @@ export function InventoryDashboard() {
       key:    "available_quantity",
       header: "Available",
       align:  "center",
-      render: (row) => <span className="text-xs text-muted-foreground tabular-nums">{formatDecimal(row.available_quantity ?? 0)}</span>,
+      render: (row) => <span className="text-xs text-muted-foreground tabular-nums">{formatQuantity(parseFloat(row.available_quantity ?? 0), row.measurement_type, row.unit_type)}</span>,
     },
     {
       key:    "min_stock_level",
@@ -164,7 +167,7 @@ export function InventoryDashboard() {
       sortable: true,
       render:   (row) => (
         <span className="text-xs font-semibold text-foreground tabular-nums">
-          {formatCurrency(parseFloat(row.selling_price))}
+          {formatPricePerUnit(parseFloat(row.selling_price), row.measurement_type, row.unit_type)}
         </span>
       ),
     },
@@ -242,6 +245,19 @@ export function InventoryDashboard() {
             </button>
           )}
         </div>
+        <Select
+          value={measurementType ?? "all"}
+          onValueChange={(v) => setMeasurementType(v === "all" ? null : v)}
+        >
+          <SelectTrigger className="h-8 w-[150px] text-xs">
+            <SelectValue placeholder="All Types" />
+          </SelectTrigger>
+          <SelectContent>
+            {MEASUREMENT_TYPE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <button onClick={() => setLowStock((v) => !v)}
           className={cn(
             "flex items-center gap-1.5 rounded-md border px-2.5 h-8 text-xs font-medium transition-all",
@@ -251,8 +267,8 @@ export function InventoryDashboard() {
           )}>
           <TrendingDown className="h-3 w-3" /> Low Stock Only
         </button>
-        {(search || lowStock) && (
-          <button onClick={() => { setSearch(""); setLowStock(false); }}
+        {(search || lowStock || measurementType) && (
+          <button onClick={() => { setSearch(""); setLowStock(false); setMeasurementType(null); }}
             className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
             <X className="h-3 w-3" /> Clear
           </button>

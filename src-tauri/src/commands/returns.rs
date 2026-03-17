@@ -45,7 +45,8 @@ async fn fetch_return_items(pool: &sqlx::PgPool, return_id: i32) -> AppResult<Ve
         ReturnItem,
         r#"SELECT id, return_id, item_id, item_name, sku,
                   quantity_returned, unit_price, line_total,
-                  condition, restocked, notes
+                  condition, restocked, notes,
+                  measurement_type, unit_type
            FROM   return_items
            WHERE  return_id = $1
            ORDER  BY id"#,
@@ -72,7 +73,7 @@ pub async fn create_return(
     token:   String,
     payload: CreateReturnDto,
 ) -> AppResult<ReturnDetail> {
-    let claims = guard_permission(&state, &token, "transactions.void").await?;
+    let claims = guard_permission(&state, &token, "transactions.refund").await?;
     let pool   = state.pool().await?;
 
     if payload.items.is_empty() {
@@ -89,8 +90,16 @@ pub async fn create_return(
     .await?
     .ok_or_else(|| AppError::NotFound("Original transaction not found".into()))?;
 
-    if orig.status == "voided" {
-        return Err(AppError::Validation("Cannot return items from a voided transaction".into()));
+    match orig.status.as_str() {
+        "voided" | "cancelled" =>
+            return Err(AppError::Validation(
+                "Cannot return items from a voided or cancelled transaction".into()
+            )),
+        "refunded" =>
+            return Err(AppError::Validation(
+                "This transaction has already been fully refunded. No further returns are allowed".into()
+            )),
+        _ => {}
     }
 
     let mut db_tx = pool.begin().await?;
@@ -105,15 +114,41 @@ pub async fn create_return(
     .flatten()
     .unwrap_or_else(|| format!("RET-{}", chrono::Utc::now().timestamp()));
 
+    // ── Struct to carry validated data between the two loops ─────────────────
+    struct ValidatedItem {
+        item_id:          uuid::Uuid,
+        item_name:        String,
+        sku:              String,
+        qty_ret:          Decimal,
+        unit_price:       Decimal,
+        line_total:       Decimal,   // inclusive of tax, proportional
+        condition:        String,
+        restock:          bool,
+        notes:            Option<String>,
+        measurement_type: String,
+        unit_type:        Option<String>,
+    }
+
+    let mut validated_items: Vec<ValidatedItem> = Vec::new();
     let mut subtotal   = Decimal::ZERO;
     let mut tax_amount = Decimal::ZERO;
 
-    // Validate items against original transaction and compute totals
+    // ── Pass 1: validate items against original transaction, compute totals ──
     for item_dto in &payload.items {
         let orig_item = sqlx::query!(
-            r#"SELECT ti.quantity, ti.unit_price, ti.discount, ti.tax_amount, i.item_name, i.sku
+            r#"SELECT
+                   ti.quantity,
+                   ti.unit_price,
+                   ti.discount,
+                   ti.tax_amount,
+                   ti.line_total,
+                   i.item_name,
+                   i.sku,
+                   COALESCE(ti.measurement_type, ist.measurement_type) AS measurement_type,
+                   COALESCE(ti.unit_type,        ist.unit_type)        AS unit_type
                FROM   transaction_items ti
                JOIN   items i ON i.id = ti.item_id
+               LEFT JOIN item_settings ist ON ist.item_id = ti.item_id
                WHERE  ti.tx_id = $1 AND ti.item_id = $2"#,
             payload.original_tx_id,
             item_dto.item_id,
@@ -124,32 +159,97 @@ pub async fn create_return(
             format!("Item {} not found in original transaction", item_dto.item_id)
         ))?;
 
-        let qty_ret = to_dec(item_dto.quantity_returned);
-        if qty_ret > orig_item.quantity {
+        let qty_ret = crate::utils::qty::validate_qty_opt(
+            to_dec(item_dto.quantity_returned),
+            orig_item.measurement_type.as_deref(),
+            &orig_item.item_name,
+        )?;
+
+        // How much of this item has already been returned in prior returns
+        let already_returned: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(ri.quantity_returned), 0)
+               FROM   return_items ri
+               JOIN   returns r ON r.id = ri.return_id
+               WHERE  r.original_tx_id = $1
+                 AND  ri.item_id        = $2
+                 AND  r.status         != 'voided'"#,
+            payload.original_tx_id,
+            item_dto.item_id,
+        )
+        .fetch_one(&mut *db_tx)
+        .await?
+        .unwrap_or(Decimal::ZERO);
+
+        let remaining_qty = orig_item.quantity - already_returned;
+        if qty_ret <= Decimal::ZERO {
             return Err(AppError::Validation(format!(
-                "Cannot return {} of {}. Original quantity was {}",
-                qty_ret, orig_item.item_name, orig_item.quantity
+                "Return quantity for '{}' must be greater than zero", orig_item.item_name
+            )));
+        }
+        if qty_ret > remaining_qty {
+            return Err(AppError::Validation(format!(
+                "Cannot return {} of '{}'. Only {} unit(s) remaining after {} already returned.",
+                qty_ret, orig_item.item_name, remaining_qty, already_returned
             )));
         }
 
-        let line_tot   = (orig_item.unit_price - orig_item.discount) * qty_ret;
-        let line_tax   = if orig_item.quantity > Decimal::ZERO {
+        // Proportional line total and tax based on validated qty
+        let unit_price_inclusive = if orig_item.quantity > Decimal::ZERO {
+            orig_item.line_total / orig_item.quantity
+        } else {
+            orig_item.unit_price
+        };
+        let line_tot = unit_price_inclusive * qty_ret;
+        let line_tax = if orig_item.quantity > Decimal::ZERO {
             orig_item.tax_amount * qty_ret / orig_item.quantity
-        } else { Decimal::ZERO };
+        } else {
+            Decimal::ZERO
+        };
+        let line_subtotal = line_tot - line_tax;
 
-        subtotal   += line_tot;
+        subtotal   += line_subtotal;
         tax_amount += line_tax;
+
+        validated_items.push(ValidatedItem {
+            item_id:          item_dto.item_id,
+            item_name:        orig_item.item_name.clone(),
+            sku:              orig_item.sku.clone(),
+            qty_ret,
+            unit_price:       unit_price_inclusive,
+            line_total:       line_tot,
+            condition:        item_dto.condition.clone(),
+            restock:          item_dto.restock,
+            notes:            item_dto.notes.clone(),
+            measurement_type: orig_item.measurement_type.unwrap_or_else(|| "quantity".into()),
+            unit_type:        orig_item.unit_type,
+        });
     }
 
-    let total_amount = subtotal;
-    let return_type  = if subtotal >= orig.total_amount { "full" } else { "partial" };
+    // Include tax in the return total so it matches original total_amount semantics
+    let total_amount = subtotal + tax_amount;
+
+    // Determine if this return (combined with any prior returns) makes it a full return.
+    // Compare cumulative returned amount against the original transaction total.
+    let prior_returned: Decimal = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(total_amount), 0)
+           FROM   returns
+           WHERE  original_tx_id = $1
+             AND  status        != 'voided'"#,
+        payload.original_tx_id,
+    )
+    .fetch_one(&mut *db_tx)
+    .await?
+    .unwrap_or(Decimal::ZERO);
+
+    let cumulative_returned = prior_returned + total_amount;
+    let return_type = if cumulative_returned >= orig.total_amount { "full" } else { "partial" };
 
     let return_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO returns
                (reference_no, original_tx_id, store_id, cashier_id, customer_id,
                 return_type, subtotal, tax_amount, total_amount,
-                refund_method, refund_reference, reason, notes)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                refund_method, refund_reference, status, reason, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'completed',$12,$13)
            RETURNING id"#,
         ref_no,
         payload.original_tx_id,
@@ -168,75 +268,80 @@ pub async fn create_return(
     .fetch_one(&mut *db_tx)
     .await?;
 
-    // Insert return items and conditionally restock
-    for item_dto in &payload.items {
-        let orig_item = sqlx::query!(
-            r#"SELECT ti.unit_price, ti.discount, i.item_name, i.sku
-               FROM   transaction_items ti
-               JOIN   items i ON i.id = ti.item_id
-               WHERE  ti.tx_id = $1 AND ti.item_id = $2"#,
-            payload.original_tx_id,
-            item_dto.item_id,
-        )
-        .fetch_one(&mut *db_tx)
-        .await?;
-
-        let qty_ret  = to_dec(item_dto.quantity_returned);
-        let line_tot = (orig_item.unit_price - orig_item.discount) * qty_ret;
-
+    // ── Pass 2: insert return items + conditionally restock ───────────────────
+    // Uses the validated data cached in pass 1 — no re-fetch needed.
+    for vi in &validated_items {
         sqlx::query!(
             r#"INSERT INTO return_items
                    (return_id, item_id, item_name, sku, quantity_returned,
-                    unit_price, line_total, condition, restocked, notes)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#,
+                    unit_price, line_total, condition, restocked, notes,
+                    measurement_type, unit_type)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
             return_id,
-            item_dto.item_id,
-            orig_item.item_name,
-            orig_item.sku,
-            qty_ret,
-            orig_item.unit_price,
-            line_tot,
-            item_dto.condition,
-            item_dto.restock,
-            item_dto.notes,
+            vi.item_id,
+            vi.item_name,
+            vi.sku,
+            vi.qty_ret,
+            vi.unit_price,
+            vi.line_total,
+            vi.condition,
+            vi.restock,
+            vi.notes,
+            vi.measurement_type,
+            vi.unit_type,
         )
         .execute(&mut *db_tx)
         .await?;
 
-        // Restock only if item is in good/undamaged condition and flag is set
-        if item_dto.restock && item_dto.condition == "good" {
+        // Restock only if item is in good condition and restock flag is set
+        if vi.restock && vi.condition == "good" {
             sqlx::query!(
                 r#"UPDATE item_stock SET
                    quantity           = quantity           + $1,
                    available_quantity = available_quantity + $1,
                    updated_at         = NOW()
-                   WHERE item_id  = $2 AND store_id = $3"#,
-                qty_ret,
-                item_dto.item_id,
+                   WHERE item_id = $2 AND store_id = $3"#,
+                vi.qty_ret,
+                vi.item_id,
                 orig.store_id,
             )
             .execute(&mut *db_tx)
             .await?;
 
+            let unit_label = vi.unit_type.as_deref().unwrap_or("unit(s)");
+            let desc = format!(
+                "Return: {} — {} {} of {}",
+                ref_no, vi.qty_ret, unit_label, vi.item_name,
+            );
+
             sqlx::query!(
                 r#"INSERT INTO item_history
-                       (item_id, store_id, change_type, adjustment, reason, created_by)
-                   VALUES ($1,$2,'return',$3,$4,$5)"#,
-                item_dto.item_id,
+                       (item_id, store_id, event_type, event_description,
+                        quantity_before, quantity_after, quantity_change,
+                        performed_by, reference_type, reference_id, notes)
+                   VALUES ($1,$2,'RETURN',$3,
+                           (SELECT quantity - $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           (SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           $4,
+                           $5,'return',$6,$7)"#,
+                vi.item_id,
                 orig.store_id,
-                qty_ret,
-                format!("Return: {ref_no}"),
+                desc,
+                vi.qty_ret,
                 claims.user_id,
+                return_id.to_string(),
+                vi.notes,
             )
             .execute(&mut *db_tx)
             .await?;
         }
     }
 
-    // Update transaction status to 'refunded' or 'partial_refund'
-    let new_status = if return_type == "full" { "refunded" } else { "partial_refund" };
+    // Update transaction status — use consistent status strings that match the
+    // full_refund / void_transaction commands and the frontend status checks.
+    let new_status = if return_type == "full" { "refunded" } else { "partially_refunded" };
     sqlx::query!(
-        "UPDATE transactions SET status = $1 WHERE id = $2",
+        "UPDATE transactions SET status = $1, payment_status = $1 WHERE id = $2",
         new_status, payload.original_tx_id
     )
     .execute(&mut *db_tx)

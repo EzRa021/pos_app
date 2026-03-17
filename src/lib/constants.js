@@ -25,6 +25,8 @@ export const PAYMENT_METHODS = {
   TRANSFER:     "transfer",
   MOBILE_MONEY: "mobile_money",
   CREDIT:       "credit",
+  WALLET:       "wallet",
+  LOYALTY:      "loyalty",
   SPLIT:        "split",
 };
 
@@ -34,6 +36,8 @@ export const PAYMENT_METHOD_LABELS = {
   [PAYMENT_METHODS.TRANSFER]:     "Bank Transfer",
   [PAYMENT_METHODS.MOBILE_MONEY]: "Mobile Money",
   [PAYMENT_METHODS.CREDIT]:       "Credit",
+  [PAYMENT_METHODS.WALLET]:       "Wallet",
+  [PAYMENT_METHODS.LOYALTY]:      "Loyalty Points",
   [PAYMENT_METHODS.SPLIT]:        "Split Payment",
 };
 
@@ -153,3 +157,53 @@ export const PERMISSIONS = {
   PRICES_APPROVE:      "prices.approve",
   ANALYTICS_VIEW:      "analytics.view",
 };
+
+// ── Measurement types ──────────────────────────────────────────────────────────
+// Must match the measurement_type values stored in item_settings.measurement_type.
+// Controls how quantities are entered on POS, restocked, returned, and counted.
+export const MEASUREMENT_TYPES = {
+  QUANTITY: "quantity", // discrete pieces / packs — integer only
+  WEIGHT:   "weight",   // kg / g / lb / oz — decimal, 3 dp
+  VOLUME:   "volume",   // litre / ml / cl — decimal, 3 dp
+  LENGTH:   "length",   // m / cm / mm — decimal, 3 dp
+};
+
+/** Human-readable label for each measurement_type value */
+export const MEASUREMENT_TYPE_LABELS = {
+  [MEASUREMENT_TYPES.QUANTITY]: "Quantity",
+  [MEASUREMENT_TYPES.WEIGHT]:   "Weight",
+  [MEASUREMENT_TYPES.VOLUME]:   "Volume",
+  [MEASUREMENT_TYPES.LENGTH]:   "Length",
+};
+
+/**
+ * Canonical default units for each measurement type.
+ * Used in filters, analytics column headers, and reports.
+ */
+export const MEASUREMENT_TYPE_DEFAULT_UNITS = {
+  [MEASUREMENT_TYPES.QUANTITY]: "pcs",
+  [MEASUREMENT_TYPES.WEIGHT]:   "kg",
+  [MEASUREMENT_TYPES.VOLUME]:   "L",
+  [MEASUREMENT_TYPES.LENGTH]:   "m",
+};
+
+/**
+ * All selectable measurement type options for dropdowns/filters.
+ * Includes an "all" sentinel for "no filter applied".
+ */
+export const MEASUREMENT_TYPE_OPTIONS = [
+  { value: "all",                       label: "All Types" },
+  { value: MEASUREMENT_TYPES.QUANTITY,  label: "Quantity (pieces)" },
+  { value: MEASUREMENT_TYPES.WEIGHT,    label: "Weight (kg/g…)" },
+  { value: MEASUREMENT_TYPES.VOLUME,    label: "Volume (L/ml…)" },
+  { value: MEASUREMENT_TYPES.LENGTH,    label: "Length (m/cm…)" },
+];
+
+/** Returns true for any measurement_type that accepts fractional (decimal) quantities */
+export function isDecimalMeasurementType(measurementType) {
+  return (
+    measurementType === MEASUREMENT_TYPES.WEIGHT ||
+    measurementType === MEASUREMENT_TYPES.VOLUME ||
+    measurementType === MEASUREMENT_TYPES.LENGTH
+  );
+}

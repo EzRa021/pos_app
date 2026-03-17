@@ -33,10 +33,12 @@ pub(crate) async fn fetch_item(pool: &sqlx::PgPool, id: Uuid) -> AppResult<Item>
                   d.department_name,
                   ist.is_active, ist.sellable, ist.available_for_pos,
                   ist.track_stock,   ist.taxable, ist.min_stock_level,
-                  ist.allow_discount, ist.max_discount_percent, ist.unit_type, ist.unit_value,
+                  ist.allow_discount, ist.max_discount_percent,
+                  ist.measurement_type, ist.unit_type, ist.unit_value,
                   ist.requires_weight, ist.allow_negative_stock, ist.archived_at,
-                  ist.max_stock_level,
+                  ist.max_stock_level, ist.min_increment, ist.default_qty,
                   istock.quantity, istock.available_quantity, istock.reserved_quantity,
+                  i.image_data,
                   i.created_at, i.updated_at
            FROM   items i
            LEFT JOIN stores      s     ON s.id     = i.store_id
@@ -72,7 +74,9 @@ pub(crate) async fn search_items_inner(
                   i.selling_price, i.discount_price,
                   ist.is_active, ist.available_for_pos,
                   istock.quantity, istock.available_quantity,
-                  c.category_name
+                  c.category_name,
+                  ist.measurement_type, ist.unit_type,
+                  ist.min_increment, ist.default_qty
            FROM   items i
            LEFT JOIN item_settings ist ON ist.item_id = i.id
            LEFT JOIN item_stock istock ON istock.item_id = i.id AND istock.store_id = i.store_id
@@ -178,9 +182,11 @@ pub(crate) async fn get_items_inner(
              AND ($4::bool IS NULL OR ist.is_active   = $4)
              AND ($5::bool IS NULL OR ist.available_for_pos = $5)
              AND ($6::bool IS NULL OR (ist.track_stock = TRUE AND istock.quantity <= ist.min_stock_level::numeric))
-             AND ($7::text IS NULL OR i.item_name ILIKE $7 OR i.sku ILIKE $7 OR i.barcode ILIKE $7)"#,
+             AND ($7::text IS NULL OR i.item_name ILIKE $7 OR i.sku ILIKE $7 OR i.barcode ILIKE $7)
+             AND ($8::text IS NULL OR ist.measurement_type = $8)"#,
         filters.store_id, filters.category_id, filters.department_id,
         filters.is_active, filters.available_for_pos, filters.low_stock, search,
+        filters.measurement_type,
     )
     .fetch_one(&pool)
     .await?
@@ -194,10 +200,12 @@ pub(crate) async fn get_items_inner(
                   s.store_name AS branch_name, c.category_name, d.department_name,
                   ist.is_active, ist.sellable, ist.available_for_pos,
                   ist.track_stock, ist.taxable, ist.min_stock_level,
-                  ist.allow_discount, ist.max_discount_percent, ist.unit_type, ist.unit_value,
+                  ist.allow_discount, ist.max_discount_percent,
+                  ist.measurement_type, ist.unit_type, ist.unit_value,
                   ist.requires_weight, ist.allow_negative_stock, ist.archived_at,
-                  ist.max_stock_level,
+                  ist.max_stock_level, ist.min_increment, ist.default_qty,
                   istock.quantity, istock.available_quantity, istock.reserved_quantity,
+                  i.image_data,
                   i.created_at, i.updated_at
            FROM   items i
            LEFT JOIN stores s ON s.id = i.store_id
@@ -213,10 +221,12 @@ pub(crate) async fn get_items_inner(
              AND ($5::bool IS NULL OR ist.available_for_pos = $5)
              AND ($6::bool IS NULL OR (ist.track_stock = TRUE AND istock.quantity <= ist.min_stock_level::numeric))
              AND ($7::text IS NULL OR i.item_name ILIKE $7 OR i.sku ILIKE $7 OR i.barcode ILIKE $7)
+             AND ($8::text IS NULL OR ist.measurement_type = $8)
            ORDER BY i.item_name ASC
-           LIMIT $8 OFFSET $9"#,
+           LIMIT $9 OFFSET $10"#,
         filters.store_id, filters.category_id, filters.department_id,
-        filters.is_active, filters.available_for_pos, filters.low_stock, search, limit, offset,
+        filters.is_active, filters.available_for_pos, filters.low_stock, search,
+        filters.measurement_type, limit, offset,
     )
     .fetch_all(&pool)
     .await?;
@@ -250,10 +260,12 @@ pub(crate) async fn get_item_by_barcode_inner(
                   s.store_name AS branch_name, c.category_name, d.department_name,
                   ist.is_active, ist.sellable, ist.available_for_pos,
                   ist.track_stock, ist.taxable, ist.min_stock_level,
-                  ist.allow_discount, ist.max_discount_percent, ist.unit_type, ist.unit_value,
+                  ist.allow_discount, ist.max_discount_percent,
+                  ist.measurement_type, ist.unit_type, ist.unit_value,
                   ist.requires_weight, ist.allow_negative_stock, ist.archived_at,
-                  ist.max_stock_level,
+                  ist.max_stock_level, ist.min_increment, ist.default_qty,
                   istock.quantity, istock.available_quantity, istock.reserved_quantity,
+                  i.image_data,
                   i.created_at, i.updated_at
            FROM   items i
            LEFT JOIN stores s ON s.id = i.store_id
@@ -288,10 +300,12 @@ pub(crate) async fn get_item_by_sku_inner(
                   s.store_name AS branch_name, c.category_name, d.department_name,
                   ist.is_active, ist.sellable, ist.available_for_pos,
                   ist.track_stock, ist.taxable, ist.min_stock_level,
-                  ist.allow_discount, ist.max_discount_percent, ist.unit_type, ist.unit_value,
+                  ist.allow_discount, ist.max_discount_percent,
+                  ist.measurement_type, ist.unit_type, ist.unit_value,
                   ist.requires_weight, ist.allow_negative_stock, ist.archived_at,
-                  ist.max_stock_level,
+                  ist.max_stock_level, ist.min_increment, ist.default_qty,
                   istock.quantity, istock.available_quantity, istock.reserved_quantity,
+                  i.image_data,
                   i.created_at, i.updated_at
            FROM   items i
            LEFT JOIN stores s ON s.id = i.store_id
@@ -341,8 +355,26 @@ pub(crate) async fn adjust_stock_inner(
 ) -> AppResult<Item> {
     let claims = guard_permission(state, &token, "inventory.adjust").await?;
     let pool   = state.pool().await?;
-    let adj    = to_dec(payload.adjustment);
     let mut tx = pool.begin().await?;
+
+    // Fetch measurement_type for qty validation
+    struct ItemMeta { item_name: String, measurement_type: Option<String> }
+    let meta = sqlx::query_as!(
+        ItemMeta,
+        "SELECT i.item_name, ist.measurement_type
+         FROM items i LEFT JOIN item_settings ist ON ist.item_id = i.id
+         WHERE i.id = $1",
+        payload.item_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Item not found".into()))?;
+
+    let adj = crate::utils::qty::validate_qty_signed_opt(
+        to_dec(payload.adjustment),
+        meta.measurement_type.as_deref(),
+        &meta.item_name,
+    )?;
 
     let qty_before: Decimal = sqlx::query_scalar!(
         "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2",
@@ -387,21 +419,30 @@ pub(crate) async fn adjust_stock_inner(
 }
 
 pub(crate) async fn get_item_history_inner(
-    state: &AppState,
-    token: String,
-    item_id: Uuid,
-    page: Option<i64>,
-    limit: Option<i64>,
+    state:      &AppState,
+    token:      String,
+    item_id:    Uuid,
+    page:       Option<i64>,
+    limit:      Option<i64>,
+    date_from:  Option<String>,
+    date_to:    Option<String>,
+    event_type: Option<String>,
 ) -> AppResult<PagedResult<ItemHistory>> {
     guard_permission(state, &token, "items.read").await?;
-    let pool   = state.pool().await?;
-    let page   = page.unwrap_or(1).max(1);
-    let limit  = limit.unwrap_or(20).clamp(1, 200);
-    let offset = (page - 1) * limit;
+    let pool       = state.pool().await?;
+    let page       = page.unwrap_or(1).max(1);
+    let limit      = limit.unwrap_or(20).clamp(1, 200);
+    let offset     = (page - 1) * limit;
+    let ev         = event_type.as_deref();
 
     let total: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM item_history WHERE item_id = $1",
-        item_id
+        r#"SELECT COUNT(*)
+           FROM item_history h
+           WHERE h.item_id = $1
+             AND ($2::text IS NULL OR h.performed_at >= $2::text::timestamptz)
+             AND ($3::text IS NULL OR h.performed_at <  ($3::text::date + INTERVAL '1 day')::timestamptz)
+             AND ($4::text IS NULL OR h.event_type   =  $4)"#,
+        item_id, date_from, date_to, ev,
     )
     .fetch_one(&pool)
     .await?
@@ -415,15 +456,18 @@ pub(crate) async fn get_item_history_inner(
                   h.price_before, h.price_after,
                   h.reference_type, h.reference_id,
                   h.performed_by, h.performed_at, h.notes,
-                  u.username AS user_name,
-                  i.item_name
+                  CASE WHEN u.id IS NOT NULL THEN u.username END AS user_name,
+                  CASE WHEN i.id IS NOT NULL THEN i.item_name END AS item_name
            FROM   item_history h
            LEFT JOIN users u ON u.id = h.performed_by
            LEFT JOIN items i ON i.id = h.item_id
            WHERE  h.item_id = $1
+             AND ($2::text IS NULL OR h.performed_at >= $2::text::timestamptz)
+             AND ($3::text IS NULL OR h.performed_at <  ($3::text::date + INTERVAL '1 day')::timestamptz)
+             AND ($4::text IS NULL OR h.event_type   =  $4)
            ORDER  BY h.performed_at DESC
-           LIMIT $2 OFFSET $3"#,
-        item_id, limit, offset,
+           LIMIT $5 OFFSET $6"#,
+        item_id, date_from, date_to, ev, limit, offset,
     )
     .fetch_all(&pool)
     .await?;
@@ -492,7 +536,9 @@ pub async fn search_items(
                   i.selling_price, i.discount_price,
                   ist.is_active, ist.available_for_pos,
                   istock.quantity, istock.available_quantity,
-                  c.category_name
+                  c.category_name,
+                  ist.measurement_type, ist.unit_type,
+              ist.min_increment, ist.default_qty
            FROM   items i
            LEFT JOIN item_settings ist ON ist.item_id = i.id
            LEFT JOIN item_stock istock ON istock.item_id = i.id AND istock.store_id = i.store_id
@@ -549,6 +595,8 @@ pub async fn create_item(
     let disc     = payload.discount_price.map(to_dec);
     let max_disc = payload.max_discount_percent.map(to_dec);
     let unit_val = payload.unit_value.map(to_dec);
+    let min_inc  = payload.min_increment.map(to_dec);
+    let def_qty  = payload.default_qty.map(to_dec);
     let init_qty = Decimal::try_from(payload.initial_quantity.unwrap_or(0.0)).unwrap_or_default();
 
     let mut tx = pool.begin().await?;
@@ -557,12 +605,13 @@ pub async fn create_item(
     let item_id: Uuid = sqlx::query_scalar!(
         r#"INSERT INTO items
                (store_id, category_id, department_id, sku, barcode,
-                item_name, description, cost_price, selling_price, discount_price)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                item_name, description, cost_price, selling_price, discount_price,
+                image_data)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            RETURNING id"#,
         payload.store_id, payload.category_id, payload.department_id,
         payload.sku, payload.barcode, payload.item_name, payload.description,
-        cost, sell, disc,
+        cost, sell, disc, payload.image_data,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -574,8 +623,9 @@ pub async fn create_item(
                 is_active, sellable, available_for_pos, track_stock, taxable,
                 min_stock_level, max_stock_level,
                 allow_discount, max_discount_percent,
-                unit_type, unit_value,
-                requires_weight, allow_negative_stock)
+                measurement_type, unit_type, unit_value,
+                requires_weight, allow_negative_stock,
+                min_increment, default_qty)
            VALUES ($1, $2,
                    COALESCE($3,  TRUE),
                    COALESCE($4,  TRUE),
@@ -586,17 +636,21 @@ pub async fn create_item(
                    COALESCE($9,  1000),
                    COALESCE($10, TRUE),
                    $11,
-                   $12,
+                   COALESCE($12, 'quantity'),
                    $13,
-                   COALESCE($14, FALSE),
-                   COALESCE($15, FALSE))"#,
+                   $14,
+                   COALESCE($15, FALSE),
+                   COALESCE($16, FALSE),
+                   $17,
+                   $18)"#,
         item_id, payload.store_id,
         payload.is_active, payload.sellable, payload.available_for_pos,
         payload.track_stock, payload.taxable,
         payload.min_stock_level, payload.max_stock_level,
         payload.allow_discount, max_disc,
-        payload.unit_type, unit_val,
+        payload.measurement_type, payload.unit_type, unit_val,
         payload.requires_weight, payload.allow_negative_stock,
+        min_inc, def_qty,
     )
     .execute(&mut *tx)
     .await?;
@@ -675,6 +729,8 @@ pub async fn update_item(
     let disc     = payload.discount_price.map(to_dec);
     let max_disc = payload.max_discount_percent.map(to_dec);
     let unit_val = payload.unit_value.map(to_dec);
+    let min_inc  = payload.min_increment.map(to_dec);
+    let def_qty  = payload.default_qty.map(to_dec);
 
     // ── Update core items row ─────────────────────────────────────────────
     sqlx::query!(
@@ -688,10 +744,12 @@ pub async fn update_item(
            cost_price     = COALESCE($7,  cost_price),
            selling_price  = COALESCE($8,  selling_price),
            discount_price = COALESCE($9,  discount_price),
+           image_data     = COALESCE($10, image_data),
            updated_at     = NOW()
-           WHERE id = $10"#,
+           WHERE id = $11"#,
         payload.category_id, payload.department_id, payload.sku, payload.barcode,
-        payload.item_name, payload.description, cost, sell, disc, id,
+        payload.item_name, payload.description, cost, sell, disc,
+        payload.image_data, id,
     )
     .execute(&pool)
     .await?;
@@ -706,19 +764,23 @@ pub async fn update_item(
            taxable              = COALESCE($5,  taxable),
            allow_discount       = COALESCE($6,  allow_discount),
            max_discount_percent = COALESCE($7,  max_discount_percent),
-           unit_type            = COALESCE($8,  unit_type),
-           unit_value           = COALESCE($9,  unit_value),
-           requires_weight      = COALESCE($10, requires_weight),
-           allow_negative_stock = COALESCE($11, allow_negative_stock),
-           min_stock_level      = COALESCE($12, min_stock_level),
-           max_stock_level      = COALESCE($13, max_stock_level),
+           measurement_type     = COALESCE($8,  measurement_type),
+           unit_type            = COALESCE($9,  unit_type),
+           unit_value           = COALESCE($10, unit_value),
+           requires_weight      = COALESCE($11, requires_weight),
+           allow_negative_stock = COALESCE($12, allow_negative_stock),
+           min_stock_level      = COALESCE($13, min_stock_level),
+           max_stock_level      = COALESCE($14, max_stock_level),
+           min_increment        = COALESCE($16, min_increment),
+           default_qty          = COALESCE($17, default_qty),
            updated_at           = NOW()
-           WHERE item_id = $14"#,
+           WHERE item_id = $15"#,
         payload.is_active, payload.sellable, payload.available_for_pos,
         payload.track_stock, payload.taxable, payload.allow_discount,
-        max_disc, payload.unit_type, unit_val, payload.requires_weight,
-        payload.allow_negative_stock, payload.min_stock_level, payload.max_stock_level,
-        id,
+        max_disc, payload.measurement_type, payload.unit_type, unit_val,
+        payload.requires_weight, payload.allow_negative_stock,
+        payload.min_stock_level, payload.max_stock_level,
+        id, min_inc, def_qty,
     )
     .execute(&pool)
     .await?;
@@ -750,6 +812,7 @@ pub async fn update_item(
     if payload.description.is_some() { change_lines.push("Description updated".into()); }
     if payload.category_id.is_some()   { change_lines.push("Category changed".into());    }
     if payload.department_id.is_some() { change_lines.push("Department changed".into());  }
+    if payload.image_data.is_some() { change_lines.push("Image updated".into()); }
 
     if payload.cost_price.map(to_dec).map(|v| v != existing.cost_price).unwrap_or(false) {
         change_lines.push(format!("Cost price: {:.2} -> {:.2}", existing.cost_price, to_dec(payload.cost_price.unwrap())));
@@ -787,6 +850,12 @@ pub async fn update_item(
                     if *nv { "Yes" } else { "No" },
                 ));
             }
+        }
+    }
+    if let Some(ref v) = payload.measurement_type {
+        let old = existing.measurement_type.as_deref().unwrap_or("quantity");
+        if v != old {
+            change_lines.push(format!("Measurement type: {old} -> {v}"));
         }
     }
     if let Some(ref v) = payload.unit_type {
@@ -927,13 +996,51 @@ pub async fn adjust_stock(
 
 #[tauri::command]
 pub async fn get_item_history(
-    state:   State<'_, AppState>,
-    token:   String,
-    item_id: Uuid,
-    page:    Option<i64>,
-    limit:   Option<i64>,
+    state:      State<'_, AppState>,
+    token:      String,
+    item_id:    Uuid,
+    page:       Option<i64>,
+    limit:      Option<i64>,
+    date_from:  Option<String>,
+    date_to:    Option<String>,
+    event_type: Option<String>,
 ) -> AppResult<PagedResult<ItemHistory>> {
-    get_item_history_inner(&state, token, item_id, page, limit).await
+    get_item_history_inner(&state, token, item_id, page, limit, date_from, date_to, event_type).await
+}
+
+/// Remove an item's image (sets image_data = NULL).
+#[tauri::command]
+pub async fn remove_item_image(
+    state: State<'_, AppState>,
+    token: String,
+    id:    Uuid,
+) -> AppResult<Item> {
+    let claims = guard_permission(&state, &token, "items.update").await?;
+    let pool   = state.pool().await?;
+    sqlx::query!(
+        "UPDATE items SET image_data = NULL, updated_at = NOW() WHERE id = $1",
+        id
+    )
+    .execute(&pool)
+    .await?;
+    let item = fetch_item(&pool, id).await?;
+    sqlx::query!(
+        r#"INSERT INTO item_history (item_id, store_id, event_type, event_description, performed_by)
+           VALUES ($1, $2, 'UPDATE', 'Image removed', $3)"#,
+        id, item.store_id, claims.user_id
+    )
+    .execute(&pool)
+    .await?;
+    Ok(item)
+}
+
+pub(crate) async fn remove_item_image_inner(
+    state: &AppState,
+    token: String,
+    id:    Uuid,
+) -> AppResult<Item> {
+    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
+    remove_item_image(s, token, id).await
 }
 
 /// Count items matching optional filters.

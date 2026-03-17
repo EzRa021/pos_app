@@ -1,11 +1,11 @@
 // ============================================================================
 // features/transactions/TransactionsPanel.jsx
 // ============================================================================
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
   Receipt, Search, X, Calendar, TrendingUp,
-  CheckCircle2, Ban, RefreshCw, ArrowUpRight, User,
+  CheckCircle2, Ban, RefreshCw, ArrowUpRight, User, Filter,
 } from "lucide-react";
 
 import { useTransactions, useTransactionStats } from "./useTransactions";
@@ -15,6 +15,10 @@ import { EmptyState }    from "@/components/shared/EmptyState";
 import { StatusBadge }   from "@/components/shared/StatusBadge";
 import { Button }        from "@/components/ui/button";
 import { Input }         from "@/components/ui/input";
+import {
+  Select, SelectContent, SelectItem,
+  SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { cn }            from "@/lib/utils";
 import { formatCurrency, formatDateTime, formatRef } from "@/lib/format";
 
@@ -26,13 +30,24 @@ const STATUS_TABS = [
   { key: "refunded",  label: "Refunded"  },
 ];
 
+const PAYMENT_METHOD_OPTIONS = [
+  { value: "cash",         label: "Cash" },
+  { value: "card",         label: "Card" },
+  { value: "transfer",     label: "Bank Transfer" },
+  { value: "mobile_money", label: "Mobile Money" },
+  { value: "credit",       label: "Credit" },
+  { value: "wallet",       label: "Wallet" },
+  { value: "split",        label: "Split" },
+];
+
 const PAYMENT_METHOD_STYLES = {
   cash:         { label: "Cash",          cls: "bg-muted/60 text-muted-foreground border-border/60" },
   card:         { label: "Card",          cls: "bg-primary/10 text-primary border-primary/20" },
   transfer:     { label: "Bank Transfer", cls: "bg-primary/10 text-primary border-primary/20" },
   mobile_money: { label: "Mobile Money",  cls: "bg-success/10 text-success border-success/20" },
   credit:       { label: "Credit",        cls: "bg-warning/10 text-warning border-warning/20" },
-  split:        { label: "Split",         cls: "bg-muted/60 text-muted-foreground border-border/60" },
+  wallet:       { label: "Wallet",        cls: "bg-primary/10 text-primary border-primary/20" },
+  split:        { label: "Split",         cls: "bg-violet-500/10 text-violet-400 border-violet-500/20" },
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -133,37 +148,43 @@ export function TransactionsPanel() {
   const navigate = useNavigate();
 
   // Filters
-  const [page,     setPage]     = useState(1);
-  const [search,   setSearch]   = useState("");
-  const [status,   setStatus]   = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo,   setDateTo]   = useState("");
+  const [page,          setPage]          = useState(1);
+  const [search,        setSearch]        = useState("");
+  const [status,        setStatus]        = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("");
+  const [dateFrom,      setDateFrom]      = useState("");
+  const [dateTo,        setDateTo]        = useState("");
 
-  // Live search debounce (simple)
+  // Debounced search — ref-based timer so it never leaks onto window
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const debounceTimer = useRef(null);
   const handleSearchChange = useCallback((e) => {
-    setSearch(e.target.value);
-    clearTimeout(window.__txSearchTimer);
-    window.__txSearchTimer = setTimeout(() => {
-      setDebouncedSearch(e.target.value);
+    const val = e.target.value;
+    setSearch(val);
+    clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => {
+      setDebouncedSearch(val);
       setPage(1);
-    }, 350);
+    }, 400);
   }, []);
 
   const clearFilters = useCallback(() => {
-    setSearch(""); setDebouncedSearch(""); setDateFrom(""); setDateTo("");
-    setStatus(""); setPage(1);
+    clearTimeout(debounceTimer.current);
+    setSearch(""); setDebouncedSearch("");
+    setDateFrom(""); setDateTo("");
+    setStatus(""); setPaymentMethod(""); setPage(1);
   }, []);
 
-  const hasFilters = debouncedSearch || dateFrom || dateTo || status;
+  const hasFilters = debouncedSearch || dateFrom || dateTo || status || paymentMethod;
 
   const { transactions, total, totalPages, isLoading, isFetching } = useTransactions({
     page,
-    limit: 25,
-    search:   debouncedSearch || undefined,
-    status:   status          || undefined,
-    dateFrom: dateFrom        || undefined,
-    dateTo:   dateTo          || undefined,
+    limit:         25,
+    search:        debouncedSearch || undefined,
+    status:        status          || undefined,
+    paymentMethod: paymentMethod   || undefined,
+    dateFrom:      dateFrom        || undefined,
+    dateTo:        dateTo          || undefined,
   });
 
   const stats = useTransactionStats();
@@ -308,16 +329,33 @@ export function TransactionsPanel() {
             {/* Filter bar */}
             <div className="flex flex-col gap-3 mb-4">
               <div className="flex flex-wrap items-center gap-2">
-                {/* Search */}
-                <div className="relative flex-1 min-w-[180px] max-w-xs">
+                {/* Search — server-side, searches ref no / customer / cashier / notes */}
+                <div className="relative flex-1 min-w-[200px] max-w-sm">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                   <Input
                     value={search}
                     onChange={handleSearchChange}
-                    placeholder="Search by reference…"
+                    placeholder="Ref no, customer, cashier, notes…"
                     className="pl-8 h-8 text-xs"
                   />
                 </div>
+
+                {/* Payment method filter */}
+                <Select
+                  value={paymentMethod || "ALL"}
+                  onValueChange={(v) => { setPaymentMethod(v === "ALL" ? "" : v); setPage(1); }}
+                >
+                  <SelectTrigger className="h-8 w-40 text-xs">
+                    <Filter className="h-3 w-3 mr-1 text-muted-foreground shrink-0" />
+                    <SelectValue placeholder="All Methods" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ALL">All Methods</SelectItem>
+                    {PAYMENT_METHOD_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
                 {/* Date range */}
                 <div className="flex items-center gap-1.5">
@@ -337,7 +375,7 @@ export function TransactionsPanel() {
                   />
                 </div>
 
-                {/* Clear */}
+                {/* Clear all filters */}
                 {hasFilters && (
                   <Button variant="ghost" size="xs" onClick={clearFilters} className="h-8 gap-1">
                     <X className="h-3 w-3" />

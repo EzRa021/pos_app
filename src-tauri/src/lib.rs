@@ -152,6 +152,9 @@ pub fn run() {
             commands::users::deactivate_user,
             commands::users::reset_user_password,
             commands::users::get_roles,
+            commands::users::get_permissions,
+            commands::users::get_role_permissions,
+            commands::users::set_role_permissions,
 
             // ── Stores ────────────────────────────────────────────────────────
             commands::stores::get_stores,
@@ -206,6 +209,7 @@ pub fn run() {
             commands::items::deactivate_item,
             commands::items::adjust_stock,
             commands::items::get_item_history,
+            commands::items::remove_item_image,
             commands::items::count_items,
 
             // ── Inventory & Stock ─────────────────────────────────────────────
@@ -289,6 +293,7 @@ pub fn run() {
             commands::shifts::get_active_shift,
             commands::shifts::get_shifts,
             commands::shifts::get_shift,
+            commands::shifts::get_shift_detail_stats,
 
             // ── Cash Movements ────────────────────────────────────────────────
             commands::shifts::add_cash_movement,
@@ -401,6 +406,7 @@ pub fn run() {
             commands::eod::lock_eod_report,
             commands::eod::get_eod_report,
             commands::eod::get_eod_history,
+            commands::eod::get_eod_breakdown,
 
             // ── Store Settings ────────────────────────────────────────────────
             commands::store_settings::get_store_settings,

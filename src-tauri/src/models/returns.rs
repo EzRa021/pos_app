@@ -43,6 +43,8 @@ pub struct ReturnItem {
     pub condition:        String,   // good | damaged | defective
     pub restocked:        bool,
     pub notes:            Option<String>,
+    pub measurement_type: Option<String>,
+    pub unit_type:        Option<String>,
 }
 
 #[derive(Debug, Serialize)]

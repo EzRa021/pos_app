@@ -22,7 +22,7 @@ import {
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { cn }            from "@/lib/utils";
-import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
+import { formatCurrency, formatDate, formatDateTime, formatQuantity } from "@/lib/format";
 import { usePermission } from "@/hooks/usePermission";
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -564,7 +564,7 @@ export function PurchaseOrderDetailPanel() {
                             </div>
                           </div>
                           <div className="text-center">
-                            <span className="text-xs font-mono text-foreground">{ordered}</span>
+                            <span className="text-xs font-mono text-foreground">{formatQuantity(ordered, item.measurement_type, item.unit_type)}</span>
                           </div>
                           <div className="text-center">
                             {isReceived ? (
@@ -572,7 +572,7 @@ export function PurchaseOrderDetailPanel() {
                                 "text-xs font-mono font-semibold",
                                 isFullRx ? "text-success" : isShort ? "text-warning" : "text-muted-foreground",
                               )}>
-                                {received}
+                                {formatQuantity(received, item.measurement_type, item.unit_type)}
                                 {isShort && <span className="text-[9px] text-warning ml-0.5">▼</span>}
                               </span>
                             ) : (

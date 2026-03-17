@@ -19,7 +19,7 @@ import { EmptyState }    from "@/components/shared/EmptyState";
 import { Button }        from "@/components/ui/button";
 import { cn }            from "@/lib/utils";
 import {
-  formatCurrency, formatDateTime, formatDate, formatRef,
+  formatCurrency, formatDateTime, formatDate, formatRef, formatQuantity,
 } from "@/lib/format";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ export function ReturnDetailPanel() {
                               −{formatCurrency(parseFloat(item.line_total ?? 0))}
                             </p>
                             <p className="text-[10px] text-muted-foreground tabular-nums">
-                              {parseFloat(item.quantity_returned ?? 0)} × {formatCurrency(parseFloat(item.unit_price ?? 0))}
+                              {formatQuantity(parseFloat(item.quantity_returned ?? 0), item.measurement_type, item.unit_type)} × {formatCurrency(parseFloat(item.unit_price ?? 0))}
                             </p>
                           </div>
                         </div>

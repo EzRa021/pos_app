@@ -8,6 +8,7 @@ import {
   User, CreditCard, Package, FileText,
   Loader2, ChevronRight, Printer, Copy, Check, ArrowUpRight,
 } from "lucide-react";
+import { usePrintReceipt } from "@/hooks/usePrintReceipt";
 import { toast } from "sonner";
 
 import { useTransaction }        from "./useTransactions";
@@ -24,15 +25,24 @@ import {
 import { Input }            from "@/components/ui/input";
 import { cn }               from "@/lib/utils";
 import {
-  formatCurrency, formatDateTime, formatDate, formatRef,
+  formatCurrency, formatDateTime, formatDate, formatRef, formatQuantity, stepForType,
 } from "@/lib/format";
 import { usePermission }    from "@/hooks/usePermission";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const PAYMENT_LABELS = {
-  cash: "Cash", card: "Card", transfer: "Bank Transfer",
-  mobile_money: "Mobile Money", credit: "Credit", split: "Split Payment",
+  cash:         "Cash",
+  card:         "Card",
+  transfer:     "Bank Transfer",
+  mobile_money: "Mobile Money",
+  credit:       "Credit",
+  wallet:       "Wallet",
+  split:        "Split Payment",
 };
+
+// Payments whose method starts with "refund_" are bookkeeping entries written
+// when a refund/void is processed — they should never appear in the breakdown.
+const isRefundEntry = (p) => p.payment_method?.startsWith("refund_");
 
 function Section({ title, icon: Icon, children, className }) {
   return (
@@ -353,10 +363,7 @@ function PartialRefundModal({ open, onOpenChange, tx, txItems, onConfirm, isLoad
                         <div className="text-right shrink-0">
                           <p className="text-xs font-mono font-semibold">{formatCurrency(parseFloat(item.line_total))}</p>
                           <p className="text-[10px] text-muted-foreground">
-                            {parseFloat(item.quantity) % 1 === 0
-                              ? Math.floor(parseFloat(item.quantity))
-                              : parseFloat(item.quantity)
-                            } × {formatCurrency(parseFloat(item.unit_price))}
+                            {formatQuantity(parseFloat(item.quantity), item.measurement_type, item.unit_type)} × {formatCurrency(parseFloat(item.unit_price))}
                           </p>
                         </div>
                       </div>
@@ -366,22 +373,27 @@ function PartialRefundModal({ open, onOpenChange, tx, txItems, onConfirm, isLoad
                         <div className="mt-2.5 space-y-2">
                           <div className="flex items-center gap-2">
                             <span className="text-[11px] text-muted-foreground">Refund qty:</span>
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={() => updateItem(item.item_id, { quantity: Math.max(1, s.quantity - 1) })}
-                                disabled={s.quantity <= 1}
-                                className="h-6 w-6 rounded border border-border bg-muted/50 text-xs font-bold hover:bg-muted disabled:opacity-40"
-                              >−</button>
-                              <span className="w-8 text-center text-xs font-mono font-semibold tabular-nums">
-                                {s.quantity}
-                              </span>
-                              <button
-                                onClick={() => updateItem(item.item_id, { quantity: Math.min(maxQty, s.quantity + 1) })}
-                                disabled={s.quantity >= maxQty}
-                                className="h-6 w-6 rounded border border-border bg-muted/50 text-xs font-bold hover:bg-muted disabled:opacity-40"
-                              >+</button>
-                            </div>
-                            <span className="text-[10px] text-muted-foreground">of {maxQty}</span>
+                            {(() => {
+                              const step = stepForType(item.measurement_type, item.min_increment);
+                              return (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => updateItem(item.item_id, { quantity: Math.max(step, parseFloat((s.quantity - step).toFixed(3))) })}
+                                    disabled={s.quantity <= step}
+                                    className="h-6 w-6 rounded border border-border bg-muted/50 text-xs font-bold hover:bg-muted disabled:opacity-40"
+                                  >−</button>
+                                  <span className="w-12 text-center text-xs font-mono font-semibold tabular-nums">
+                                    {formatQuantity(s.quantity, item.measurement_type, item.unit_type)}
+                                  </span>
+                                  <button
+                                    onClick={() => updateItem(item.item_id, { quantity: Math.min(maxQty, parseFloat((s.quantity + step).toFixed(3))) })}
+                                    disabled={s.quantity >= maxQty}
+                                    className="h-6 w-6 rounded border border-border bg-muted/50 text-xs font-bold hover:bg-muted disabled:opacity-40"
+                                  >+</button>
+                                </div>
+                              );
+                            })()}
+                            <span className="text-[10px] text-muted-foreground">of {formatQuantity(maxQty, item.measurement_type, item.unit_type)}</span>
                             <span className="ml-auto text-xs font-mono font-semibold text-warning">
                               {lineRef}
                             </span>
@@ -449,11 +461,21 @@ export function TransactionDetailPanel() {
   const { id }   = useParams();
   const navigate = useNavigate();
 
-  const { transaction: tx, items, isLoading, error, voidTx, partialRefundTx, fullRefundTx } =
+  const { transaction: tx, items, payments, isLoading, error, voidTx, partialRefundTx, fullRefundTx } =
     useTransaction(id);
 
   const canVoid   = usePermission("transactions.void");
   const canRefund = usePermission("transactions.refund");
+
+  const { print, isPrinting } = usePrintReceipt();
+
+  async function handleReprint() {
+    try {
+      await print(tx?.id);
+    } catch {
+      toast.error("Print failed. Please try again.");
+    }
+  }
 
   // Modal state
   const [voidOpen,    setVoidOpen]    = useState(false);
@@ -471,10 +493,17 @@ export function TransactionDetailPanel() {
   }
 
   // Action availability
-  const isCompleted    = tx?.status === "completed";
-  const isVoidable     = isCompleted; // same-day enforced server-side
-  const isRefundable   = !["voided", "cancelled"].includes(tx?.status);
-  const isFullyRefundable = !["voided", "cancelled", "refunded"].includes(tx?.status);
+  // "refunded"           = fully refunded (via full_refund command or create_return full)
+  // "partially_refunded" = at least one partial return/refund has been processed
+  const BLOCKED_STATUSES     = ["voided", "cancelled", "refunded"];
+  const isCompleted          = tx?.status === "completed";
+  const isVoidable           = isCompleted; // same-day enforcement is server-side
+  // isRefundable: allow Partial Refund and Return Items on completed OR partially_refunded
+  const isRefundable         = !BLOCKED_STATUSES.includes(tx?.status);
+  // isFullyRefundable: only allow Full Refund on a fresh completed transaction —
+  // once any partial return/refund has been processed the amount no longer matches total
+  const isFullyRefundable    = !BLOCKED_STATUSES.includes(tx?.status)
+                             && tx?.status !== "partially_refunded";
 
   // Handlers
   async function handleVoid(payload) {
@@ -551,6 +580,20 @@ export function TransactionDetailPanel() {
             <Button variant="outline" size="xs" onClick={copyRef} className="h-8 gap-1.5">
               {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? "Copied" : "Copy Ref"}
+            </Button>
+
+            {/* Reprint */}
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={handleReprint}
+              disabled={isPrinting}
+              className="h-8 gap-1.5"
+            >
+              {isPrinting
+                ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Printing…</>
+                : <><Printer className="h-3.5 w-3.5" />Print Receipt</>
+              }
             </Button>
 
             {/* Void */}
@@ -640,7 +683,20 @@ export function TransactionDetailPanel() {
                     />
                   </div>
                   <div>
-                    <Row label="Payment"       value={PAYMENT_LABELS[tx.payment_method] ?? tx.payment_method} />
+                    <Row
+                      label="Payment"
+                      value={
+                        (() => {
+                          const sale = payments.filter((p) => !isRefundEntry(p));
+                          if (sale.length > 0) {
+                            return sale
+                              .map((p) => PAYMENT_LABELS[p.payment_method] ?? p.payment_method)
+                              .join(" + ");
+                          }
+                          return PAYMENT_LABELS[tx.payment_method] ?? tx.payment_method;
+                        })()
+                      }
+                    />
                     <Row label="Status"        value={<StatusBadge status={tx.status} />} />
                     <Row label="Pmt. Status"   value={<StatusBadge status={tx.payment_status} />} />
                     <Row label="Notes"         value={tx.notes ?? <span className="italic text-muted-foreground">—</span>} />
@@ -673,9 +729,7 @@ export function TransactionDetailPanel() {
                             </td>
                             <td className="py-2.5 pr-3 font-mono text-muted-foreground">{item.sku}</td>
                             <td className="py-2.5 pr-3 text-right font-mono tabular-nums">
-                              {parseFloat(item.quantity) % 1 === 0
-                                ? Math.floor(parseFloat(item.quantity))
-                                : parseFloat(item.quantity).toFixed(2)}
+                              {formatQuantity(parseFloat(item.quantity), item.measurement_type, item.unit_type)}
                             </td>
                             <td className="py-2.5 pr-3 text-right font-mono tabular-nums">
                               {formatCurrency(parseFloat(item.unit_price))}
@@ -711,11 +765,31 @@ export function TransactionDetailPanel() {
                   large
                   separator
                 />
-                {tendered != null && (
-                  <>
-                    <SummaryLine label="Amount Tendered" value={formatCurrency(tendered)} />
-                    <SummaryLine label="Change"          value={formatCurrency(change ?? 0)} accent="success" />
-                  </>
+                {/* Payment method breakdown — exclude refund bookkeeping rows */}
+                {(() => {
+                  const salePayments = payments.filter((p) => !isRefundEntry(p));
+                  if (salePayments.length > 0) {
+                    return salePayments.map((p) => (
+                      <SummaryLine
+                        key={p.id}
+                        label={PAYMENT_LABELS[p.payment_method] ?? p.payment_method}
+                        value={formatCurrency(parseFloat(p.amount))}
+                      />
+                    ));
+                  }
+                  // Fallback for legacy rows where no Payment record exists
+                  if (tendered != null) {
+                    return (
+                      <SummaryLine
+                        label={PAYMENT_LABELS[tx.payment_method] ?? tx.payment_method}
+                        value={formatCurrency(tendered)}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
+                {change != null && change > 0 && (
+                  <SummaryLine label="Change" value={formatCurrency(change)} accent="success" />
                 )}
               </Section>
 
@@ -769,6 +843,25 @@ export function TransactionDetailPanel() {
                   <h2 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Actions</h2>
                 </div>
                 <div className="p-4 space-y-2">
+                  {/* Reprint */}
+                  <button
+                    onClick={handleReprint}
+                    disabled={isPrinting}
+                    className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-border/40 bg-muted/10 hover:bg-muted/30 transition-colors group disabled:opacity-60"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      {isPrinting
+                        ? <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
+                        : <Printer className="h-4 w-4 text-muted-foreground" />
+                      }
+                      <div className="text-left">
+                        <p className="text-xs font-semibold text-foreground">Print Receipt</p>
+                        <p className="text-[10px] text-muted-foreground">Reprint this transaction's receipt</p>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
+                  </button>
+
                   {/* Void */}
                   {canVoid && isVoidable && (
                     <button
@@ -820,10 +913,10 @@ export function TransactionDetailPanel() {
                     </button>
                   )}
 
-                  {/* No actions available */}
-                  {!isVoidable && !isRefundable && (
-                    <p className="text-center text-[11px] text-muted-foreground py-3">
-                      No actions available for this transaction.
+                  {/* No destructive actions available */}
+                  {!isVoidable && !isRefundable && !isFullyRefundable && (
+                    <p className="text-center text-[11px] text-muted-foreground pt-1 pb-2">
+                      Transaction is finalised — no further actions.
                     </p>
                   )}
                 </div>

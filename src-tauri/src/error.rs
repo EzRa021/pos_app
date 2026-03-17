@@ -9,14 +9,14 @@ use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    // ── Database ──────────────────────────────────────────────────────────────
+    // ── Database ────────────────────────────────────────────────────────────
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
     #[error("Database not connected. Please configure the database first.")]
     NotConnected,
 
-    // ── Auth ──────────────────────────────────────────────────────────────────
+    // ── Auth ───────────────────────────────────────────────────────────────
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 

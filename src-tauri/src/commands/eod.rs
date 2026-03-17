@@ -6,7 +6,11 @@ use tauri::State;
 use rust_decimal::Decimal;
 use crate::{
     error::{AppError, AppResult},
-    models::eod_report::{EodReport, EodHistoryFilters},
+    models::eod_report::{
+        EodReport, EodHistoryFilters, EodBreakdown,
+        EodDeptSummary, EodCategorySummary, EodItemSummary,
+        EodPaymentSummary, EodHourlySummary, EodCashierSummary,
+    },
     state::AppState,
 };
 use super::auth::guard_permission;
@@ -42,10 +46,6 @@ pub async fn generate_eod_report(
                COALESCE(SUM(total_amount),    0) AS gross_sales,
                COALESCE(SUM(discount_amount), 0) AS total_discounts,
                COALESCE(SUM(tax_amount),      0) AS total_tax,
-               COALESCE(SUM(CASE WHEN payment_method='cash'     THEN total_amount ELSE 0 END), 0) AS cash_collected,
-               COALESCE(SUM(CASE WHEN payment_method='card'     THEN total_amount ELSE 0 END), 0) AS card_collected,
-               COALESCE(SUM(CASE WHEN payment_method='transfer' THEN total_amount ELSE 0 END), 0) AS transfer_collected,
-               COALESCE(SUM(CASE WHEN payment_method='credit'   THEN total_amount ELSE 0 END), 0) AS credit_issued,
                COUNT(*)::int AS transactions_count
            FROM transactions
            WHERE status='completed' AND store_id=$1 AND created_at::date=$2::text::date"#,
@@ -53,6 +53,35 @@ pub async fn generate_eod_report(
     )
     .fetch_one(&pool)
     .await?;
+
+    // Aggregate per-method totals from the payments table so split transactions
+    // are counted correctly (one row per payment leg, not per transaction).
+    let pm_rows = sqlx::query!(
+        r#"SELECT p.payment_method AS "payment_method!",
+                  COALESCE(SUM(p.amount), 0) AS "total!"
+           FROM payments p
+           JOIN transactions t ON t.id = p.transaction_id
+           WHERE t.status = 'completed' AND t.store_id = $1
+             AND t.created_at::date = $2::text::date
+           GROUP BY p.payment_method"#,
+        store_id, date_str,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    let mut cash_collected     = Decimal::ZERO;
+    let mut card_collected     = Decimal::ZERO;
+    let mut transfer_collected = Decimal::ZERO;
+    let mut credit_issued      = Decimal::ZERO;
+    for r in &pm_rows {
+        match r.payment_method.as_str() {
+            "cash"     => cash_collected     = r.total,
+            "card"     => card_collected     = r.total,
+            "transfer" => transfer_collected = r.total,
+            "credit"   => credit_issued      = r.total,
+            _          => {}
+        }
+    }
 
     let items_sold: Decimal = sqlx::query_scalar!(
         r#"SELECT COALESCE(SUM(ti.quantity), 0)
@@ -180,10 +209,10 @@ pub async fn generate_eod_report(
         store_id, date_str,
         gross_sales, total_discounts, net_sales, total_tax, cogs, gross_profit,
         total_expenses, net_profit,
-        sales.cash_collected.unwrap_or_default(),
-        sales.card_collected.unwrap_or_default(),
-        sales.transfer_collected.unwrap_or_default(),
-        sales.credit_issued.unwrap_or_default(),
+        cash_collected,
+        card_collected,
+        transfer_collected,
+        credit_issued,
         credit_collected,
         items_sold,
         sales.transactions_count.unwrap_or(0),
@@ -313,4 +342,153 @@ async fn fetch_eod(pool: &sqlx::PgPool, id: i32) -> AppResult<EodReport> {
     .fetch_optional(pool)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("EOD report {id} not found")))
+}
+
+// ── get_eod_breakdown ─────────────────────────────────────────────────────────
+// Live analytical queries for a given date — not persisted in eod_reports.
+// Returns department/category/item/payment/hourly/cashier breakdowns.
+
+#[tauri::command]
+pub async fn get_eod_breakdown(
+    state:    State<'_, AppState>,
+    token:    String,
+    store_id: i32,
+    date:     String,
+) -> AppResult<EodBreakdown> {
+    guard_permission(&state, &token, "analytics.read").await?;
+    let pool = state.pool().await?;
+
+    // ── Department breakdown ──────────────────────────────────────────────────
+    let departments = sqlx::query_as!(
+        EodDeptSummary,
+        r#"SELECT
+               COALESCE(d.department_name, 'Uncategorised') AS "department_name!",
+               COUNT(DISTINCT t.id)::int                    AS "transaction_count!",
+               COALESCE(SUM(ti.quantity), 0)                AS "qty_sold!",
+               COALESCE(SUM(ti.line_total), 0)              AS "gross_sales!",
+               COALESCE(SUM(ti.net_amount), 0)              AS "net_sales!"
+           FROM transaction_items ti
+           JOIN transactions  t ON t.id  = ti.tx_id
+           JOIN items         i ON i.id  = ti.item_id
+           LEFT JOIN departments d ON d.id = i.department_id
+           WHERE t.status = 'completed'
+             AND t.store_id = $1
+             AND t.created_at::date = $2::text::date
+           GROUP BY d.id, d.department_name
+           ORDER BY 4 DESC"#,
+        store_id, date,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    // ── Category breakdown ────────────────────────────────────────────────────
+    let categories = sqlx::query_as!(
+        EodCategorySummary,
+        r#"SELECT
+               c.category_name                              AS "category_name!",
+               d.department_name                            AS department_name,
+               COUNT(DISTINCT t.id)::int                   AS "transaction_count!",
+               COALESCE(SUM(ti.quantity), 0)               AS "qty_sold!",
+               COALESCE(SUM(ti.line_total), 0)             AS "gross_sales!",
+               COALESCE(SUM(ti.net_amount), 0)             AS "net_sales!"
+           FROM transaction_items ti
+           JOIN transactions  t ON t.id  = ti.tx_id
+           JOIN items         i ON i.id  = ti.item_id
+           JOIN categories    c ON c.id  = i.category_id
+           LEFT JOIN departments d ON d.id = c.department_id
+           WHERE t.status = 'completed'
+             AND t.store_id = $1
+             AND t.created_at::date = $2::text::date
+           GROUP BY c.id, c.category_name, d.department_name
+           ORDER BY 5 DESC"#,
+        store_id, date,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    // ── Top items (up to 30, ordered by qty sold) ─────────────────────────────
+    let top_items = sqlx::query_as!(
+        EodItemSummary,
+        r#"SELECT
+               ti.item_name                                                             AS "item_name!",
+               ti.sku                                                                   AS "sku!",
+               COALESCE(c.category_name, 'Uncategorised')                              AS "category_name!",
+               COALESCE(SUM(ti.quantity), 0)                                           AS "qty_sold!",
+               COALESCE(SUM(ti.line_total), 0)                                         AS "gross_sales!",
+               COALESCE(SUM(ti.net_amount), 0)                                         AS "net_sales!",
+               CASE WHEN SUM(ti.quantity) > 0
+                    THEN SUM(ti.line_total) / SUM(ti.quantity)
+                    ELSE 0::numeric END                                                AS "avg_price!"
+           FROM transaction_items ti
+           JOIN transactions  t ON t.id = ti.tx_id
+           LEFT JOIN items    i ON i.id = ti.item_id
+           LEFT JOIN categories c ON c.id = i.category_id
+           WHERE t.status = 'completed'
+             AND t.store_id = $1
+             AND t.created_at::date = $2::text::date
+           GROUP BY ti.item_id, ti.item_name, ti.sku, c.category_name
+           ORDER BY 4 DESC
+           LIMIT 30"#,
+        store_id, date,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    // ── Payment method breakdown ──────────────────────────────────────────────
+    let payment_methods = sqlx::query_as!(
+        EodPaymentSummary,
+        r#"SELECT
+               p.payment_method            AS "payment_method!",
+               COUNT(*)                    AS "count!",
+               COALESCE(SUM(p.amount), 0)  AS "total!"
+           FROM payments p
+           JOIN transactions t ON t.id = p.transaction_id
+           WHERE t.status = 'completed'
+             AND t.store_id = $1
+             AND t.created_at::date = $2::text::date
+           GROUP BY p.payment_method
+           ORDER BY 3 DESC"#,
+        store_id, date,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    // ── Hourly sales breakdown ────────────────────────────────────────────────
+    let hourly = sqlx::query_as!(
+        EodHourlySummary,
+        r#"SELECT
+               EXTRACT(HOUR FROM t.created_at)::int AS "hour!",
+               COUNT(*)::int                         AS "transaction_count!",
+               COALESCE(SUM(t.total_amount), 0)      AS "sales!"
+           FROM transactions t
+           WHERE t.status = 'completed'
+             AND t.store_id = $1
+             AND t.created_at::date = $2::text::date
+           GROUP BY 1
+           ORDER BY 1"#,
+        store_id, date,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    // ── Cashier performance ───────────────────────────────────────────────────
+    let cashiers = sqlx::query_as!(
+        EodCashierSummary,
+        r#"SELECT
+               u.first_name || ' ' || u.last_name  AS "cashier_name!",
+               COUNT(DISTINCT t.id)::int           AS "transaction_count!",
+               COALESCE(SUM(t.total_amount), 0)    AS "total_sales!"
+           FROM transactions t
+           JOIN users u ON u.id = t.cashier_id
+           WHERE t.status = 'completed'
+             AND t.store_id = $1
+             AND t.created_at::date = $2::text::date
+           GROUP BY u.id, u.first_name, u.last_name
+           ORDER BY 3 DESC"#,
+        store_id, date,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    Ok(EodBreakdown { departments, categories, top_items, payment_methods, hourly, cashiers })
 }

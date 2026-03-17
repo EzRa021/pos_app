@@ -13,6 +13,7 @@ import {
   getCountSessions, getCountSession,
   getVarianceReport, applyVariancesStandalone,
 } from "@/commands/inventory";
+import { invalidateStock } from "@/lib/invalidations";
 
 // ── Query key factories ────────────────────────────────────────────────────────
 export const inventoryListKey    = (f)           => ["inventory", f];
@@ -27,19 +28,20 @@ export const varianceReportKey   = (id, store)   => ["variance_report", id, stor
 // ── useInventory — paginated stock list ───────────────────────────────────────
 export function useInventory({
   page = 1, limit = 25,
-  search, categoryId, departmentId, lowStock,
+  search, categoryId, departmentId, lowStock, measurementType,
 } = {}) {
   const qc      = useQueryClient();
   const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const filters = useMemo(() => ({
-    store_id:      storeId   ?? null,
+    store_id:         storeId   ?? null,
     page, limit,
-    search:        search       || null,
-    category_id:   categoryId   ?? null,
-    department_id: departmentId ?? null,
-    low_stock:     lowStock     ?? null,
-  }), [storeId, page, limit, search, categoryId, departmentId, lowStock]);
+    search:           search           || null,
+    category_id:      categoryId       ?? null,
+    department_id:    departmentId     ?? null,
+    low_stock:        lowStock         ?? null,
+    measurement_type: measurementType  || null,
+  }), [storeId, page, limit, search, categoryId, departmentId, lowStock, measurementType]);
 
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey:        inventoryListKey(filters),
@@ -64,11 +66,8 @@ export function useInventory({
   });
 
   const invalidateAll = useCallback(() => {
-    qc.invalidateQueries({ queryKey: ["inventory"] });
-    qc.invalidateQueries({ queryKey: inventorySummaryKey(storeId) });
-    qc.invalidateQueries({ queryKey: lowStockKey(storeId) });
-    qc.invalidateQueries({ queryKey: ["items"] });
-  }, [qc, storeId]);
+    invalidateStock(storeId);
+  }, [storeId]);
 
   const restock = useMutation({
     mutationFn: ({ itemId, quantity, note }) =>
@@ -110,8 +109,7 @@ export function useInventoryItem(itemId, storeId) {
 
   const invalidate = useCallback(() => {
     qc.invalidateQueries({ queryKey: inventoryItemKey(itemId, storeId) });
-    qc.invalidateQueries({ queryKey: ["inventory"] });
-    qc.invalidateQueries({ queryKey: inventorySummaryKey(storeId) });
+    invalidateStock(storeId);
   }, [qc, itemId, storeId]);
 
   const restock = useMutation({
@@ -134,9 +132,19 @@ export function useInventoryItem(itemId, storeId) {
 }
 
 // ── useMovementHistory ────────────────────────────────────────────────────────
-export function useMovementHistory(storeId, filters = {}) {
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const allFilters = useMemo(() => ({ page: 1, limit: 50, ...filters }), [JSON.stringify(filters)]);
+export function useMovementHistory(storeId, {
+  page = 1, limit = 20,
+  itemId, eventType, dateFrom, dateTo,
+} = {}) {
+  const allFilters = useMemo(() => ({
+    page,
+    limit,
+    item_id:    itemId    || null,
+    event_type: eventType || null,
+    // start_date / end_date are DateTime<Utc> in the backend — send ISO strings
+    start_date: dateFrom  ? `${dateFrom}T00:00:00.000Z` : null,
+    end_date:   dateTo    ? `${dateTo}T23:59:59.999Z`   : null,
+  }), [page, limit, itemId, eventType, dateFrom, dateTo]);
 
   const { data, isLoading, error } = useQuery({
     queryKey:  movementKey(storeId, allFilters),
@@ -225,8 +233,7 @@ export function useCountSession(sessionId, storeId) {
       completeCountSession(sessionId, storeId, applyVariances),
     onSuccess: () => {
       invalidate();
-      qc.invalidateQueries({ queryKey: ["inventory"] });
-      qc.invalidateQueries({ queryKey: inventorySummaryKey(storeId) });
+      invalidateStock(storeId);
     },
   });
 
@@ -255,8 +262,7 @@ export function useVarianceReport(sessionId, storeId) {
     mutationFn: () => applyVariancesStandalone(sessionId, storeId),
     onSuccess:  () => {
       refetch();
-      qc.invalidateQueries({ queryKey: ["inventory"] });
-      qc.invalidateQueries({ queryKey: inventorySummaryKey(storeId) });
+      invalidateStock(storeId);
     },
   });
 

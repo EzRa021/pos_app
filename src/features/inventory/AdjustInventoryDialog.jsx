@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button }   from "@/components/ui/button";
 import { Input }    from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { formatDecimal } from "@/lib/format";
+import { formatQuantity, stepForType } from "@/lib/format";
 import { cn }       from "@/lib/utils";
 
 const REASONS = [
@@ -44,8 +44,12 @@ export function AdjustInventoryDialog({ open, onOpenChange, item, mutation }) {
     );
   }
 
-  const currentQty = parseFloat(item?.quantity ?? 0);
-  const adjVal     = parseFloat(adj);
+  const currentQty   = parseFloat(item?.quantity ?? 0);
+  const measureType  = item?.measurement_type ?? null;
+  const unitType     = item?.unit_type ?? null;
+  const minIncrement = item?.min_increment != null ? parseFloat(item.min_increment) : null;
+  const step         = stepForType(measureType, minIncrement);
+  const adjVal       = parseFloat(adj);
   const newQty     = !isNaN(adjVal) ? currentQty + adjVal : null;
   const isNeg      = !isNaN(adjVal) && adjVal < 0;
   const isPos      = !isNaN(adjVal) && adjVal > 0;
@@ -71,7 +75,9 @@ export function AdjustInventoryDialog({ open, onOpenChange, item, mutation }) {
 
           <div className="mb-4 rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 flex items-center justify-between">
             <span className="text-xs text-muted-foreground">Current Stock</span>
-            <span className="text-sm font-bold tabular-nums">{formatDecimal(currentQty)}</span>
+            <span className="text-sm font-bold tabular-nums">
+              {formatQuantity(currentQty, measureType, unitType)}
+            </span>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-3">
@@ -81,7 +87,7 @@ export function AdjustInventoryDialog({ open, onOpenChange, item, mutation }) {
                 <span className="ml-1 font-normal text-muted-foreground">(positive or negative)</span>
               </label>
               <Input
-                type="number" step="0.01"
+                type="number" step={step}
                 value={adj} onChange={(e) => setAdj(e.target.value)}
                 placeholder="-5 or +10" autoFocus required
               />
@@ -92,7 +98,7 @@ export function AdjustInventoryDialog({ open, onOpenChange, item, mutation }) {
                     "tabular-nums",
                     isNeg ? "text-rose-400" : isPos ? "text-emerald-400" : "text-foreground",
                   )}>
-                    {formatDecimal(newQty)}
+                    {formatQuantity(newQty, measureType, unitType)}
                   </strong>
                   {newQty < 0 && <span className="text-rose-400 ml-1">⚠ negative</span>}
                 </p>

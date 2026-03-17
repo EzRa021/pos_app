@@ -154,7 +154,7 @@ function EditCustomerDialog({ open, onOpenChange, customer, onUpdate }) {
         address:        form.address.trim() || undefined,
         city:           form.city.trim()    || undefined,
         customer_type:  form.customer_type || "regular",
-        credit_limit:   form.credit_limit ? parseFloat(form.credit_limit) : undefined,
+        credit_limit:   form.credit_limit !== "" ? parseFloat(form.credit_limit) : undefined,
         credit_enabled: form.credit_enabled,
       });
       toast.success("Customer updated.");
@@ -655,7 +655,7 @@ export function CustomerDetailPanel() {
               <span className="text-[11px] text-muted-foreground">Prepaid balance</span>
             }
           >
-            <WalletPanel customerId={customerId} canManage={canEdit} />
+            <WalletPanel customerId={customerId} canManage={canManage} />
             <div className="mt-4">
               <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Transaction History</p>
               <WalletHistoryTable customerId={customerId} />
@@ -668,7 +668,7 @@ export function CustomerDetailPanel() {
               <span className="text-[11px] text-muted-foreground">Points balance</span>
             }
           >
-            <LoyaltyBalanceCard customerId={customerId} canManage={canEdit} />
+            <LoyaltyBalanceCard customerId={customerId} canManage={canManage} />
             <div className="mt-4">
               <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Points History</p>
               <LoyaltyHistoryTable customerId={customerId} />

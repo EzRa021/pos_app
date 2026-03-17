@@ -4,7 +4,11 @@
       "Bash(xargs basename:*)",
       "Bash(xargs wc:*)",
       "Bash(python -c \"import bcrypt; h = bcrypt.hashpw\\(b''Admin@123'', bcrypt.gensalt\\(rounds=10\\)\\); print\\(h.decode\\(\\)\\)\")",
-      "Bash(node -e \"const bcrypt = require\\(''bcrypt''\\); bcrypt.hash\\(''Admin@123'', 10\\).then\\(h => console.log\\(h\\)\\)\")"
+      "Bash(node -e \"const bcrypt = require\\(''bcrypt''\\); bcrypt.hash\\(''Admin@123'', 10\\).then\\(h => console.log\\(h\\)\\)\")",
+      "Bash(head -20 grep -n \"SELECT.*min_increment\\\\|SELECT.*default_qty\\\\|ist.min_increment\\\\|ist.default_qty\" \"c:/Users/user/Desktop/pos-app/src-tauri/src/commands/items.rs\")",
+      "Bash(grep -r measurement_type c:/Users/user/Desktop/pos-app/src --include=*.jsx --include=*.js)",
+      "Bash(grep -r \"formatQuantity\\\\|formatPricePerUnit\\\\|stepForType\\\\|decimalsForType\" c:/Users/user/Desktop/pos-app/src --include=*.jsx --include=*.js)",
+      "Bash(pnpm add:*)"
     ]
   }
 }

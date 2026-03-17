@@ -18,6 +18,7 @@ use crate::{
         VoidTransactionDto, PartialRefundDto, FullRefundDto,
         RefundResult, FetchedItem,
     },
+    models::payment::Payment,
     models::notification::CreateNotificationDto,
     models::pagination::PagedResult,
     state::AppState,
@@ -69,10 +70,26 @@ async fn fetch_transaction_items(pool: &sqlx::PgPool, tx_id: i32) -> AppResult<V
         TransactionItem,
         r#"SELECT ti.id, ti.tx_id, ti.item_id, ti.item_name, ti.sku,
                   ti.quantity, ti.unit_price, ti.discount,
-                  ti.tax_amount, ti.line_total
+                  ti.tax_amount, ti.line_total,
+                  ti.measurement_type, ti.unit_type
            FROM   transaction_items ti
            WHERE  ti.tx_id = $1
            ORDER  BY ti.id"#,
+        tx_id
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(AppError::from)
+}
+
+async fn fetch_transaction_payments(pool: &sqlx::PgPool, tx_id: i32) -> AppResult<Vec<Payment>> {
+    sqlx::query_as!(
+        Payment,
+        r#"SELECT id, transaction_id, reference_no, payment_method, amount,
+                  currency, status, processed_by, notes, created_at
+           FROM   payments
+           WHERE  transaction_id = $1
+           ORDER  BY id"#,
         tx_id
     )
     .fetch_all(pool)
@@ -181,6 +198,9 @@ pub async fn create_transaction(
                ist.track_stock          AS "track_stock!: bool",
                ist.allow_negative_stock AS "allow_negative_stock!: bool",
                ist.taxable              AS "taxable!: bool",
+               ist.measurement_type     AS "measurement_type!: String",
+               ist.unit_type            AS "unit_type: String",
+               ist.requires_weight      AS "requires_weight: Option<bool>",
                istock.available_quantity AS "available_quantity: Decimal",
                COALESCE(tc.rate, 0)     AS "tax_rate!: Decimal"
            FROM items i
@@ -215,6 +235,9 @@ pub async fn create_transaction(
                 taxable:              r.taxable,
                 tax_rate:             r.tax_rate,
                 available_quantity:   r.available_quantity,
+                measurement_type:     r.measurement_type,
+                unit_type:            r.unit_type,
+                requires_weight:      r.requires_weight,
             };
             (fi.id, fi)
         })
@@ -222,16 +245,18 @@ pub async fn create_transaction(
 
     // ── STEP 5: Validate items and build line items ────────────────────────────
     struct LineItem {
-        item_id:     Uuid,
-        item_name:   String,
-        sku:         String,
-        quantity:    Decimal,
-        unit_price:  Decimal,
-        cost_price:  Decimal,
-        net_amount:  Decimal,
-        vat_amount:  Decimal,
-        line_total:  Decimal,
-        track_stock: bool,
+        item_id:          Uuid,
+        item_name:        String,
+        sku:              String,
+        quantity:         Decimal,
+        unit_price:       Decimal,
+        cost_price:       Decimal,
+        net_amount:       Decimal,
+        vat_amount:       Decimal,
+        line_total:       Decimal,
+        track_stock:      bool,
+        measurement_type: String,
+        unit_type:        Option<String>,
     }
 
     let mut line_items: Vec<LineItem> = Vec::new();
@@ -247,10 +272,11 @@ pub async fn create_transaction(
         if !item.sellable     { return Err(AppError::Validation(format!("Item '{}' is not sellable", item.item_name))); }
         if !item.available_for_pos { return Err(AppError::Validation(format!("Item '{}' is not available for POS", item.item_name))); }
 
-        let qty = to_dec(dto_item.quantity);
-        if qty <= Decimal::ZERO {
-            return Err(AppError::Validation(format!("Invalid quantity for item '{}'", item.item_name)));
-        }
+        let qty = crate::utils::qty::validate_qty(
+            to_dec(dto_item.quantity),
+            &item.measurement_type,
+            &item.item_name,
+        )?;
         if item.track_stock && !item.allow_negative_stock && item.available_quantity < qty {
             return Err(AppError::Validation(format!(
                 "Insufficient stock for '{}'. Available: {}, Requested: {}",
@@ -293,16 +319,18 @@ pub async fn create_transaction(
         let net_amount = net_from_inclusive(gross, vat_amount);
 
         line_items.push(LineItem {
-            item_id:     item.id,
-            item_name:   item.item_name.clone(),
-            sku:         item.sku.clone(),
-            quantity:    qty,
+            item_id:          item.id,
+            item_name:        item.item_name.clone(),
+            sku:              item.sku.clone(),
+            quantity:         qty,
             unit_price,
-            cost_price:  cost_price_for_item,
+            cost_price:       cost_price_for_item,
             net_amount,
             vat_amount,
-            line_total:  gross,
-            track_stock: item.track_stock,
+            line_total:       gross,
+            track_stock:      item.track_stock,
+            measurement_type: item.measurement_type.clone(),
+            unit_type:        item.unit_type.clone(),
         });
     }
 
@@ -354,12 +382,16 @@ pub async fn create_transaction(
             if !row.credit_enabled {
                 return Err(AppError::Validation("Credit sales are not enabled for this customer".into()));
             }
-            let available = row.credit_limit - row.outstanding_balance;
-            if total_amount > available {
-                return Err(AppError::Validation(format!(
-                    "Insufficient credit. Available: ₦{}, Required: ₦{}",
-                    available.round_dp(2), total_amount.round_dp(2)
-                )));
+            // Only enforce the credit cap when a limit > 0 is explicitly set.
+            // credit_limit = 0 means "no limit configured" (unlimited credit).
+            if row.credit_limit > Decimal::ZERO {
+                let available = row.credit_limit - row.outstanding_balance;
+                if total_amount > available {
+                    return Err(AppError::Validation(format!(
+                        "Insufficient credit. Available: ₦{}, Required: ₦{}",
+                        available.round_dp(2), total_amount.round_dp(2)
+                    )));
+                }
             }
         }
     }
@@ -423,10 +455,21 @@ pub async fn create_transaction(
         sqlx::query!(
             r#"INSERT INTO transaction_items
                    (tx_id, item_id, item_name, sku, quantity,
-                    unit_price, discount, tax_amount, line_total)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"#,
-            tx_id, line.item_id, line.item_name, line.sku, line.quantity,
-            line.unit_price, Decimal::ZERO, line.vat_amount, line.line_total,
+                    unit_price, discount, tax_amount, net_amount, line_total,
+                    measurement_type, unit_type)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
+            tx_id,
+            line.item_id,
+            line.item_name,
+            line.sku,
+            line.quantity,
+            line.unit_price,
+            Decimal::ZERO,
+            line.vat_amount,
+            line.net_amount,
+            line.line_total,
+            line.measurement_type,
+            line.unit_type,
         )
         .execute(&mut *db_tx)
         .await?;
@@ -441,10 +484,31 @@ pub async fn create_transaction(
             .execute(&mut *db_tx)
             .await?;
 
+            let unit_label = line
+                .unit_type
+                .as_deref()
+                .unwrap_or("unit(s)");
+            let desc = format!(
+                "POS Sale — {} {} of {}",
+                line.quantity, unit_label, line.item_name
+            );
             sqlx::query!(
-                r#"INSERT INTO item_history (item_id, store_id, change_type, adjustment, reason, created_by)
-                   VALUES ($1,$2,'sale',$3,'POS Sale',$4)"#,
-                line.item_id, payload.store_id, -line.quantity, claims.user_id,
+                r#"INSERT INTO item_history
+                       (item_id, store_id, event_type, event_description,
+                        quantity_before, quantity_after, quantity_change,
+                        performed_by, reference_type, reference_id, notes)
+                   VALUES ($1,$2,'SALE',$3,
+                           (SELECT quantity + $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           (SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           -$4,
+                           $5,'sale',$6,$7)"#,
+                line.item_id,
+                payload.store_id,
+                desc,
+                line.quantity,
+                claims.user_id,
+                ref_no,
+                "Automatic stock deduction from POS sale",
             )
             .execute(&mut *db_tx)
             .await?;
@@ -452,7 +516,56 @@ pub async fn create_transaction(
     }
 
     // ── STEP 12: Record payment / credit sale / wallet debit ──────────────────
-    if !is_credit && !is_wallet {
+    let is_split = payload.payment_method == "split";
+    if is_split {
+        // Insert one Payment row per split leg so the breakdown is fully visible
+        let legs = payload.split_payments.as_deref().unwrap_or(&[]);
+        if legs.is_empty() {
+            return Err(AppError::Validation(
+                "split_payments must contain at least one leg when payment_method is \"split\"".into()
+            ));
+        }
+        for leg in legs {
+            let leg_amt = to_dec(leg.amount);
+            sqlx::query!(
+                r#"INSERT INTO payments (transaction_id, payment_method, amount, status, processed_by)
+                   VALUES ($1, $2, $3, 'completed', $4)"#,
+                tx_id, leg.method, leg_amt, claims.user_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+        }
+        // If there is also a wallet leg, debit the customer wallet
+        if let Some(wallet_amt_f64) = payload.wallet_amount {
+            let wallet_dec = to_dec(wallet_amt_f64);
+            if wallet_dec > Decimal::ZERO {
+                if let Some(customer_id) = payload.customer_id {
+                    let current_balance: Option<Decimal> = sqlx::query_scalar!(
+                        "SELECT wallet_balance FROM customers WHERE id = $1 FOR UPDATE", customer_id,
+                    )
+                    .fetch_optional(&mut *db_tx)
+                    .await?;
+                    let new_balance = (current_balance.unwrap_or_default() - wallet_dec).max(Decimal::ZERO);
+                    sqlx::query!(
+                        "UPDATE customers SET wallet_balance = $1, updated_at = NOW() WHERE id = $2",
+                        new_balance, customer_id,
+                    )
+                    .execute(&mut *db_tx)
+                    .await?;
+                    sqlx::query!(
+                        r#"INSERT INTO customer_wallet_transactions
+                               (customer_id, store_id, type, amount, balance_after,
+                                transaction_id, recorded_by, notes)
+                           VALUES ($1,$2,'debit',$3,$4,$5,$6,'POS split wallet payment')"#,
+                        customer_id, payload.store_id, wallet_dec, new_balance,
+                        tx_id, claims.user_id,
+                    )
+                    .execute(&mut *db_tx)
+                    .await?;
+                }
+            }
+        }
+    } else if !is_credit && !is_wallet {
         sqlx::query!(
             r#"INSERT INTO payments (transaction_id, payment_method, amount, status, processed_by)
                VALUES ($1,$2,$3,'completed',$4)"#,
@@ -524,11 +637,33 @@ pub async fn create_transaction(
     }
 
     // ── STEP 14: Link sale to active shift ────────────────────────────────────
-    let zero       = Decimal::ZERO;
-    let cash_inc   = if payload.payment_method == "cash"         { total_amount } else { zero };
-    let card_inc   = if payload.payment_method == "card"         { total_amount } else { zero };
-    let xfer_inc   = if payload.payment_method == "transfer"     { total_amount } else { zero };
-    let mobile_inc = if payload.payment_method == "mobile_money" { total_amount } else { zero };
+    let zero = Decimal::ZERO;
+    // For split payments, accumulate each method's contribution from the individual legs
+    let (cash_inc, card_inc, xfer_inc, mobile_inc) = if is_split {
+        let legs = payload.split_payments.as_deref().unwrap_or(&[]);
+        let mut cash   = zero;
+        let mut card   = zero;
+        let mut xfer   = zero;
+        let mut mobile = zero;
+        for leg in legs {
+            let a = to_dec(leg.amount);
+            match leg.method.as_str() {
+                "cash"         => cash   += a,
+                "card"         => card   += a,
+                "transfer"     => xfer   += a,
+                "mobile_money" => mobile += a,
+                _ => {}
+            }
+        }
+        (cash, card, xfer, mobile)
+    } else {
+        (
+            if payload.payment_method == "cash"         { total_amount } else { zero },
+            if payload.payment_method == "card"         { total_amount } else { zero },
+            if payload.payment_method == "transfer"     { total_amount } else { zero },
+            if payload.payment_method == "mobile_money" { total_amount } else { zero },
+        )
+    };
 
     sqlx::query!(
         r#"UPDATE shifts SET
@@ -621,7 +756,8 @@ pub async fn create_transaction(
 
     let transaction = fetch_transaction(&pool, tx_id).await?;
     let items       = fetch_transaction_items(&pool, tx_id).await?;
-    Ok(TransactionDetail { transaction, items })
+    let payments    = fetch_transaction_payments(&pool, tx_id).await?;
+    Ok(TransactionDetail { transaction, items, payments })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -635,29 +771,56 @@ pub async fn get_transactions(
     guard_permission(&state, &token, "transactions.read").await?;
     let pool   = state.pool().await?;
     let page   = filters.page.unwrap_or(1).max(1);
-    let limit  = filters.limit.unwrap_or(20).clamp(1, 200);
+    let limit  = filters.limit.unwrap_or(25).clamp(1, 200);
     let offset = (page - 1) * limit;
-    let search = filters.search.as_ref().map(|s| format!("%{s}%"));
-    let df     = filters.date_from.as_deref();
-    let dt     = filters.date_to.as_deref();
 
+    // Build the search pattern once — wraps the term in % for ILIKE
+    let search = filters.search
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
+
+    // date_from: inclusive start   (cast to timestamptz, defaults to start of day)
+    // date_to:   inclusive end day (add 1 day so the entire last day is included)
+    let df = filters.date_from.as_deref();
+    let dt = filters.date_to.as_deref();
+
+    // ── COUNT (same WHERE conditions, no ORDER/LIMIT) ──────────────────────────
+    // LEFT JOINs are required here too because the search touches joined columns.
     let total: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*)
            FROM   transactions t
-           WHERE ($1::int  IS NULL OR t.store_id    = $1)
-             AND ($2::int  IS NULL OR t.cashier_id  = $2)
-             AND ($3::int  IS NULL OR t.customer_id = $3)
-             AND ($4::text IS NULL OR t.status      = $4)
-             AND ($5::text IS NULL OR t.created_at >= $5::text::timestamptz)
-             AND ($6::text IS NULL OR t.created_at <= $6::text::timestamptz)
-             AND ($7::text IS NULL OR t.reference_no ILIKE $7)"#,
-        filters.store_id, filters.cashier_id, filters.customer_id,
-        filters.status, df, dt, search,
+           LEFT JOIN users     u ON u.id = t.cashier_id
+           LEFT JOIN customers c ON c.id = t.customer_id
+           WHERE  ($1::int  IS NULL OR t.store_id    = $1)
+             AND  ($2::int  IS NULL OR t.cashier_id  = $2)
+             AND  ($3::int  IS NULL OR t.customer_id = $3)
+             AND  ($4::text IS NULL OR t.status      = $4)
+             AND  ($5::text IS NULL OR t.payment_method = $5)
+             AND  ($6::text IS NULL OR t.created_at >= $6::text::date::timestamptz)
+             AND  ($7::text IS NULL OR t.created_at <  ($7::text::date + INTERVAL '1 day')::timestamptz)
+             AND  ($8::text IS NULL OR (
+                    t.reference_no                         ILIKE $8
+                 OR CONCAT(c.first_name,' ',c.last_name)   ILIKE $8
+                 OR CONCAT(u.first_name,' ',u.last_name)   ILIKE $8
+                 OR t.notes                                ILIKE $8
+                 OR t.payment_method                       ILIKE $8
+             ))"#,
+        filters.store_id,
+        filters.cashier_id,
+        filters.customer_id,
+        filters.status,
+        filters.payment_method.as_deref(),
+        df,
+        dt,
+        search.as_deref(),
     )
     .fetch_one(&pool)
     .await?
     .unwrap_or(0);
 
+    // ── DATA (same WHERE, with ORDER BY + LIMIT/OFFSET) ────────────────────────
     let txns = sqlx::query_as!(
         Transaction,
         r#"SELECT t.id, t.reference_no, t.store_id, t.cashier_id,
@@ -671,17 +834,32 @@ pub async fn get_transactions(
            FROM   transactions t
            LEFT JOIN users     u ON u.id = t.cashier_id
            LEFT JOIN customers c ON c.id = t.customer_id
-           WHERE ($1::int  IS NULL OR t.store_id    = $1)
-             AND ($2::int  IS NULL OR t.cashier_id  = $2)
-             AND ($3::int  IS NULL OR t.customer_id = $3)
-             AND ($4::text IS NULL OR t.status      = $4)
-             AND ($5::text IS NULL OR t.created_at >= $5::text::timestamptz)
-             AND ($6::text IS NULL OR t.created_at <= $6::text::timestamptz)
-             AND ($7::text IS NULL OR t.reference_no ILIKE $7)
-           ORDER  BY t.created_at DESC
-           LIMIT $8 OFFSET $9"#,
-        filters.store_id, filters.cashier_id, filters.customer_id,
-        filters.status, df, dt, search, limit, offset,
+           WHERE  ($1::int  IS NULL OR t.store_id    = $1)
+             AND  ($2::int  IS NULL OR t.cashier_id  = $2)
+             AND  ($3::int  IS NULL OR t.customer_id = $3)
+             AND  ($4::text IS NULL OR t.status      = $4)
+             AND  ($5::text IS NULL OR t.payment_method = $5)
+             AND  ($6::text IS NULL OR t.created_at >= $6::text::date::timestamptz)
+             AND  ($7::text IS NULL OR t.created_at <  ($7::text::date + INTERVAL '1 day')::timestamptz)
+             AND  ($8::text IS NULL OR (
+                    t.reference_no                         ILIKE $8
+                 OR CONCAT(c.first_name,' ',c.last_name)   ILIKE $8
+                 OR CONCAT(u.first_name,' ',u.last_name)   ILIKE $8
+                 OR t.notes                                ILIKE $8
+                 OR t.payment_method                       ILIKE $8
+             ))
+           ORDER  BY t.created_at DESC, t.id DESC
+           LIMIT  $9 OFFSET $10"#,
+        filters.store_id,
+        filters.cashier_id,
+        filters.customer_id,
+        filters.status,
+        filters.payment_method.as_deref(),
+        df,
+        dt,
+        search.as_deref(),
+        limit,
+        offset,
     )
     .fetch_all(&pool)
     .await?;
@@ -701,7 +879,8 @@ pub async fn get_transaction(
     let pool = state.pool().await?;
     let transaction = fetch_transaction(&pool, id).await?;
     let items       = fetch_transaction_items(&pool, id).await?;
-    Ok(TransactionDetail { transaction, items })
+    let payments    = fetch_transaction_payments(&pool, id).await?;
+    Ok(TransactionDetail { transaction, items, payments })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

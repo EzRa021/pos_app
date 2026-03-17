@@ -3,7 +3,7 @@
 // ============================================================================
 import { useState }    from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Timer, Loader2, Banknote, Hash } from "lucide-react";
+import { Timer, Loader2, Banknote, AlertTriangle } from "lucide-react";
 
 import {
   Dialog, DialogContent,
@@ -16,6 +16,7 @@ import { useShiftStore }  from "@/stores/shift.store";
 import { useBranchStore } from "@/stores/branch.store";
 import { queryClient }    from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/format";
+import { cn }             from "@/lib/utils";
 
 export function OpenShiftModal({ open, onOpenChange }) {
   const [balance, setBalance] = useState("");
@@ -42,10 +43,22 @@ export function OpenShiftModal({ open, onOpenChange }) {
     },
   });
 
+  const [zeroConfirmed, setZeroConfirmed] = useState(false);
+
   const parsedBalance = parseFloat(balance) || 0;
+  const isZero        = parsedBalance === 0;
+  // Can submit if: amount > 0, OR amount is 0 and cashier confirmed it
+  const canSubmit     = !isZero || zeroConfirmed;
+
+  // Reset zero-confirmation whenever the amount changes
+  function handleBalanceChange(e) {
+    setBalance(e.target.value);
+    setZeroConfirmed(false);
+  }
 
   function handleSubmit(e) {
     e.preventDefault();
+    if (!canSubmit) return;
     mutation.mutate();
   }
 
@@ -74,7 +87,8 @@ export function OpenShiftModal({ open, onOpenChange }) {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-foreground mb-1.5">
-                Opening Balance
+                Opening Float
+                <span className="ml-1 text-destructive">*</span>
               </label>
               <div className="relative">
                 <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-muted-foreground">
@@ -86,19 +100,19 @@ export function OpenShiftModal({ open, onOpenChange }) {
                   step="0.01"
                   placeholder="0.00"
                   value={balance}
-                  onChange={(e) => setBalance(e.target.value)}
+                  onChange={handleBalanceChange}
                   className="pl-7 tabular-nums font-mono"
                   autoFocus
                 />
               </div>
               {parsedBalance > 0 && (
-                <p className="mt-1 text-[11px] font-semibold text-success">
+                <p className="mt-1.5 text-[11px] font-semibold text-success">
                   Opening float: {formatCurrency(parsedBalance)}
                 </p>
               )}
-              {parsedBalance === 0 && (
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Cash in the drawer before sales begin.
+              {isZero && (
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  Enter the cash in the drawer, or leave at ₦0 for card/transfer-only shifts.
                 </p>
               )}
             </div>
@@ -114,6 +128,46 @@ export function OpenShiftModal({ open, onOpenChange }) {
                 onChange={(e) => setNotes(e.target.value)}
               />
             </div>
+
+            {/* Zero-float confirmation — shown only when amount is ₦0 */}
+            {isZero && (
+              <button
+                type="button"
+                onClick={() => setZeroConfirmed((v) => !v)}
+                className={cn(
+                  "w-full flex items-start gap-3 rounded-lg border px-3 py-3 text-left transition-colors cursor-pointer",
+                  zeroConfirmed
+                    ? "border-warning/40 bg-warning/8"
+                    : "border-border bg-muted/30 hover:bg-muted/50",
+                )}
+              >
+                {/* Custom checkbox */}
+                <div className={cn(
+                  "mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
+                  zeroConfirmed
+                    ? "border-warning bg-warning/20"
+                    : "border-border bg-background",
+                )}>
+                  {zeroConfirmed && (
+                    <svg className="h-2.5 w-2.5 text-warning" viewBox="0 0 10 10" fill="none">
+                      <path d="M1.5 5L4 7.5L8.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <AlertTriangle className="h-3 w-3 text-warning shrink-0" />
+                    <span className="text-[11px] font-bold text-warning">
+                      Opening with no float
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    No cash in the drawer. This is fine for card/transfer-only shifts.
+                    Confirm to proceed.
+                  </p>
+                </div>
+              </button>
+            )}
 
             {mutation.error && (
               <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -134,7 +188,7 @@ export function OpenShiftModal({ open, onOpenChange }) {
               <Button
                 type="submit"
                 variant="success"
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || !canSubmit}
                 className="flex-1"
               >
                 {mutation.isPending ? (

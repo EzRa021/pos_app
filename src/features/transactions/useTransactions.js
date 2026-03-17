@@ -11,6 +11,7 @@ import {
   partialRefund,
   fullRefund,
 } from "@/commands/transactions";
+import { invalidateAfterVoid } from "@/lib/invalidations";
 
 export const txListKey  = (filters) => ["transactions", "list",   filters];
 export const txKey      = (id)      => ["transactions", "detail", id];
@@ -18,23 +19,24 @@ export const txStatsKey = (storeId) => ["transactions", "stats",  storeId];
 
 // ── useTransactions ───────────────────────────────────────────────────────────
 export function useTransactions({
-  page = 1, limit = 25, search, status,
+  page = 1, limit = 25, search, status, paymentMethod,
   cashierId, customerId, dateFrom, dateTo,
 } = {}) {
   const qc      = useQueryClient();
   const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const filters = useMemo(() => ({
-    store_id:    storeId    ?? null,
+    store_id:       storeId       ?? null,
     page,
     limit,
-    search:      search     || null,
-    status:      status     || null,
-    cashier_id:  cashierId  ?? null,
-    customer_id: customerId ?? null,
-    date_from:   dateFrom   || null,
-    date_to:     dateTo     || null,
-  }), [storeId, page, limit, search, status, cashierId, customerId, dateFrom, dateTo]);
+    search:         search        || null,
+    status:         status        || null,
+    payment_method: paymentMethod || null,
+    cashier_id:     cashierId     ?? null,
+    customer_id:    customerId    ?? null,
+    date_from:      dateFrom      || null,
+    date_to:        dateTo        || null,
+  }), [storeId, page, limit, search, status, paymentMethod, cashierId, customerId, dateFrom, dateTo]);
 
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey:        txListKey(filters),
@@ -62,16 +64,33 @@ export function useTransactions({
 }
 
 // ── useTransactionStats ───────────────────────────────────────────────────────
+// Uses four focused COUNT queries (limit:1 each) instead of fetching rows.
+// Today's revenue is fetched separately with a small daily window query.
 export function useTransactionStats() {
   const storeId = useBranchStore((s) => s.activeStore?.id);
   const base    = { store_id: storeId, page: 1, limit: 1 };
   const today   = new Date().toISOString().split("T")[0];
 
-  const { data: all }       = useQuery({ queryKey: [...txStatsKey(storeId), "all"],       queryFn: () => getTransactions({ ...base }),                              enabled: !!storeId, staleTime: 60000 });
-  const { data: completed } = useQuery({ queryKey: [...txStatsKey(storeId), "completed"], queryFn: () => getTransactions({ ...base, status: "completed" }),          enabled: !!storeId, staleTime: 60000 });
-  const { data: voided }    = useQuery({ queryKey: [...txStatsKey(storeId), "voided"],    queryFn: () => getTransactions({ ...base, status: "voided" }),              enabled: !!storeId, staleTime: 60000 });
-  const { data: refunded }  = useQuery({ queryKey: [...txStatsKey(storeId), "refunded"],  queryFn: () => getTransactions({ ...base, status: "refunded" }),            enabled: !!storeId, staleTime: 60000 });
-  const { data: todayData } = useQuery({ queryKey: [...txStatsKey(storeId), "today"],     queryFn: () => getTransactions({ ...base, limit: 200, date_from: today, status: "completed" }), enabled: !!storeId, staleTime: 60000 });
+  // Four cheap COUNT-only queries (returns total:N, data:[] each)
+  const { data: all }       = useQuery({ queryKey: [...txStatsKey(storeId), "all"],       queryFn: () => getTransactions({ ...base }),                     enabled: !!storeId, staleTime: 60000 });
+  const { data: completed } = useQuery({ queryKey: [...txStatsKey(storeId), "completed"], queryFn: () => getTransactions({ ...base, status: "completed" }), enabled: !!storeId, staleTime: 60000 });
+  const { data: voided }    = useQuery({ queryKey: [...txStatsKey(storeId), "voided"],    queryFn: () => getTransactions({ ...base, status: "voided" }),    enabled: !!storeId, staleTime: 60000 });
+  const { data: refunded }  = useQuery({ queryKey: [...txStatsKey(storeId), "refunded"],  queryFn: () => getTransactions({ ...base, status: "refunded" }),  enabled: !!storeId, staleTime: 60000 });
+
+  // Today's revenue: fetch only today's completed rows (bounded window, small set)
+  const { data: todayData } = useQuery({
+    queryKey: [...txStatsKey(storeId), "today", today],
+    queryFn:  () => getTransactions({
+      store_id:  storeId,
+      status:    "completed",
+      date_from: today,
+      date_to:   today,
+      page:      1,
+      limit:     500,   // cap: at most 500 completed sales per day before pagination kicks in
+    }),
+    enabled:   !!storeId,
+    staleTime: 60000,
+  });
 
   const todayRevenue = useMemo(() => {
     const rows = todayData?.data ?? [];
@@ -90,7 +109,8 @@ export function useTransactionStats() {
 
 // ── useTransaction — single detail + mutations ────────────────────────────────
 export function useTransaction(id) {
-  const qc = useQueryClient();
+  const qc      = useQueryClient();
+  const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey:  txKey(id),
@@ -99,29 +119,31 @@ export function useTransaction(id) {
     staleTime: 30 * 1000,
   });
 
-  const invalidate = useCallback(() => {
+  // After void or refund: transaction status changes AND stock is restocked
+  const invalidateVoid = useCallback(() => {
     qc.invalidateQueries({ queryKey: txKey(id) });
-    qc.invalidateQueries({ queryKey: ["transactions"] });
-  }, [qc, id]);
+    invalidateAfterVoid(storeId);
+  }, [qc, id, storeId]);
 
   const voidTx = useMutation({
     mutationFn: (payload) => voidTransaction(parseInt(id, 10), payload),
-    onSuccess:  invalidate,
+    onSuccess:  invalidateVoid,
   });
 
   const partialRefundTx = useMutation({
     mutationFn: (payload) => partialRefund(parseInt(id, 10), payload),
-    onSuccess:  invalidate,
+    onSuccess:  invalidateVoid,
   });
 
   const fullRefundTx = useMutation({
     mutationFn: (payload) => fullRefund(parseInt(id, 10), payload),
-    onSuccess:  invalidate,
+    onSuccess:  invalidateVoid,
   });
 
   return {
     transaction:    data?.transaction ?? null,
-    items:          useMemo(() => data?.items ?? [], [data]),
+    items:          useMemo(() => data?.items     ?? [], [data]),
+    payments:       useMemo(() => data?.payments  ?? [], [data]),
     isLoading,
     error:          error ?? null,
     refetch,

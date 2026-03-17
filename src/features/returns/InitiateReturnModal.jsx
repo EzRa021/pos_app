@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/select";
 
 import { useCreateReturn } from "@/features/returns/useReturns";
-import { formatCurrency, formatRef } from "@/lib/format";
+import { formatCurrency, formatRef, stepForType } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -97,11 +97,16 @@ function ConditionChip({ value, selected, onClick }) {
 
 // ── ItemRow ────────────────────────────────────────────────────────────────────
 function ItemRow({ item, state, onChange }) {
-  const maxQty = Math.floor(parseFloat(item.quantity ?? 1));
+  const soldQty = parseFloat(item.quantity ?? 1);
+  const maxQty  = soldQty;
   const unitPrice =
     parseFloat(item.line_total ?? 0) /
-    Math.max(parseFloat(item.quantity ?? 1), 1);
+    Math.max(soldQty, 1);
   const lineTotal = state.enabled ? unitPrice * state.quantity : 0;
+  const isWeighted = !!item.measurement_type && item.measurement_type !== "quantity";
+  const unitLabel  = item.unit_type ?? "unit(s)";
+  const minIncrement = item.min_increment != null ? parseFloat(item.min_increment) : null;
+  const step       = stepForType(item.measurement_type, minIncrement);
 
   return (
     <div
@@ -144,7 +149,7 @@ function ItemRow({ item, state, onChange }) {
                 {formatCurrency(parseFloat(item.line_total ?? 0))}
               </p>
               <p className="text-[10px] text-muted-foreground">
-                {maxQty} × {formatCurrency(unitPrice)}
+                {maxQty} {unitLabel} × {formatCurrency(unitPrice)}
               </p>
             </div>
           </div>
@@ -161,9 +166,9 @@ function ItemRow({ item, state, onChange }) {
                   <button
                     type="button"
                     onClick={() =>
-                      onChange({ quantity: Math.max(1, state.quantity - 1) })
+                      onChange({ quantity: Math.max(step, state.quantity - step) })
                     }
-                    disabled={state.quantity <= 1}
+                    disabled={state.quantity <= step}
                     className="h-7 w-7 rounded-lg border border-border bg-muted/50 text-sm font-bold hover:bg-muted disabled:opacity-40 transition-colors"
                   >
                     −
@@ -175,7 +180,7 @@ function ItemRow({ item, state, onChange }) {
                     type="button"
                     onClick={() =>
                       onChange({
-                        quantity: Math.min(maxQty, state.quantity + 1),
+                        quantity: Math.min(maxQty, state.quantity + step),
                       })
                     }
                     disabled={state.quantity >= maxQty}
@@ -275,7 +280,9 @@ export function InitiateReturnModal({
     if (!open) return;
     const init = {};
     txItems.forEach((item) => {
-      const maxQty = Math.floor(parseFloat(item.quantity ?? 1));
+      const rawQty = parseFloat(item.quantity ?? 1);
+      const isWeighted = item.measurement_type && item.measurement_type !== "quantity";
+      const maxQty = isWeighted ? rawQty : Math.floor(rawQty);
       init[item.item_id] = {
         enabled: false,
         quantity: maxQty,

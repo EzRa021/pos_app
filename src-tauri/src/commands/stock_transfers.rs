@@ -52,10 +52,25 @@ pub async fn create_transfer(
     .await?;
 
     for item in &payload.items {
-        let qty = Decimal::try_from(item.qty_requested).unwrap_or_default();
+        let raw_qty = Decimal::try_from(item.qty_requested).unwrap_or_default();
+        struct ItemMeta { item_name: String, measurement_type: Option<String> }
+        let meta = sqlx::query_as!(
+            ItemMeta,
+            "SELECT i.item_name, ist.measurement_type FROM items i LEFT JOIN item_settings ist ON ist.item_id = i.id WHERE i.id = $1",
+            item.item_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Item {} not found", item.item_id)))?;
+        let qty = crate::utils::qty::validate_qty_opt(raw_qty, meta.measurement_type.as_deref(), &meta.item_name)?;
         sqlx::query!(
-            "INSERT INTO stock_transfer_items (transfer_id, item_id, qty_requested) VALUES ($1,$2,$3)",
-            id, item.item_id, qty,
+            r#"INSERT INTO stock_transfer_items (transfer_id, item_id, qty_requested, unit_type)
+               SELECT $1, $2, $3, ist.unit_type
+               FROM   item_settings ist
+               WHERE  ist.item_id = $2"#,
+            id,
+            item.item_id,
+            qty,
         )
         .execute(&mut *tx)
         .await?;
@@ -92,7 +107,19 @@ pub async fn send_transfer(
     }
 
     for item in &payload.items {
-        let qty_sent = Decimal::try_from(item.qty_sent).unwrap_or_default();
+        let raw_qty_sent = Decimal::try_from(item.qty_sent).unwrap_or_default();
+        // Validate qty according to item's measurement_type
+        struct SendMeta { item_name: String, measurement_type: Option<String> }
+        let send_meta = sqlx::query_as!(
+            SendMeta,
+            "SELECT i.item_name, ist.measurement_type FROM items i LEFT JOIN item_settings ist ON ist.item_id = i.id WHERE i.id = $1",
+            item.item_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Item {} not found", item.item_id)))?;
+        let qty_sent = crate::utils::qty::validate_qty_opt(raw_qty_sent, send_meta.measurement_type.as_deref(), &send_meta.item_name)?;
+
         let qty_before: Decimal = sqlx::query_scalar!(
             "SELECT available_quantity FROM item_stock WHERE item_id=$1 AND store_id=$2",
             item.item_id, transfer.from_store_id,
@@ -100,6 +127,14 @@ pub async fn send_transfer(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Stock not found for item {}", item.item_id)))?;
+
+        let unit_type: Option<String> = sqlx::query_scalar!(
+            "SELECT unit_type FROM stock_transfer_items WHERE transfer_id=$1 AND item_id=$2",
+            id, item.item_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
 
         let qty_after = qty_before - qty_sent;
         sqlx::query!(
@@ -110,14 +145,21 @@ pub async fn send_transfer(
         .execute(&mut *tx)
         .await?;
 
+        let unit_label = unit_type.as_deref().unwrap_or("unit(s)");
+        let desc = format!(
+            "Stock transferred to another branch — {} {}",
+            qty_sent, unit_label
+        );
+
         sqlx::query!(
             r#"INSERT INTO item_history
                    (item_id, store_id, event_type, event_description,
                     quantity_before, quantity_after, quantity_change,
                     performed_by, reference_type, reference_id)
-               VALUES ($1,$2,'TRANSFER_OUT','Stock transferred to another branch',
-                       $3,$4,$5,$6,'stock_transfer',$7)"#,
+               VALUES ($1,$2,'TRANSFER_OUT',$3,
+                       $4,$5,$6,$7,'stock_transfer',$8)"#,
             item.item_id, transfer.from_store_id,
+            desc,
             qty_before, qty_after, -qty_sent, claims.user_id, id.to_string(),
         )
         .execute(&mut *tx)
@@ -169,7 +211,25 @@ pub async fn receive_transfer(
     }
 
     for item in &payload.items {
-        let qty_received = Decimal::try_from(item.qty_received).unwrap_or_default();
+        let raw_qty_received = Decimal::try_from(item.qty_received).unwrap_or_default();
+        struct RecvMeta { item_name: String, measurement_type: Option<String> }
+        let recv_meta = sqlx::query_as!(
+            RecvMeta,
+            "SELECT i.item_name, ist.measurement_type FROM items i LEFT JOIN item_settings ist ON ist.item_id = i.id WHERE i.id = $1",
+            item.item_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Item {} not found", item.item_id)))?;
+        let qty_received = crate::utils::qty::validate_qty_opt(raw_qty_received, recv_meta.measurement_type.as_deref(), &recv_meta.item_name)?;
+
+        let unit_type: Option<String> = sqlx::query_scalar!(
+            "SELECT unit_type FROM stock_transfer_items WHERE transfer_id=$1 AND item_id=$2",
+            id, item.item_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
         sqlx::query!(
             r#"INSERT INTO item_stock (item_id, store_id, quantity, available_quantity, updated_at)
                VALUES ($1,$2,$3,$3,NOW())
@@ -189,14 +249,21 @@ pub async fn receive_transfer(
         .fetch_one(&mut *tx)
         .await?;
 
+        let unit_label = unit_type.as_deref().unwrap_or("unit(s)");
+        let desc = format!(
+            "Stock received from another branch — {} {}",
+            qty_received, unit_label
+        );
+
         sqlx::query!(
             r#"INSERT INTO item_history
                    (item_id, store_id, event_type, event_description,
                     quantity_before, quantity_after, quantity_change,
                     performed_by, reference_type, reference_id)
-               VALUES ($1,$2,'TRANSFER_IN','Stock received from another branch',
-                       $3,$4,$5,$6,'stock_transfer',$7)"#,
+               VALUES ($1,$2,'TRANSFER_IN',$3,
+                       $4,$5,$6,$7,'stock_transfer',$8)"#,
             item.item_id, transfer.to_store_id,
+            desc,
             qty_after - qty_received, qty_after, qty_received,
             claims.user_id, id.to_string(),
         )
@@ -337,7 +404,8 @@ async fn fetch_transfer_items(pool: &sqlx::PgPool, transfer_id: i32) -> AppResul
                i.item_name, i.sku,
                sti.qty_requested AS "qty_requested!: Decimal",
                sti.qty_sent      AS "qty_sent: Decimal",
-               sti.qty_received  AS "qty_received: Decimal"
+               sti.qty_received  AS "qty_received: Decimal",
+               sti.unit_type     AS "unit_type: String"
            FROM stock_transfer_items sti
            JOIN items i ON i.id = sti.item_id
            WHERE sti.transfer_id = $1

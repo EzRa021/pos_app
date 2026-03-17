@@ -83,8 +83,8 @@ pub async fn get_sales_summary(
     .fetch_one(&pool)
     .await?;
 
-    let total_items: i64 = sqlx::query_scalar!(
-        r#"SELECT COALESCE(SUM(ti.quantity), 0)::bigint
+    let total_items: Decimal = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(ti.quantity), 0)
            FROM   transaction_items ti
            JOIN   transactions      t  ON t.id = ti.tx_id
            WHERE  t.status = 'completed'
@@ -97,7 +97,7 @@ pub async fn get_sales_summary(
     )
     .fetch_one(&pool)
     .await?
-    .unwrap_or(0);
+    .unwrap_or_default();
 
     Ok(SalesSummary {
         total_transactions: row.total_transactions.unwrap_or(0),
@@ -173,9 +173,13 @@ pub async fn get_top_items(
                ti.item_name                          AS "item_name!",
                ti.sku                                AS "sku!",
                COALESCE(SUM(ti.quantity), 0)         AS "qty_sold!",
-               COALESCE(SUM(ti.line_total), 0)       AS "revenue!"
+               COALESCE(SUM(ti.line_total), 0)       AS "revenue!",
+               MAX(ist.measurement_type)             AS "measurement_type: String",
+               MAX(ist.unit_type)                    AS "unit_type: String"
            FROM   transaction_items ti
-           JOIN   transactions      t ON t.id = ti.tx_id
+           JOIN   transactions      t   ON t.id = ti.tx_id
+           JOIN   items             i   ON i.id = ti.item_id
+           LEFT  JOIN item_settings ist ON ist.item_id = i.id
            WHERE  t.status = 'completed'
              AND ($1::int  IS NULL OR t.store_id   = $1)
              AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
@@ -245,18 +249,21 @@ pub async fn get_payment_method_summary(
     let df = filters.date_from.as_deref();
     let dt = filters.date_to.as_deref();
 
+    // Query from the payments table so split transactions are counted correctly:
+    // each payment leg is counted individually by its actual payment method.
     sqlx::query_as!(
         PaymentMethodSummary,
         r#"SELECT
-               payment_method                   AS "payment_method!",
+               p.payment_method                 AS "payment_method!",
                COUNT(*)                         AS "count!",
-               COALESCE(SUM(total_amount), 0)   AS "total!"
-           FROM  transactions
-           WHERE status = 'completed'
-             AND ($1::int  IS NULL OR store_id   = $1)
-             AND ($2::text IS NULL OR created_at >= $2::timestamptz)
-             AND ($3::text IS NULL OR created_at <= $3::timestamptz)
-           GROUP  BY payment_method
+               COALESCE(SUM(p.amount), 0)       AS "total!"
+           FROM  payments p
+           JOIN  transactions t ON t.id = p.transaction_id
+           WHERE t.status = 'completed'
+             AND ($1::int  IS NULL OR t.store_id   = $1)
+             AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
+             AND ($3::text IS NULL OR t.created_at <= $3::timestamptz)
+           GROUP  BY p.payment_method
            ORDER  BY 3 DESC"#,
         filters.store_id,
         df,
@@ -450,9 +457,13 @@ pub async fn get_item_analytics(
                ti.sku                                         AS "sku!",
                COALESCE(SUM(ti.quantity),   0)                AS "qty_sold!",
                COALESCE(SUM(ti.line_total), 0)                AS "revenue!",
-               COALESCE(AVG(ti.unit_price), 0)                AS "avg_price!"
+               COALESCE(AVG(ti.unit_price), 0)                AS "avg_price!",
+               MAX(ist.measurement_type)                      AS "measurement_type: String",
+               MAX(ist.unit_type)                             AS "unit_type: String"
            FROM   transaction_items ti
-           JOIN   transactions      t ON t.id = ti.tx_id
+           JOIN   transactions      t   ON t.id = ti.tx_id
+           JOIN   items             i   ON i.id = ti.item_id
+           LEFT  JOIN item_settings ist ON ist.item_id = i.id
            WHERE  t.status = 'completed'
              AND ($1::int  IS NULL OR t.store_id   = $1)
              AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
@@ -504,7 +515,9 @@ pub async fn get_slow_moving_items(
                  THEN EXTRACT(DAY FROM NOW() - sales.last_sold_at)::bigint
                  ELSE NULL
             END                                                     AS "days_since_last_sale: Option<i64>",
-            COALESCE(istock.available_quantity, 0)                 AS "current_stock!: Decimal"
+            COALESCE(istock.available_quantity, 0)                 AS "current_stock!: Decimal",
+            ist.measurement_type                                   AS "measurement_type: Option<String>",
+            ist.unit_type                                          AS "unit_type: String"
         FROM items i
         LEFT JOIN item_settings  ist    ON ist.item_id    = i.id
         LEFT JOIN item_stock     istock ON istock.item_id = i.id AND istock.store_id = i.store_id
@@ -550,6 +563,8 @@ pub async fn get_slow_moving_items(
             last_sold_at: r.last_sold_at.flatten(),
             days_since_last_sale: r.days_since_last_sale.flatten(),
             current_stock: r.current_stock,
+            measurement_type: r.measurement_type,
+            unit_type: r.unit_type,
         })
         .collect())
 }
@@ -579,7 +594,9 @@ pub async fn get_dead_stock(
             COALESCE(istock.available_quantity, 0)             AS "current_stock!: Decimal",
             i.cost_price                                        AS "cost_price!: Decimal",
             i.selling_price                                     AS "selling_price!: Decimal",
-            i.cost_price * COALESCE(istock.available_quantity, 0) AS "stock_value!: Decimal"
+            i.cost_price * COALESCE(istock.available_quantity, 0) AS "stock_value!: Decimal",
+            ist.measurement_type                                AS "measurement_type: Option<String>",
+            ist.unit_type                                       AS "unit_type: String"
         FROM items i
         JOIN  item_settings  ist    ON ist.item_id    = i.id
               AND ist.track_stock = TRUE
@@ -619,6 +636,8 @@ pub async fn get_dead_stock(
             cost_price: r.cost_price,
             selling_price: r.selling_price,
             stock_value: r.stock_value,
+            measurement_type: r.measurement_type,
+            unit_type: r.unit_type,
         })
         .collect())
 }
@@ -1052,7 +1071,9 @@ pub async fn get_stock_velocity(
                 )::bigint
                 ELSE NULL
             END                                             AS "days_of_stock_remaining: Option<i64>",
-            i.cost_price * COALESCE(istock.available_quantity, 0) AS "stock_value_at_cost!: Decimal"
+            i.cost_price * COALESCE(istock.available_quantity, 0) AS "stock_value_at_cost!: Decimal",
+            ist.measurement_type                                  AS "measurement_type: Option<String>",
+            ist.unit_type                                         AS "unit_type: String"
         FROM items i
         JOIN  item_settings  ist    ON ist.item_id    = i.id
               AND ist.track_stock = TRUE
@@ -1102,6 +1123,8 @@ pub async fn get_stock_velocity(
                 days_of_stock_remaining: days_rem,
                 stock_value_at_cost: r.stock_value_at_cost,
                 reorder_urgency: urgency,
+                measurement_type: r.measurement_type,
+                unit_type: r.unit_type,
             }
         })
         .collect())

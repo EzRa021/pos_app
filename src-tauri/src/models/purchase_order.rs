@@ -29,15 +29,17 @@ pub struct PurchaseOrder {
 
 #[derive(Debug, Serialize, Clone, sqlx::FromRow)]
 pub struct PurchaseOrderItem {
-    pub id:              i32,
-    pub po_id:           i32,
-    pub item_id:         Uuid,
-    pub item_name:       String,
-    pub sku:             String,
-    pub quantity_ordered: Decimal,
+    pub id:               i32,
+    pub po_id:            i32,
+    pub item_id:          Uuid,
+    pub item_name:        String,
+    pub sku:              String,
+    pub quantity_ordered:  Decimal,
     pub quantity_received: Option<Decimal>,
-    pub unit_cost:       Decimal,
-    pub line_total:      Decimal,
+    pub unit_cost:        Decimal,
+    pub line_total:       Decimal,
+    pub unit_type:        Option<String>,
+    pub measurement_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

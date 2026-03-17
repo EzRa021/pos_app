@@ -38,6 +38,7 @@ import {
   Store, ChevronsUpDown, Check,
   LogOut, KeyRound, ChevronRight,
   MapPin, Timer, AlertTriangle,
+  Bell, FileText, ArrowLeftRight, ShieldCheck,
 } from "lucide-react";
 
 import {
@@ -68,6 +69,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useAuthStore }   from "@/stores/auth.store";
 import { useBranchStore } from "@/stores/branch.store";
 import { useShiftStore }  from "@/stores/shift.store";
+import { isActiveShiftStatus } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 // ─── Role-based access helper ─────────────────────────────────────────────────
@@ -111,6 +113,17 @@ const NAV_GROUPS = [
         icon: Clock,
         roles: ["super_admin", "admin", "manager", "cashier"],
       },
+      {
+        title: "EOD Reports",
+        path: "/eod",
+        icon: FileText,
+        roles: ["super_admin", "admin", "manager"],
+      },
+      {
+        title: "Notifications",
+        path: "/notifications",
+        icon: Bell,
+      },
     ],
   },
   {
@@ -150,6 +163,12 @@ const NAV_GROUPS = [
         title: "Purchase Orders",
         path: "/purchase-orders",
         icon: ClipboardList,
+        roles: ["super_admin", "admin", "manager", "stock_keeper"],
+      },
+      {
+        title: "Stock Transfers",
+        path: "/stock-transfers",
+        icon: ArrowLeftRight,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
     ],
@@ -200,6 +219,12 @@ const NAV_GROUPS = [
         title: "Users",
         path: "/users",
         icon: UserCog,
+        roles: ["super_admin", "admin"],
+      },
+      {
+        title: "Audit Log",
+        path: "/audit",
+        icon: ShieldCheck,
         roles: ["super_admin", "admin"],
       },
       {
@@ -284,7 +309,10 @@ function ShiftStatusBanner({ roleSlug }) {
   const shiftRoles  = ["super_admin", "admin", "manager", "cashier"];
   if (!shiftRoles.includes(roleSlug ?? "")) return null;
 
-  const isOpen = activeShift?.status === "open";
+  // Covers open, active, AND suspended — all mean shift is still in progress.
+  // A shift transitions from "open" → "active" after the first sale, so
+  // checking only === "open" wrongly shows "No Active Shift" after refresh.
+  const isOpen = isActiveShiftStatus(activeShift?.status);
 
   return (
     <SidebarMenu>

@@ -27,6 +27,16 @@ import StockCountsPage    from "@/pages/StockCountsPage";
 import StockCountSessionPage from "@/pages/StockCountSessionPage";
 import VarianceReportPage from "@/pages/VarianceReportPage";
 import SettingsPage       from "@/pages/SettingsPage";
+
+// ── New pages ─────────────────────────────────────────────────────────────────
+import AnalyticsPage           from "@/pages/AnalyticsPage";
+import EodPage                 from "@/pages/EodPage";
+import StockTransfersPage      from "@/pages/StockTransfersPage";
+import StockTransferDetailPage from "@/pages/StockTransferDetailPage";
+import NotificationsPage       from "@/pages/NotificationsPage";
+import AuditPage               from "@/pages/AuditPage";
+import UsersPage               from "@/pages/UsersPage";
+
 import { useAuthStore }   from "@/stores/auth.store";
 import { useBranchStore } from "@/stores/branch.store";
 
@@ -75,6 +85,8 @@ const router = createBrowserRouter([
           { path: "stock-counts",          element: <StockCountsPage /> },
           { path: "stock-counts/:id",      element: <StockCountSessionPage /> },
           { path: "stock-counts/:id/report", element: <VarianceReportPage /> },
+          { path: "stock-transfers",       element: <StockTransfersPage /> },
+          { path: "stock-transfers/:id",   element: <StockTransferDetailPage /> },
 
           // ── Suppliers / POs ───────────────────────────────────────────────
           { path: "suppliers",       element: <SuppliersPage /> },
@@ -88,14 +100,19 @@ const router = createBrowserRouter([
           { path: "customers/:id", element: <CustomerDetailPage /> },
           { path: "credit-sales",  element: <CreditSalesPage /> },
 
-          // ── Finance ───────────────────────────────────────────────────────
+          // ── Finance / Reporting ───────────────────────────────────────────
           { path: "expenses",         element: <ExpensesPage /> },
-          { path: "analytics",        element: <PlaceholderPage title="Analytics"         description="Sales summaries, revenue charts, and top-performing items." /> },
+          { path: "analytics",        element: <AnalyticsPage /> },
+          { path: "eod",              element: <EodPage /> },
           { path: "price-management", element: <PlaceholderPage title="Price Management"  description="Manage price lists and submit price change requests." /> },
 
+          // ── Operations ────────────────────────────────────────────────────
+          { path: "notifications",    element: <NotificationsPage /> },
+
           // ── Admin ─────────────────────────────────────────────────────────
-          { path: "users",    element: <PlaceholderPage title="Users"    description="Manage staff accounts and roles (admin only)." /> },
+          { path: "users",    element: <UsersPage /> },
           { path: "settings", element: <SettingsPage /> },
+          { path: "audit",    element: <AuditPage /> },
         ],
       },
     ],

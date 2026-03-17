@@ -2,29 +2,39 @@
 // features/items/ItemDetailView.jsx — Full item detail page component
 // ============================================================================
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Package, Edit3, Archive, Power, PowerOff, ArrowLeft,
   BarChart3, History, Boxes, Hash, Tag, DollarSign, ClipboardList,
   CheckCircle2, XCircle, AlertTriangle, TrendingDown, Clock,
-  ChevronLeft, ChevronRight, RefreshCw,
+  RefreshCw, Filter, X, User, Hash as HashIcon,
 } from "lucide-react";
 
-import { PageHeader }  from "@/components/shared/PageHeader";
-import { Spinner }     from "@/components/shared/Spinner";
-import { Button }      from "@/components/ui/button";
+import { PageHeader }       from "@/components/shared/PageHeader";
+import { Spinner }          from "@/components/shared/Spinner";
+import { DateRangePicker }  from "@/components/shared/DateRangePicker";
+import { DataTable }        from "@/components/shared/DataTable";
+import { EmptyState }       from "@/components/shared/EmptyState";
+import { Button }           from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
+} from "@/components/ui/sheet";
 import { Input }       from "@/components/ui/input";
 import { Separator }   from "@/components/ui/separator";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 
 import { useItem, useItemHistory } from "@/features/items/useItems";
 import { useInventoryItem }        from "@/features/inventory/useInventory";
+import { ItemImage }               from "@/components/shared/ItemImage";
 import { AdjustInventoryDialog }   from "@/features/inventory/AdjustInventoryDialog";
 import { RestockDialog }           from "@/features/inventory/RestockDialog";
-import { formatCurrency, formatDecimal, formatDateTime, formatDate } from "@/lib/format";
+import { formatCurrency, formatDecimal, formatQuantity, formatDateTime, formatDate, measurementTypeLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // ── Detail field ──────────────────────────────────────────────────────────────
@@ -53,92 +63,345 @@ function BoolPill({ value, trueLabel = "Yes", falseLabel = "No" }) {
 }
 
 // ── Event type badge ──────────────────────────────────────────────────────────
+const EVENT_BADGE_STYLES = {
+  SALE:          { cls: "border-rose-500/25 bg-rose-500/10 text-rose-400",           label: "Sale"           },
+  RETURN:        { cls: "border-emerald-500/25 bg-emerald-500/10 text-emerald-400",  label: "Return"         },
+  RESTOCK:       { cls: "border-teal-500/25 bg-teal-500/10 text-teal-400",           label: "Restock"        },
+  ADJUSTMENT:    { cls: "border-amber-500/25 bg-amber-500/10 text-amber-400",        label: "Adjustment"     },
+  MANUAL_ADJUST: { cls: "border-amber-500/25 bg-amber-500/10 text-amber-400",        label: "Manual Adjust"  },
+  STOCK_COUNT:   { cls: "border-indigo-500/25 bg-indigo-500/10 text-indigo-400",     label: "Stock Count"    },
+  PURCHASE:      { cls: "border-teal-500/25 bg-teal-500/10 text-teal-400",           label: "Purchase"       },
+  TRANSFER_IN:   { cls: "border-sky-500/25 bg-sky-500/10 text-sky-400",              label: "Transfer In"    },
+  TRANSFER_OUT:  { cls: "border-orange-500/25 bg-orange-500/10 text-orange-400",     label: "Transfer Out"   },
+  CREATE:        { cls: "border-primary/25 bg-primary/10 text-primary",              label: "Created"        },
+  UPDATE:        { cls: "border-sky-500/25 bg-sky-500/10 text-sky-400",              label: "Updated"        },
+  PRICE_CHANGE:  { cls: "border-violet-500/25 bg-violet-500/10 text-violet-400",     label: "Price Change"   },
+  STATUS_CHANGE: { cls: "border-border/60 bg-muted/40 text-muted-foreground",        label: "Status Change"  },
+  DAMAGE:        { cls: "border-orange-500/25 bg-orange-500/10 text-orange-400",     label: "Damage"         },
+  THEFT:         { cls: "border-red-500/25 bg-red-500/10 text-red-400",              label: "Theft"          },
+};
+
 function EventBadge({ type }) {
-  const styles = {
-    CREATE:       "border-primary/25 bg-primary/10 text-primary",
-    UPDATE:       "border-sky-500/25 bg-sky-500/10 text-sky-400",
-    PRICE_CHANGE: "border-violet-500/25 bg-violet-500/10 text-violet-400",
-    ADJUSTMENT:   "border-amber-500/25 bg-amber-500/10 text-amber-400",
-    RESTOCK:      "border-emerald-500/25 bg-emerald-500/10 text-emerald-400",
-    SALE:         "border-rose-500/25 bg-rose-500/10 text-rose-400",
-    STOCK_COUNT:  "border-indigo-500/25 bg-indigo-500/10 text-indigo-400",
-    STATUS_CHANGE:"border-border/60 bg-muted/40 text-muted-foreground",
-    DAMAGE:       "border-orange-500/25 bg-orange-500/10 text-orange-400",
-    THEFT:        "border-red-500/25 bg-red-500/10 text-red-400",
-  };
+  const def = EVENT_BADGE_STYLES[type];
   return (
     <span className={cn(
-      "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-      styles[type] ?? "border-border/60 bg-muted/40 text-muted-foreground",
+      "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap",
+      def?.cls ?? "border-border/60 bg-muted/40 text-muted-foreground",
     )}>
-      {(type ?? "").replace(/_/g, " ")}
+      {def?.label ?? (type ?? "Unknown").replace(/_/g, " ")}
     </span>
   );
 }
 
 // ── Qty change display ────────────────────────────────────────────────────────
-function QtyChange({ change }) {
+function QtyChange({ change, measurementType, unitType }) {
   if (change == null) return <span className="text-xs text-muted-foreground">—</span>;
   const v = parseFloat(change);
   if (v === 0) return <span className="text-xs text-muted-foreground">±0</span>;
   return (
     <span className={cn("text-xs font-semibold tabular-nums", v > 0 ? "text-emerald-400" : "text-rose-400")}>
-      {v > 0 ? "+" : ""}{formatDecimal(v)}
+      {v > 0 ? "+" : ""}{formatQuantity(v, measurementType, unitType)}
     </span>
   );
 }
 
-// ── History tab ───────────────────────────────────────────────────────────────
-function HistoryTab({ itemId }) {
-  const [page, setPage] = useState(1);
-  const { history, total, totalPages, isLoading, error } = useItemHistory(itemId, page, 15);
+// ── All event types ───────────────────────────────────────────────────────────
+const EVENT_TYPES = [
+  { value: "SALE",         label: "Sale"            },
+  { value: "RETURN",       label: "Return"          },
+  { value: "RESTOCK",      label: "Restock"         },
+  { value: "ADJUSTMENT",   label: "Adjustment"      },
+  { value: "MANUAL_ADJUST",label: "Manual Adjust"   },
+  { value: "STOCK_COUNT",  label: "Stock Count"     },
+  { value: "PURCHASE",     label: "Purchase Order"  },
+  { value: "TRANSFER_IN",  label: "Transfer In"     },
+  { value: "TRANSFER_OUT", label: "Transfer Out"    },
+  { value: "CREATE",       label: "Created"         },
+  { value: "UPDATE",       label: "Updated"         },
+  { value: "PRICE_CHANGE", label: "Price Change"    },
+  { value: "STATUS_CHANGE",label: "Status Change"   },
+];
 
-  if (isLoading && !history.length) return <Spinner />;
-  if (error) return <div className="text-xs text-destructive p-4">{String(error)}</div>;
-  if (!history.length) return (
-    <div className="py-12 text-center text-sm text-muted-foreground">No history recorded yet.</div>
-  );
+// ── History event detail drawer ───────────────────────────────────────────────
+function HistoryEventDrawer({ event, open, onClose, measurementType, unitType }) {
+  if (!event) return null;
+  const def  = EVENT_BADGE_STYLES[event.event_type];
+  const qtyChange = event.quantity_change != null ? parseFloat(event.quantity_change) : null;
 
   return (
-    <div className="space-y-0">
-      {history.map((h) => (
-        <div key={h.id} className="flex items-start gap-3 px-4 py-3 border-b border-border/60 last:border-0 hover:bg-muted/20 transition-colors">
-          <div className="shrink-0 mt-0.5">
-            <EventBadge type={h.event_type} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium text-foreground">{h.event_description ?? "—"}</p>
-            {h.notes && <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">{h.notes}</p>}
-            <p className="text-[10px] text-muted-foreground mt-1">
-              {h.user_name ? `By ${h.user_name} · ` : ""}{formatDateTime(h.performed_at)}
-            </p>
-          </div>
-          <div className="shrink-0 text-right space-y-0.5">
-            <QtyChange change={h.quantity_change} />
-            {(h.quantity_before != null || h.quantity_after != null) && (
-              <div className="text-[10px] text-muted-foreground tabular-nums">
-                {formatDecimal(h.quantity_before ?? 0)} → {formatDecimal(h.quantity_after ?? 0)}
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
+    <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
+      <SheetContent
+        side="right"
+        className="w-full sm:max-w-md bg-card border-l border-border p-0 flex flex-col"
+      >
+        {/* Accent bar */}
+        <div className={cn("h-[3px] w-full shrink-0", def ? "" : "bg-primary")} style={def ? { background: "var(--color-primary)" } : undefined} />
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
-          <span className="text-[11px] text-muted-foreground">{total} events</span>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className="h-7 w-7" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </Button>
-            <span className="text-[11px] tabular-nums">{page}/{totalPages}</span>
-            <Button variant="ghost" size="icon" className="h-7 w-7" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+        {/* Header */}
+        <div className="px-5 pt-5 pb-4 border-b border-border shrink-0">
+          <SheetHeader className="gap-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-1.5">
+                <EventBadge type={event.event_type} />
+                <SheetTitle className="text-[15px] font-bold leading-tight">
+                  {event.event_description ?? "Event Details"}
+                </SheetTitle>
+              </div>
+            </div>
+            <SheetDescription className="text-[11px] text-muted-foreground tabular-nums">
+              {formatDateTime(event.performed_at)}
+            </SheetDescription>
+          </SheetHeader>
         </div>
-      )}
-    </div>
+
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+
+          {/* Notes */}
+          {event.notes && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">Notes</p>
+              <p className="text-sm text-foreground leading-relaxed whitespace-pre-line bg-muted/30 rounded-lg px-3 py-2.5 border border-border/60">
+                {event.notes}
+              </p>
+            </div>
+          )}
+
+          {/* Qty change */}
+          {qtyChange !== null && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Quantity</p>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-center">
+                  <p className="text-[10px] text-muted-foreground mb-1">Change</p>
+                  <p className={cn(
+                    "text-base font-bold tabular-nums",
+                    qtyChange > 0 ? "text-emerald-400" : qtyChange < 0 ? "text-rose-400" : "text-muted-foreground",
+                  )}>
+                    {qtyChange > 0 ? "+" : ""}{formatQuantity(qtyChange, measurementType, unitType)}
+                  </p>
+                </div>
+                {event.quantity_before != null && (
+                  <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-center">
+                    <p className="text-[10px] text-muted-foreground mb-1">Before</p>
+                    <p className="text-base font-bold tabular-nums text-foreground">
+                      {formatQuantity(parseFloat(event.quantity_before), measurementType, unitType)}
+                    </p>
+                  </div>
+                )}
+                {event.quantity_after != null && (
+                  <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-center">
+                    <p className="text-[10px] text-muted-foreground mb-1">After</p>
+                    <p className="text-base font-bold tabular-nums text-foreground">
+                      {formatQuantity(parseFloat(event.quantity_after), measurementType, unitType)}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Price change */}
+          {(event.price_before != null || event.price_after != null) && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Price Change</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-center">
+                  <p className="text-[10px] text-muted-foreground mb-1">Before</p>
+                  <p className="text-base font-bold tabular-nums text-foreground">
+                    {formatCurrency(parseFloat(event.price_before ?? 0))}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-center">
+                  <p className="text-[10px] text-muted-foreground mb-1">After</p>
+                  <p className="text-base font-bold tabular-nums text-violet-400">
+                    {formatCurrency(parseFloat(event.price_after ?? 0))}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Reference + user */}
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Metadata</p>
+            <div className="rounded-lg border border-border/60 bg-muted/20 divide-y divide-border/40">
+              {event.reference_id && (
+                <div className="flex items-center justify-between px-3 py-2.5">
+                  <span className="text-[11px] text-muted-foreground">
+                    {event.reference_type ?? "Reference"}
+                  </span>
+                  <span className="font-mono text-[11px] text-foreground">{event.reference_id}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <span className="text-[11px] text-muted-foreground">Performed by</span>
+                <span className="text-[11px] font-medium text-foreground">{event.user_name ?? "—"}</span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <span className="text-[11px] text-muted-foreground">Date & time</span>
+                <span className="text-[11px] tabular-nums text-foreground">{formatDateTime(event.performed_at)}</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// ── History tab ───────────────────────────────────────────────────────────────
+function HistoryTab({ itemId, measurementType, unitType }) {
+  const [page,      setPage]      = useState(1);
+  const [dateFrom,  setDateFrom]  = useState("");
+  const [dateTo,    setDateTo]    = useState("");
+  const [eventType, setEventType] = useState("");
+  const [selected,  setSelected]  = useState(null);
+
+  const handleFromChange  = (v) => { setDateFrom(v);  setPage(1); };
+  const handleToChange    = (v) => { setDateTo(v);    setPage(1); };
+  const handleTypeChange  = (v) => { setEventType(v === "ALL" ? "" : v); setPage(1); };
+  const clearAll          = ()  => { setDateFrom(""); setDateTo(""); setEventType(""); setPage(1); };
+
+  const hasFilter = dateFrom || dateTo || eventType;
+
+  const { history, total, totalPages, isLoading, error } = useItemHistory(itemId, {
+    page,
+    limit: 15,
+    dateFrom:  dateFrom  || undefined,
+    dateTo:    dateTo    || undefined,
+    eventType: eventType || undefined,
+  });
+
+  const columns = useMemo(() => [
+    {
+      key:      "performed_at",
+      header:   "Date & Time",
+      sortable: true,
+      width:    "148px",
+      render:   (row) => (
+        <span className="text-xs tabular-nums text-muted-foreground whitespace-nowrap">
+          {formatDateTime(row.performed_at)}
+        </span>
+      ),
+    },
+    {
+      key:    "event_type",
+      header: "Event",
+      width:  "126px",
+      render: (row) => <EventBadge type={row.event_type} />,
+    },
+    {
+      key:    "event_description",
+      header: "Description",
+      render: (row) => (
+        <span className="text-xs text-foreground truncate block max-w-[260px]">
+          {row.event_description ?? "—"}
+        </span>
+      ),
+    },
+    {
+      key:    "quantity_change",
+      header: "Qty Δ",
+      align:  "right",
+      width:  "90px",
+      render: (row) => (
+        <QtyChange change={row.quantity_change} measurementType={measurementType} unitType={unitType} />
+      ),
+    },
+    {
+      key:    "user_name",
+      header: "By",
+      width:  "100px",
+      render: (row) => (
+        <span className="text-xs text-muted-foreground truncate block">{row.user_name ?? "—"}</span>
+      ),
+    },
+  ], [measurementType, unitType]);
+
+  return (
+    <>
+      <div>
+        {/* Filter bar */}
+        <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-border bg-muted/10">
+          <DateRangePicker
+            from={dateFrom}
+            to={dateTo}
+            onFromChange={handleFromChange}
+            onToChange={handleToChange}
+            onClear={() => { setDateFrom(""); setDateTo(""); setPage(1); }}
+          />
+          <Select value={eventType || "ALL"} onValueChange={handleTypeChange}>
+            <SelectTrigger className="h-7 w-44 text-[11px]">
+              <Filter className="h-3 w-3 mr-1 text-muted-foreground shrink-0" />
+              <SelectValue placeholder="All Events" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All Events</SelectItem>
+              {EVENT_TYPES.map((et) => (
+                <SelectItem key={et.value} value={et.value}>{et.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {hasFilter && (
+            <button
+              type="button"
+              onClick={clearAll}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="h-3 w-3" /> Clear all
+            </button>
+          )}
+          <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
+            {total} event{total !== 1 ? "s" : ""}
+          </span>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="px-4 py-3 text-xs text-destructive border-b border-border">
+            {String(error)}
+          </div>
+        )}
+
+        {/* Table */}
+        <DataTable
+          columns={columns}
+          data={history}
+          isLoading={isLoading}
+          rowKey="id"
+          onRowClick={(row) => setSelected(row)}
+          pagination={{
+            page,
+            pageSize: 15,
+            total,
+            onPageChange: setPage,
+          }}
+          emptyState={
+            <EmptyState
+              icon={History}
+              title={hasFilter ? "No matching events" : "No history recorded yet"}
+              description={
+                hasFilter
+                  ? "Try adjusting or clearing the filters."
+                  : "Activity on this item will appear here."
+              }
+              compact
+            />
+          }
+        />
+      </div>
+
+      {/* Event detail drawer */}
+      <HistoryEventDrawer
+        event={selected}
+        open={!!selected}
+        onClose={() => setSelected(null)}
+        measurementType={measurementType}
+        unitType={unitType}
+      />
+    </>
   );
 }
 
@@ -150,6 +413,8 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
     <div className="py-12 text-center text-sm text-muted-foreground">Stock tracking is disabled for this item.</div>
   );
 
+  const mt       = item?.measurement_type ?? "quantity";
+  const ut       = item?.unit_type        ?? null;
   const qty      = parseFloat(detail?.quantity           ?? item?.quantity           ?? 0);
   const avail    = parseFloat(detail?.available_quantity  ?? item?.available_quantity  ?? 0);
   const reserved = parseFloat(detail?.reserved_quantity   ?? item?.reserved_quantity   ?? 0);
@@ -170,15 +435,24 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
       ) : isLow ? (
         <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
           <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
-          <p className="text-xs font-semibold text-amber-400">Low Stock — {formatDecimal(minLevel - qty)} units below minimum</p>
+          <p className="text-xs font-semibold text-amber-400">
+            Low Stock — {formatQuantity(minLevel - qty, mt, ut)} below minimum
+          </p>
         </div>
-      ) : null}
+      ) : (
+        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5">
+          <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+          <p className="text-xs font-semibold text-emerald-400">In Stock</p>
+        </div>
+      )}
 
       {/* Stock bar */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[11px] text-muted-foreground">Stock Level</span>
-          <span className="text-[11px] text-muted-foreground tabular-nums">{formatDecimal(qty)} / {formatDecimal(maxLevel)}</span>
+          <span className="text-[11px] text-muted-foreground tabular-nums">
+            {formatQuantity(qty, mt, ut)} / {formatQuantity(maxLevel, mt, ut)}
+          </span>
         </div>
         <div className="h-2 rounded-full bg-muted/40 overflow-hidden">
           <div
@@ -196,15 +470,15 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
           { label: "Reserved",   value: reserved, color: "text-amber-400"  },
         ].map(({ label, value, color }) => (
           <div key={label} className="rounded-lg border border-border/60 bg-muted/20 p-3 text-center">
-            <p className={cn("text-xl font-bold tabular-nums", color)}>{formatDecimal(value)}</p>
+            <p className={cn("text-xl font-bold tabular-nums", color)}>{formatQuantity(value, mt, ut)}</p>
             <p className="text-[10px] text-muted-foreground mt-0.5">{label}</p>
           </div>
         ))}
       </div>
 
       <div className="grid grid-cols-2 gap-3 text-xs">
-        <Field label="Min Level" value={formatDecimal(minLevel)} />
-        <Field label="Max Level" value={formatDecimal(maxLevel)} />
+        <Field label="Min Level" value={formatQuantity(minLevel, mt, ut)} />
+        <Field label="Max Level" value={formatQuantity(maxLevel, mt, ut)} />
         {detail?.last_count_date && (
           <div className="col-span-2">
             <Field label="Last Count" value={formatDateTime(detail.last_count_date)} />
@@ -263,16 +537,19 @@ export function ItemDetailView({ itemId }) {
             {!item.is_active && (
               <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Inactive</span>
             )}
-            {isOut && (
+            {isOut ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-400">
                 <XCircle className="h-2.5 w-2.5" /> Out of Stock
               </span>
-            )}
-            {!isOut && isLow && (
+            ) : isLow ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
                 <TrendingDown className="h-2.5 w-2.5" /> Low Stock
               </span>
-            )}
+            ) : item.track_stock ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+                <CheckCircle2 className="h-2.5 w-2.5" /> In Stock
+              </span>
+            ) : null}
           </div>
         }
         action={
@@ -309,22 +586,93 @@ export function ItemDetailView({ itemId }) {
         <div className="max-w-4xl mx-auto px-6 py-5">
           {activeTab === "details" && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Image card */}
+              <div className="md:col-span-2 rounded-xl border border-border bg-card p-5">
+                <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3">Product Image</h3>
+                <div className="flex items-start gap-5">
+                  <ItemImage item={item} size="xl" rounded="xl" />
+                  <div className="flex flex-col gap-2">
+                    <label
+                      htmlFor="detail-image-upload"
+                      className="flex items-center gap-2 cursor-pointer rounded-lg border border-border/60
+                                 bg-muted/30 hover:bg-muted/50 px-3 py-2 text-xs font-medium
+                                 text-foreground transition-colors w-fit"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                      {item.image_data ? "Change image" : "Upload image"}
+                    </label>
+                    <input
+                      id="detail-image-upload"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const MAX = 400;
+                          const data = await new Promise((res, rej) => {
+                            const reader = new FileReader();
+                            reader.onerror = rej;
+                            reader.onload = (ev) => {
+                              const img = new Image();
+                              img.onerror = rej;
+                              img.onload = () => {
+                                const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+                                const canvas = document.createElement("canvas");
+                                canvas.width  = Math.round(img.width  * scale);
+                                canvas.height = Math.round(img.height * scale);
+                                canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+                                res(canvas.toDataURL("image/jpeg", 0.72));
+                              };
+                              img.src = ev.target.result;
+                            };
+                            reader.readAsDataURL(file);
+                          });
+                          update.mutate({ image_data: data });
+                        } catch { /* ignore */ }
+                        e.target.value = "";
+                      }}
+                    />
+                    {item.image_data && (
+                      <button
+                        type="button"
+                        onClick={() => update.mutate({ image_data: null })}
+                        className="flex items-center gap-1.5 text-[11px] text-destructive
+                                   hover:text-destructive/80 transition-colors w-fit"
+                      >
+                        <Archive className="h-3 w-3" />
+                        Remove image
+                      </button>
+                    )}
+                    <p className="text-[10px] text-muted-foreground">PNG, JPG or WEBP · 400×400px · ~30–80KB</p>
+                  </div>
+                </div>
+              </div>
+
               {/* Core info */}
               <div className="rounded-xl border border-border bg-card p-5 space-y-4">
                 <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Core Information</h3>
                 <Separator className="bg-border" />
                 <div className="grid grid-cols-2 gap-4">
-                  <Field label="SKU"           value={item.sku}        mono />
-                  <Field label="Barcode"        value={item.barcode}    mono />
-                  <Field label="Category"       value={item.category_name} />
-                  <Field label="Department"     value={item.department_name} />
-                  <Field label="Branch"         value={item.branch_name} />
-                  <Field label="Unit Type"      value={item.unit_type} />
+                  <Field label="SKU"              value={item.sku}        mono />
+                  <Field label="Barcode"           value={item.barcode}    mono />
+                  <Field label="Category"          value={item.category_name} />
+                  <Field label="Department"        value={item.department_name} />
+                  <Field label="Branch"            value={item.branch_name} />
+                  <Field label="Measurement Type"  value={measurementTypeLabel(item.measurement_type)} />
+                  <Field label="Unit"              value={item.unit_type} />
+                  {(item.min_increment != null) && (
+                    <Field label="Min Increment" value={formatQuantity(parseFloat(item.min_increment), item.measurement_type, item.unit_type)} />
+                  )}
+                  {(item.default_qty != null) && (
+                    <Field label="Default Qty" value={formatQuantity(parseFloat(item.default_qty), item.measurement_type, item.unit_type)} />
+                  )}
                   <div className="col-span-2">
-                    <Field label="Description"  value={item.description} />
+                    <Field label="Description"   value={item.description} />
                   </div>
-                  <Field label="Created"        value={formatDate(item.created_at)} />
-                  <Field label="Last Updated"   value={formatDate(item.updated_at)} />
+                  <Field label="Created"          value={formatDate(item.created_at)} />
+                  <Field label="Last Updated"     value={formatDate(item.updated_at)} />
                 </div>
               </div>
 
@@ -408,7 +756,11 @@ export function ItemDetailView({ itemId }) {
               <div className="px-4 py-3 border-b border-border bg-muted/20">
                 <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Activity History</h3>
               </div>
-              <HistoryTab itemId={itemId} />
+              <HistoryTab
+                itemId={itemId}
+                measurementType={item.measurement_type ?? "quantity"}
+                unitType={item.unit_type ?? null}
+              />
             </div>
           )}
         </div>

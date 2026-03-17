@@ -7,15 +7,20 @@ import { Package, Plus } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input }  from "@/components/ui/input";
-import { formatDecimal } from "@/lib/format";
+import { formatQuantity, stepForType } from "@/lib/format";
 
 export function RestockDialog({ open, onOpenChange, item, mutation }) {
   const [qty,  setQty]  = useState("");
   const [note, setNote] = useState("");
 
   useEffect(() => {
-    if (!open) { setQty(""); setNote(""); }
-  }, [open]);
+    if (open) {
+      setQty(item?.default_qty != null ? String(parseFloat(item.default_qty)) : "");
+      setNote("");
+    } else {
+      setQty(""); setNote("");
+    }
+  }, [open, item?.default_qty]);
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -27,7 +32,11 @@ export function RestockDialog({ open, onOpenChange, item, mutation }) {
     );
   }
 
-  const currentQty = parseFloat(item?.quantity ?? 0);
+  const currentQty     = parseFloat(item?.quantity ?? 0);
+  const measureType    = item?.measurement_type ?? null;
+  const unitType       = item?.unit_type ?? null;
+  const minIncrement   = item?.min_increment != null ? parseFloat(item.min_increment) : null;
+  const step           = stepForType(measureType, minIncrement);
 
   return (
     <Dialog open={open} onOpenChange={(v) => !mutation.isPending && onOpenChange(v)}>
@@ -50,7 +59,9 @@ export function RestockDialog({ open, onOpenChange, item, mutation }) {
 
           <div className="mb-4 rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 flex items-center justify-between">
             <span className="text-xs text-muted-foreground">Current Stock</span>
-            <span className="text-sm font-bold text-foreground tabular-nums">{formatDecimal(currentQty)}</span>
+            <span className="text-sm font-bold text-foreground tabular-nums">
+              {formatQuantity(currentQty, measureType, unitType)}
+            </span>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-3">
@@ -59,13 +70,16 @@ export function RestockDialog({ open, onOpenChange, item, mutation }) {
                 Quantity to Add <span className="text-destructive">*</span>
               </label>
               <Input
-                type="number" min={0.01} step="0.01"
+                type="number" min={step} step={step}
                 value={qty} onChange={(e) => setQty(e.target.value)}
                 placeholder="e.g. 50" autoFocus required
               />
               {qty && parseFloat(qty) > 0 && (
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  New total: <strong className="text-emerald-400">{formatDecimal(currentQty + parseFloat(qty))}</strong>
+                  New total:{" "}
+                  <strong className="text-emerald-400">
+                    {formatQuantity(currentQty + parseFloat(qty), measureType, unitType)}
+                  </strong>
                 </p>
               )}
             </div>

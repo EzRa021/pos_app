@@ -28,6 +28,8 @@ pub struct InventoryRecord {
     pub is_active:          Option<bool>,
     pub track_stock:        Option<bool>,
     pub last_count_date:    Option<DateTime<Utc>>,
+    pub measurement_type:   Option<String>,
+    pub unit_type:          Option<String>,
     pub updated_at:         DateTime<Utc>,
     pub stock_status:       Option<String>,
 }
@@ -58,6 +60,8 @@ pub struct InventoryItemRecord {
     pub min_stock_level:      Option<i32>,
     pub max_stock_level:      Option<i32>,
     pub allow_negative_stock: Option<bool>,
+    pub measurement_type:     Option<String>,
+    pub unit_type:            Option<String>,
     // LEFT JOIN item_stock — COALESCE'd but SQLx still reports nullable via LEFT JOIN
     pub quantity:             Option<Decimal>,
     pub reserved_quantity:    Option<Decimal>,
@@ -209,6 +213,8 @@ pub struct StockCountItem {
     pub sku:                 Option<String>,
     pub barcode:             Option<String>,
     pub category_name:       Option<String>,
+    pub measurement_type:    Option<String>,
+    pub unit_type:           Option<String>,
 }
 
 // ── Variance Report ───────────────────────────────────────────────────────────
@@ -249,13 +255,14 @@ pub struct VarianceReport {
 
 #[derive(Debug, Deserialize)]
 pub struct InventoryFilters {
-    pub page:          Option<i64>,
-    pub limit:         Option<i64>,
-    pub store_id:      Option<i32>,
-    pub category_id:   Option<i32>,
-    pub department_id: Option<i32>,
-    pub low_stock:     Option<bool>,
-    pub search:        Option<String>,
+    pub page:             Option<i64>,
+    pub limit:            Option<i64>,
+    pub store_id:         Option<i32>,
+    pub category_id:      Option<i32>,
+    pub department_id:    Option<i32>,
+    pub low_stock:        Option<bool>,
+    pub search:           Option<String>,
+    pub measurement_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

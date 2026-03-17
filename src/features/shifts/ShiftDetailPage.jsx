@@ -15,6 +15,8 @@ import {
   Hash, Timer, ShoppingCart, TrendingUp, TrendingDown,
   Banknote, CreditCard, Smartphone, ArrowDownLeft,
   CheckCircle2, AlertTriangle, FileText, Inbox, XCircle,
+  Package, Users, Star, Receipt, UserCircle, Trophy,
+  BadgeDollarSign, ArrowRight,
 } from "lucide-react";
 
 import { PageHeader }       from "@/components/shared/PageHeader";
@@ -23,9 +25,10 @@ import { EmptyState }       from "@/components/shared/EmptyState";
 import { Spinner }          from "@/components/shared/Spinner";
 import { Button }           from "@/components/ui/button";
 
-import { getShift, cancelShift } from "@/commands/shifts";
+import { getShift, cancelShift, getShiftDetailStats } from "@/commands/shifts";
 import { getShiftSummary, getCashMovements } from "@/commands/cash_movements";
 import { getTransactions }  from "@/commands/transactions";
+import { getItemAnalytics } from "@/commands/analytics";
 
 import {
   formatCurrency, formatDateTime, formatTime, formatDuration,
@@ -104,21 +107,34 @@ function KpiCard({ icon: Icon, iconColor, iconBg, label, value, sub }) {
 
 // ── Payment method config ──────────────────────────────────────────────────────
 const PAYMENT_CFG = {
-  cash:         { label: "Cash",          Icon: Banknote,      color: "text-success",    bar: "bg-success"    },
-  card:         { label: "Card",          Icon: CreditCard,    color: "text-primary",    bar: "bg-primary"    },
-  transfer:     { label: "Bank Transfer", Icon: ArrowDownLeft, color: "text-warning",    bar: "bg-warning"    },
-  mobile_money: { label: "Mobile Money",  Icon: Smartphone,    color: "text-purple-400", bar: "bg-purple-400" },
+  cash:         { label: "Cash",          Icon: Banknote,      color: "text-success",         bar: "bg-success"              },
+  card:         { label: "Card",          Icon: CreditCard,    color: "text-primary",         bar: "bg-primary"              },
+  transfer:     { label: "Bank Transfer", Icon: ArrowDownLeft, color: "text-warning",          bar: "bg-warning"              },
+  mobile_money: { label: "Mobile Money",  Icon: Smartphone,    color: "text-purple-400",      bar: "bg-purple-400"           },
+  credit:       { label: "Credit (BNPL)", Icon: Receipt,       color: "text-violet-400",      bar: "bg-violet-400"           },
+  other:        { label: "Other",         Icon: Banknote,      color: "text-muted-foreground", bar: "bg-muted-foreground/50" },
 };
 
 // ── Payment Breakdown ──────────────────────────────────────────────────────────
-function PaymentBreakdown({ shift }) {
-  const totalSales = parseFloat(shift?.total_sales ?? 0);
+function PaymentBreakdown({ shift, detailStats }) {
+  const totalSales  = parseFloat(shift?.total_sales         ?? 0);
+  const cashSales   = parseFloat(shift?.total_cash_sales    ?? 0);
+  const cardSales   = parseFloat(shift?.total_card_sales    ?? 0);
+  const xferSales   = parseFloat(shift?.total_transfers     ?? 0);
+  const mobileSales = parseFloat(shift?.total_mobile_sales  ?? 0);
+  // Credit sales are not stored on the shift row — read from detailStats
+  const creditSales = parseFloat(detailStats?.credit_sales_amount ?? 0);
+  // "Other" catches wallet, pos, split, bank_transfer, or any unlisted method
+  const knownTotal  = cashSales + cardSales + xferSales + mobileSales + creditSales;
+  const otherSales  = Math.max(0, Math.round((totalSales - knownTotal) * 100) / 100);
 
   const methods = [
-    { key: "cash",         value: parseFloat(shift?.total_cash_sales   ?? 0) },
-    { key: "card",         value: parseFloat(shift?.total_card_sales   ?? 0) },
-    { key: "transfer",     value: parseFloat(shift?.total_transfers    ?? 0) },
-    { key: "mobile_money", value: parseFloat(shift?.total_mobile_sales ?? 0) },
+    { key: "cash",         value: cashSales   },
+    { key: "card",         value: cardSales   },
+    { key: "transfer",     value: xferSales   },
+    { key: "mobile_money", value: mobileSales },
+    { key: "credit",       value: creditSales },
+    { key: "other",        value: otherSales  },
   ].filter((m) => m.value > 0);
 
   if (methods.length === 0) {
@@ -333,6 +349,13 @@ export function ShiftDetailPage() {
   });
 
   // ── Queries ────────────────────────────────────────────────────────────────
+  const { data: detailStats, isLoading: statsLoading } = useQuery({
+    queryKey:  ["shift-detail-stats", shiftId],
+    queryFn:   () => getShiftDetailStats(shiftId),
+    enabled:   !!shiftId,
+    staleTime: 30_000,
+  });
+
   const { data: shift, isLoading: shiftLoading, error: shiftError } = useQuery({
     queryKey:  ["shift", shiftId],
     queryFn:   () => getShift(shiftId),
@@ -356,13 +379,14 @@ export function ShiftDetailPage() {
 
   const txFilters = useMemo(() => {
     if (!shift) return null;
+    // Use full ISO timestamps — slicing to YYYY-MM-DD casts to midnight and
+    // drops every transaction after 00:00 on that day (shift ran 12:03-12:13).
+    // Also scope to the cashier so we don't mix in other cashiers on the same day.
     return {
       store_id:   shift.store_id,
       cashier_id: shift.opened_by,
-      date_from:  shift.opened_at.slice(0, 10),
-      date_to:    shift.closed_at
-        ? shift.closed_at.slice(0, 10)
-        : new Date().toISOString().slice(0, 10),
+      date_from:  shift.opened_at,                         // e.g. "2026-03-11T12:03:00Z"
+      date_to:    shift.closed_at ?? new Date().toISOString(), // "2026-03-11T12:13:00Z"
       page:  1,
       limit: 200,
     };
@@ -376,6 +400,55 @@ export function ShiftDetailPage() {
   });
 
   const transactions = txData?.data ?? [];
+
+  // ── Item analytics (top items for this shift window) ──────────────────────
+  // Pass full ISO timestamps so the backend comparison `created_at <= $3::timestamptz`
+  // works correctly. Slicing to a date string (YYYY-MM-DD) casts to midnight and
+  // drops all transactions after 00:00 on that day.
+  const itemAnalyticsFilters = useMemo(() => {
+    if (!shift) return null;
+    return {
+      store_id:  shift.store_id,                          // scope to this store
+      date_from: shift.opened_at,                         // full ISO timestamp
+      date_to:   shift.closed_at ?? new Date().toISOString(), // full ISO or now
+      limit: 10,
+    };
+  }, [shift]);
+
+  const { data: itemAnalytics = [], isLoading: itemsLoading } = useQuery({
+    queryKey:  ["shift-item-analytics", shiftId, itemAnalyticsFilters],
+    queryFn:   () => getItemAnalytics(shift.store_id, itemAnalyticsFilters),
+    enabled:   !!shift && !!itemAnalyticsFilters,
+    staleTime: 30_000,
+  });
+
+  // ── Derived: customer breakdown from transactions ─────────────────────────
+  const customerBreakdown = useMemo(() => {
+    const map = new Map();
+    transactions
+      .filter((t) => t.status === "completed")
+      .forEach((t) => {
+        const key  = t.customer_id ?? "walkin";
+        const name = t.customer_name ?? "Walk-in";
+        const amt  = parseFloat(t.total_amount ?? 0);
+        const existing = map.get(key);
+        if (existing) {
+          existing.total += amt;
+          existing.count += 1;
+          // keep most-recent time
+          if (t.created_at > existing.lastAt) existing.lastAt = t.created_at;
+        } else {
+          map.set(key, { id: key, name, total: amt, count: 1, lastAt: t.created_at, isWalkin: !t.customer_id });
+        }
+      });
+    return Array.from(map.values()).sort((a, b) => b.total - a.total);
+  }, [transactions]);
+
+  // ── Derived: credit sales from transactions ───────────────────────────────
+  const creditSalesTxs = useMemo(
+    () => transactions.filter((t) => t.payment_method === "credit" && t.status === "completed"),
+    [transactions],
+  );
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const isClosed    = shift?.status === "closed" || shift?.status === "cancelled";
@@ -471,7 +544,7 @@ export function ShiftDetailPage() {
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-5xl px-6 py-5 space-y-5">
 
-          {/* ── KPI row ────────────────────────────────────────────────────── */}
+          {/* ── KPI row — row 1: sales overview ──────────────────────── */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <KpiCard
               icon={TrendingUp}
@@ -499,7 +572,11 @@ export function ShiftDetailPage() {
               iconBg="bg-destructive/10 border-destructive/20"
               label="Total Returns"
               value={formatCurrency(totalReturn)}
-              sub={totalReturn > 0 ? "returned this shift" : "none this shift"}
+              sub={
+                detailStats
+                  ? `${detailStats.return_count} return${detailStats.return_count !== 1 ? "s" : ""}`
+                  : totalReturn > 0 ? "returned this shift" : "none this shift"
+              }
             />
             {isClosed && difference != null ? (
               <KpiCard
@@ -520,6 +597,58 @@ export function ShiftDetailPage() {
                 sub={isClosed ? "total shift time" : "and counting…"}
               />
             )}
+          </div>
+
+          {/* ── KPI row — row 2: activity stats ──────────────────────────── */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <KpiCard
+              icon={Package}
+              iconColor="text-orange-400"
+              iconBg="bg-orange-400/10 border-orange-400/20"
+              label="Items Sold"
+              value={statsLoading ? "…" : String(detailStats?.total_items_sold ?? 0)}
+              sub="units across all sales"
+            />
+            <KpiCard
+              icon={Users}
+              iconColor="text-sky-400"
+              iconBg="bg-sky-400/10 border-sky-400/20"
+              label="Customers"
+              value={statsLoading ? "…" : String(detailStats?.unique_customers ?? 0)}
+              sub="unique buyers this shift"
+            />
+            <KpiCard
+              icon={Receipt}
+              iconColor="text-violet-400"
+              iconBg="bg-violet-400/10 border-violet-400/20"
+              label="Credit Sales"
+              value={
+                statsLoading
+                  ? "…"
+                  : detailStats
+                  ? `${detailStats.credit_sales_count} · ${formatCurrency(parseFloat(detailStats.credit_sales_amount ?? 0))}`
+                  : "0"
+              }
+              sub="buy-now-pay-later"
+            />
+            <KpiCard
+              icon={Star}
+              iconColor="text-amber-400"
+              iconBg="bg-amber-400/10 border-amber-400/20"
+              label="Top Item"
+              value={
+                statsLoading
+                  ? "…"
+                  : detailStats?.top_item_name
+                  ? `×${detailStats.top_item_qty}`
+                  : "—"
+              }
+              sub={
+                statsLoading
+                  ? undefined
+                  : detailStats?.top_item_name ?? "no sales yet"
+              }
+            />
           </div>
 
           {/* ── Main grid ──────────────────────────────────────────────────── */}
@@ -700,7 +829,7 @@ export function ShiftDetailPage() {
 
               {/* Payment breakdown */}
               <Section title="Payment Methods" icon={CreditCard}>
-                <PaymentBreakdown shift={shift} />
+                <PaymentBreakdown shift={shift} detailStats={detailStats} />
               </Section>
 
               {/* Cash reconciliation */}
@@ -746,8 +875,272 @@ export function ShiftDetailPage() {
               </Section>
             </div>
           </div>
+
+          {/* ── Detail sections: items · customers · credit ────────────────── */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+            {/* Top Items Sold — full-width left 2/3 */}
+            <div className="lg:col-span-2">
+              <TopItemsSection items={itemAnalytics} isLoading={itemsLoading} />
+            </div>
+
+            {/* Credit Sales — right 1/3 */}
+            <div>
+              <CreditSalesSection creditTxs={creditSalesTxs} isLoading={txLoading} navigate={navigate} />
+            </div>
+          </div>
+
+          {/* Customers row — full width */}
+          <CustomersSection customers={customerBreakdown} isLoading={txLoading} />
+
         </div>
       </div>
     </>
+  );
+}
+
+// ── Top Items Section ──────────────────────────────────────────────────────────
+function TopItemsSection({ items, isLoading }) {
+  const totalQty = items.reduce((s, i) => s + parseFloat(i.qty_sold ?? 0), 0);
+  const totalRev = items.reduce((s, i) => s + parseFloat(i.revenue   ?? 0), 0);
+
+  return (
+    <Section title="Top Items Sold" icon={Trophy}>
+      {isLoading ? (
+        <div className="space-y-2.5">
+          {[1,2,3,4,5].map((i) => (
+            <div key={i} className="flex items-center gap-3">
+              <div className="h-5 w-5 rounded skeleton-shimmer shrink-0" />
+              <div className="h-3 flex-1 rounded skeleton-shimmer" />
+              <div className="h-3 w-12 rounded skeleton-shimmer" />
+              <div className="h-3 w-16 rounded skeleton-shimmer" />
+            </div>
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-6 text-center">
+          <Package className="h-8 w-8 text-muted-foreground/20 mb-2" />
+          <p className="text-xs text-muted-foreground">No item data for this shift window</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-border">
+                <th className="pb-2 pr-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-6">#</th>
+                <th className="pb-2 pr-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</th>
+                <th className="pb-2 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Qty Sold</th>
+                <th className="pb-2 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Revenue</th>
+                <th className="pb-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Share</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, idx) => {
+                const qty      = parseFloat(item.qty_sold ?? 0);
+                const rev      = parseFloat(item.revenue  ?? 0);
+                const revShare = totalRev > 0 ? (rev / totalRev) * 100 : 0;
+                const qtyShare = totalQty > 0 ? (qty / totalQty) * 100 : 0;
+                const isTop    = idx === 0;
+                return (
+                  <tr key={item.item_id ?? item.item_name} className="border-b border-border/30 last:border-0 hover:bg-muted/10 transition-colors">
+                    <td className="py-2.5 pr-3">
+                      {isTop ? (
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/15 text-[10px] font-bold text-amber-400">1</span>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground/40 tabular-nums">{idx + 1}</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="min-w-0 flex-1">
+                          <p className={cn("text-[12px] font-medium truncate", isTop ? "text-foreground font-semibold" : "text-foreground")}>
+                            {item.item_name}
+                          </p>
+                          {item.sku && (
+                            <p className="text-[10px] text-muted-foreground/50 font-mono">{item.sku}</p>
+                          )}
+                        </div>
+                      </div>
+                      {/* qty bar */}
+                      <div className="mt-1 h-1 w-full rounded-full bg-muted overflow-hidden">
+                        <div
+                          className={cn("h-full rounded-full", isTop ? "bg-amber-400" : "bg-primary/50")}
+                          style={{ width: `${Math.max(qtyShare, 2)}%` }}
+                        />
+                      </div>
+                    </td>
+                    <td className="py-2.5 pr-3 text-right">
+                      <span className={cn("font-mono tabular-nums font-semibold", isTop ? "text-amber-400" : "text-foreground")}>
+                        ×{qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2)}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-3 text-right">
+                      <span className="font-mono tabular-nums text-foreground">{formatCurrency(rev)}</span>
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <span className="text-[11px] text-muted-foreground tabular-nums">{revShare.toFixed(1)}%</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            {items.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-border">
+                  <td />
+                  <td className="pt-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Total</td>
+                  <td className="pt-2.5 text-right font-mono font-bold tabular-nums text-foreground">
+                    ×{totalQty % 1 === 0 ? totalQty.toFixed(0) : totalQty.toFixed(2)}
+                  </td>
+                  <td className="pt-2.5 text-right font-mono font-bold tabular-nums text-foreground">
+                    {formatCurrency(totalRev)}
+                  </td>
+                  <td />
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// ── Customers Section ──────────────────────────────────────────────────────────
+// Derived client-side from the transactions array already fetched.
+function CustomersSection({ customers, isLoading }) {
+  const totalSpend = customers.reduce((s, c) => s + c.total, 0);
+
+  return (
+    <Section title={`Customers This Shift (${customers.length})`} icon={Users}>
+      {isLoading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {[1,2,3,4,5,6].map((i) => (
+            <div key={i} className="h-16 rounded-xl border border-border/30 skeleton-shimmer" />
+          ))}
+        </div>
+      ) : customers.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-6 text-center">
+          <Users className="h-8 w-8 text-muted-foreground/20 mb-2" />
+          <p className="text-xs text-muted-foreground">No customer data for this shift</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          {customers.map((c) => {
+            const share = totalSpend > 0 ? (c.total / totalSpend) * 100 : 0;
+            return (
+              <div
+                key={c.id}
+                className="flex flex-col gap-2 rounded-xl border border-border bg-muted/10 px-3.5 py-3 hover:bg-muted/20 transition-colors"
+              >
+                {/* Avatar + name */}
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={cn(
+                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
+                    c.isWalkin
+                      ? "bg-muted text-muted-foreground border border-border"
+                      : "bg-sky-400/15 text-sky-400 border border-sky-400/20",
+                  )}>
+                    {c.isWalkin ? "W" : c.name.charAt(0).toUpperCase()}
+                  </div>
+                  <p className="text-[11px] font-semibold text-foreground truncate min-w-0 flex-1">
+                    {c.name}
+                  </p>
+                </div>
+
+                {/* Spend */}
+                <p className="text-[13px] font-bold tabular-nums font-mono text-foreground leading-none">
+                  {formatCurrency(c.total)}
+                </p>
+
+                {/* Meta */}
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] text-muted-foreground">
+                    {c.count} sale{c.count !== 1 ? "s" : ""}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    {share.toFixed(1)}%
+                  </span>
+                </div>
+
+                {/* Spend bar */}
+                <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+                  <div
+                    className={cn("h-full rounded-full", c.isWalkin ? "bg-muted-foreground/40" : "bg-sky-400")}
+                    style={{ width: `${Math.max(share, 2)}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// ── Credit Sales Section ───────────────────────────────────────────────────────
+function CreditSalesSection({ creditTxs, isLoading, navigate }) {
+  const totalCredit = creditTxs.reduce((s, t) => s + parseFloat(t.total_amount ?? 0), 0);
+
+  return (
+    <Section title={`Credit Sales (${creditTxs.length})`} icon={BadgeDollarSign}>
+      {isLoading ? (
+        <div className="space-y-2.5">
+          {[1,2,3].map((i) => (
+            <div key={i} className="flex items-center gap-2">
+              <div className="h-3 w-16 rounded skeleton-shimmer" />
+              <div className="h-3 flex-1 rounded skeleton-shimmer" />
+              <div className="h-3 w-14 rounded skeleton-shimmer" />
+            </div>
+          ))}
+        </div>
+      ) : creditTxs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-5 text-center">
+          <BadgeDollarSign className="h-7 w-7 text-muted-foreground/20 mb-2" />
+          <p className="text-xs text-muted-foreground">No credit sales this shift</p>
+        </div>
+      ) : (
+        <div className="space-y-0">
+          {creditTxs.map((tx) => (
+            <div
+              key={tx.id}
+              onClick={() => navigate(`/transactions/${tx.id}`)}
+              className="flex items-start justify-between gap-3 py-2.5 border-b border-border/30 last:border-0 hover:bg-muted/20 rounded-lg px-1 -mx-1 cursor-pointer transition-colors group"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <UserCircle className="h-3 w-3 text-violet-400 shrink-0" />
+                  <p className="text-[12px] font-medium text-foreground truncate">
+                    {tx.customer_name ?? (
+                      <span className="italic text-muted-foreground">Walk-in</span>
+                    )}
+                  </p>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-0.5 font-mono">
+                  {tx.reference_no} · {formatTime(tx.created_at)}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <p className="text-[12px] font-bold tabular-nums font-mono text-violet-400">
+                  {formatCurrency(parseFloat(tx.total_amount ?? 0))}
+                </p>
+                <ArrowRight className="h-3 w-3 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
+              </div>
+            </div>
+          ))}
+
+          {/* Total */}
+          {creditTxs.length > 1 && (
+            <div className="flex items-center justify-between pt-2.5 mt-0.5 border-t border-border/50">
+              <span className="text-[11px] font-semibold text-foreground">Total Outstanding</span>
+              <span className="text-[13px] font-bold tabular-nums font-mono text-violet-400">
+                {formatCurrency(totalCredit)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
   );
 }

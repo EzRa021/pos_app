@@ -14,7 +14,7 @@ import { getItems, getItemByBarcode } from "@/commands/items";
 import { getCategories } from "@/commands/categories";
 import { getCustomers }  from "@/commands/customers";
 import { createTransaction } from "@/commands/transactions";
-import { queryClient }   from "@/lib/queryClient";
+import { invalidateAfterSale } from "@/lib/invalidations";
 
 // ── usePos ────────────────────────────────────────────────────────────────────
 export function usePos({
@@ -67,15 +67,29 @@ export function usePos({
 
   // ── Charge (create transaction) ───────────────────────────────────────────
   // After success, refresh the shift summary so KPI cards stay accurate.
-  async function charge({ cartItems, payments, discountAmt, customer, note, heldTxId }) {
+  async function charge({ cartItems, payments, discountAmt, customer, note, heldTxId, loyaltyPointsRedeemed }) {
     if (!storeId)      throw new Error("No store selected");
     if (!cartItems.length) throw new Error("Cart is empty");
     if (!payments.length)  throw new Error("No payment entered");
 
+    // Separate out wallet / loyalty entries from "real" payment methods
+    const walletEntries = payments.filter((p) => p.type === "wallet");
+    const mainPayments  = payments.filter((p) => p.type !== "wallet" && p.type !== "loyalty");
+    const walletAmount  = walletEntries.reduce((s, p) => s + p.amount, 0) || null;
+
     // Determine single method vs split
-    const uniqueMethods  = [...new Set(payments.map((p) => p.type))];
-    const paymentMethod  = uniqueMethods.length === 1 ? uniqueMethods[0] : "split";
-    const amountTendered = payments.reduce((s, p) => s + p.amount, 0);
+    const uniqueMethods = [...new Set(mainPayments.map((p) => p.type))];
+    const paymentMethod =
+      mainPayments.length === 0 && walletAmount
+        ? "wallet"
+        : uniqueMethods.length === 1
+          ? uniqueMethods[0]
+          : mainPayments.length > 1 || (mainPayments.length > 0 && walletAmount)
+            ? "split"
+            : mainPayments[0]?.type ?? "cash";
+    const amountTendered = payments
+      .filter((p) => p.type !== "loyalty")
+      .reduce((s, p) => s + p.amount, 0);
 
     const result = await createTransaction({
       store_id:        storeId,
@@ -83,8 +97,15 @@ export function usePos({
       payment_method:  paymentMethod,
       amount_tendered: amountTendered,
       notes:           note || null,
-      discount_amount: discountAmt > 0.001 ? discountAmt : null,
-      held_tx_id:      heldTxId ?? null,
+      discount_amount:          discountAmt > 0.001 ? discountAmt : null,
+      // Pass per-leg breakdown when split so the backend creates one Payment
+      // row per method instead of a single opaque "split" row.
+      split_payments: paymentMethod === "split"
+        ? mainPayments.map((p) => ({ method: p.type, amount: p.amount }))
+        : undefined,
+      wallet_amount:             walletAmount,
+      loyalty_points_redeemed:   loyaltyPointsRedeemed ?? null,
+      held_tx_id:                heldTxId ?? null,
       client_uuid:     crypto.randomUUID(),
       offline_sale:    false,
       items: cartItems.map((item) => ({
@@ -95,19 +116,15 @@ export function usePos({
       })),
     });
 
-    // Refresh shift KPI cards after every sale
-    if (activeShift?.id) {
-      queryClient.invalidateQueries({ queryKey: ["shift-summary", activeShift.id] });
-    }
-
-    // Refresh customer + credit-sales cache when a credit sale changes the outstanding balance
-    if (customer?.id && paymentMethod === "credit") {
-      queryClient.invalidateQueries({ queryKey: ["customer",       customer.id] });
-      queryClient.invalidateQueries({ queryKey: ["customer-stats", customer.id] });
-      queryClient.invalidateQueries({ queryKey: ["customers"] });
-      queryClient.invalidateQueries({ queryKey: ["credit-sales"] });
-      queryClient.invalidateQueries({ queryKey: ["credit-summary"] });
-    }
+    // Invalidate every cache that a sale affects: stock, transactions, analytics, shift, etc.
+    invalidateAfterSale({
+      storeId,
+      shiftId:       activeShift?.id,
+      customerId:    customer?.id,
+      paymentMethod,
+      walletUsed:    !!walletAmount,
+      loyaltyUsed:   !!loyaltyPointsRedeemed,
+    });
 
     return result;
   }

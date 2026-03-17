@@ -32,9 +32,10 @@ export const searchItems = (query, storeId = null, limit = 10) =>
 export const countItems = (storeId = null, categoryId = null, isActive = null) =>
   rpc("count_items", { store_id: storeId, category_id: categoryId, is_active: isActive });
 
-/** Paginated item_history for one item. Returns PagedResult<ItemHistory>. */
-export const getItemHistory = (itemId, page = 1, limit = 20) =>
-  rpc("get_item_history", { item_id: itemId, page, limit });
+/** Paginated item_history for one item. Returns PagedResult<ItemHistory>.
+ *  filters: { page?, limit?, date_from? (YYYY-MM-DD), date_to? (YYYY-MM-DD), event_type? } */
+export const getItemHistory = (itemId, filters = {}) =>
+  rpc("get_item_history", { item_id: itemId, ...filters });
 
 // ── Mutations ─────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,9 @@ export const updateItem = (id, payload) => rpc("update_item", { id, ...payload }
 
 /** Soft-archive: sets archived_at = NOW() + is_active = FALSE. No undo via UI. */
 export const archiveItem = (id) => rpc("delete_item", { id });
+
+/** Remove the image from an item (sets image_data = null). Returns updated Item. */
+export const removeItemImage = (id) => rpc("remove_item_image", { id });
 
 /** Activate: sets is_active = TRUE. */
 export const activateItem = (id) => rpc("activate_item", { id });

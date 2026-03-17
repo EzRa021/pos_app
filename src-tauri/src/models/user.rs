@@ -67,3 +67,12 @@ pub struct Role {
     pub is_global:       bool,
     pub hierarchy_level: i32,
 }
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct Permission {
+    pub id:              i32,
+    pub permission_name: String,
+    pub permission_slug: String,
+    pub category:        Option<String>,
+    pub description:     Option<String>,
+}

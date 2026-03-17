@@ -5,7 +5,7 @@
 use tauri::State;
 use crate::{
     error::{AppError, AppResult},
-    models::user::{User, CreateUserDto, UpdateUserDto, UserFilters, Role},
+    models::user::{User, CreateUserDto, UpdateUserDto, UserFilters, Role, Permission},
     models::pagination::{PagedResult, PaginationParams},
     state::AppState,
     utils::crypto::{hash_password, validate_password},
@@ -45,7 +45,7 @@ pub async fn get_users(
         User,
         r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
                   u.role_id, r.role_slug, r.role_name, r.is_global,
-                  u.store_id, s.store_name,
+                  u.store_id, s.store_name AS "store_name?",
                   u.is_active, u.last_login, u.created_at, u.updated_at
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
@@ -83,7 +83,7 @@ pub async fn get_user(
         User,
         r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
                   u.role_id, r.role_slug, r.role_name, r.is_global,
-                  u.store_id, s.store_name,
+                  u.store_id, s.store_name AS "store_name?",
                   u.is_active, u.last_login, u.created_at, u.updated_at
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
@@ -138,7 +138,7 @@ pub async fn update_user(
            last_name  = COALESCE($3, last_name),
            phone      = COALESCE($4, phone),
            role_id    = COALESCE($5, role_id),
-           store_id   = COALESCE($6, store_id),
+           store_id   = $6,
            is_active  = COALESCE($7, is_active),
            updated_at = NOW()
            WHERE id = $8"#,
@@ -203,7 +203,7 @@ pub async fn search_users(
         User,
         r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
                   u.role_id, r.role_slug, r.role_name, r.is_global,
-                  u.store_id, s.store_name,
+                  u.store_id, s.store_name AS "store_name?",
                   u.is_active, u.last_login, u.created_at, u.updated_at
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
@@ -280,5 +280,92 @@ pub async fn reset_user_password(
     .execute(&pool)
     .await?;
 
+    Ok(())
+}
+
+// ── Permissions ───────────────────────────────────────────────────────────────
+
+/// Returns all permissions, ordered by category then name.
+#[tauri::command]
+pub async fn get_permissions(
+    state: State<'_, AppState>,
+    token: String,
+) -> AppResult<Vec<Permission>> {
+    guard_permission(&state, &token, "users.read").await?;
+    let pool = state.pool().await?;
+
+    sqlx::query_as!(
+        Permission,
+        "SELECT id, permission_name, permission_slug, category, description
+         FROM   permissions
+         ORDER  BY category NULLS LAST, permission_name"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
+}
+
+/// Returns the list of permission IDs currently assigned to a role.
+#[tauri::command]
+pub async fn get_role_permissions(
+    state:   State<'_, AppState>,
+    token:   String,
+    role_id: i32,
+) -> AppResult<Vec<i32>> {
+    guard_permission(&state, &token, "users.read").await?;
+    let pool = state.pool().await?;
+
+    let ids = sqlx::query_scalar!(
+        "SELECT permission_id FROM role_permissions WHERE role_id = $1 ORDER BY permission_id",
+        role_id
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    Ok(ids)
+}
+
+/// Replaces all permissions for a role in a single transaction.
+/// The super_admin role (is_global = TRUE) is protected and cannot be modified.
+#[tauri::command]
+pub async fn set_role_permissions(
+    state:          State<'_, AppState>,
+    token:          String,
+    role_id:        i32,
+    permission_ids: Vec<i32>,
+) -> AppResult<()> {
+    guard_permission(&state, &token, "users.update").await?;
+    let pool = state.pool().await?;
+
+    // Prevent editing the super_admin role's permissions
+    let is_global: bool = sqlx::query_scalar!(
+        "SELECT is_global FROM roles WHERE id = $1",
+        role_id
+    )
+    .fetch_optional(&pool)
+    .await?
+    .unwrap_or(false);
+
+    if is_global {
+        return Err(AppError::Forbidden);
+    }
+
+    let mut tx = pool.begin().await?;
+
+    sqlx::query!("DELETE FROM role_permissions WHERE role_id = $1", role_id)
+        .execute(&mut *tx)
+        .await?;
+
+    for perm_id in &permission_ids {
+        sqlx::query!(
+            "INSERT INTO role_permissions (role_id, permission_id)
+             VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            role_id, perm_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
     Ok(())
 }

@@ -20,6 +20,7 @@
 import {
   useState, useRef, useMemo, useEffect, useCallback,
 } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ShoppingCart, Package, Search, Filter,
@@ -27,13 +28,18 @@ import {
   Banknote, CreditCard, Smartphone, Receipt,
   ArrowLeft, ArrowRight, Clock, X, User,
   Tag, CheckCircle2, Loader2, ChevronDown,
+  Wallet, Star, Lock, Scale,
 } from "lucide-react";
 
 import { Button }   from "@/components/ui/button";
 import { Input }    from "@/components/ui/input";
 import { Badge }    from "@/components/ui/badge";
 import {
-  Popover, PopoverContent, PopoverTrigger,
+  Dialog, DialogContent, DialogHeader,
+  DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Popover, PopoverContent, PopoverTrigger, PopoverAnchor,
 } from "@/components/ui/popover";
 import {
   Select, SelectContent, SelectItem,
@@ -49,10 +55,13 @@ import { usePos }               from "@/features/pos/usePos";
 import { HoldDrawer }           from "@/features/pos/HoldDrawer";
 import { CustomerSearchBar }    from "@/features/pos/CustomerSearchBar";
 import { ReceiptModal }         from "@/features/pos/ReceiptModal";
+import { PinLockScreen }        from "@/components/shared/PinLockScreen";
 import { deleteHeldTransaction } from "@/commands/transactions";
+import { getWalletBalance }     from "@/commands/customer_wallet";
+import { getLoyaltyBalance }    from "@/commands/loyalty";
 
 import { formatCurrency } from "@/lib/format";
-import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from "@/lib/constants";
+import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS, isActiveShiftStatus } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,6 +99,20 @@ const PM_CONFIG = {
     badgeCls: "bg-rose-500/15 text-rose-400 border-rose-500/20",
     dotCls:   "bg-rose-400",
   },
+  [PAYMENT_METHODS.WALLET]: {
+    label:    "Wallet",
+    Icon:     Wallet,
+    btnCls:   "border-violet-500/50 text-violet-400 hover:bg-violet-500/10 hover:border-violet-500",
+    badgeCls: "bg-violet-500/15 text-violet-400 border-violet-500/20",
+    dotCls:   "bg-violet-400",
+  },
+  [PAYMENT_METHODS.LOYALTY]: {
+    label:    "Loyalty",
+    Icon:     Star,
+    btnCls:   "border-amber-500/50 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500",
+    badgeCls: "bg-amber-500/15 text-amber-400 border-amber-500/20",
+    dotCls:   "bg-amber-400",
+  },
 };
 
 const AVATAR_PALETTE = [
@@ -114,8 +137,13 @@ export default function PosPage() {
   const storeId     = useBranchStore((s) => s.activeStore?.id);
   const storeName   = useBranchStore((s) => s.activeStore?.store_name);
   const user        = useAuthStore((s) => s.user);
+  const isPosLocked = useAuthStore((s) => s.isPosLocked);
+  const lockPos     = useAuthStore((s) => s.lockPos);
+  const unlockPos   = useAuthStore((s) => s.unlockPos);
   const activeShift = useShiftStore((s) => s.activeShift);
-  const isShiftOpen = activeShift?.status === "open";
+  // Use isActiveShiftStatus so "active" and "suspended" shifts are also
+  // recognised — the status moves from "open" → "active" after the first sale.
+  const isShiftOpen = isActiveShiftStatus(activeShift?.status);
 
   // ── Cart ─────────────────────────────────────────────────────────────────
   const cartItems       = useCartStore((s) => s.cartItems);
@@ -137,6 +165,26 @@ export default function PosPage() {
   const holdCurrent  = useCartStore((s) => s.holdCurrentCart);
   const recallHeld   = useCartStore((s) => s.recallHeldTransaction);
 
+  // ── Wallet + loyalty queries (live when customer is selected) ──────────────
+  const customerId = activeCustomer?.id ?? null;
+
+  const { data: walletData } = useQuery({
+    queryKey: ["wallet-balance", customerId],
+    queryFn:  () => getWalletBalance(customerId),
+    enabled:  !!customerId,
+    staleTime: 60_000,
+  });
+  const walletBalance = parseFloat(walletData?.balance ?? 0);
+
+  const { data: loyaltyData } = useQuery({
+    queryKey: ["loyalty-balance", customerId, storeId],
+    queryFn:  () => getLoyaltyBalance(customerId, storeId),
+    enabled:  !!customerId && !!storeId,
+    staleTime: 60_000,
+  });
+  const loyaltyPoints = parseInt(loyaltyData?.points      ?? 0, 10);
+  const loyaltyNaira  = parseFloat(loyaltyData?.naira_value ?? 0);
+
   // ── Products filter state ─────────────────────────────────────────────────
   const [searchTerm,  setSearchTerm]  = useState("");
   const [debSearch,   setDebSearch]   = useState("");
@@ -152,6 +200,11 @@ export default function PosPage() {
   const [lastTransaction,   setLastTransaction]   = useState(null);
   const [isCharging,        setIsCharging]        = useState(false);
   const [isHolding,         setIsHolding]         = useState(false);
+
+  // ── Weigh modal state ─────────────────────────────────────────────────────
+  // weighModal.item: the full enriched item being weighed (null = closed)
+  // weighModal.qty:  the string the cashier types into the input
+  const [weighModal, setWeighModal] = useState({ item: null, qty: "" });
 
   // ── Payment state ─────────────────────────────────────────────────────────
   const [payments, setPayments] = useState([]);
@@ -184,32 +237,79 @@ export default function PosPage() {
     [cartItems, cartDiscount, cartDiscountPct],
   );
 
+  // Loyalty applied as a pre-payment reduction
+  const loyaltyEntry        = payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY);
+  const loyaltyNairaApplied = loyaltyEntry?.amount ?? 0;
+  const effectiveTotal      = Math.max(0, total - loyaltyNairaApplied);
+
   const totalPaid = useMemo(
-    () => payments.reduce((s, p) => s + p.amount, 0),
+    () => payments.filter((p) => p.type !== PAYMENT_METHODS.LOYALTY).reduce((s, p) => s + p.amount, 0),
     [payments],
   );
-  const remaining  = total - totalPaid;
+  const remaining  = effectiveTotal - totalPaid;
   const change     = remaining < -0.01 ? Math.abs(remaining) : 0;
   const amountDue  = remaining >  0.01 ? remaining : 0;
-  const isBalanced = isShiftOpen && cartItems.length > 0 && payments.length > 0 && Math.abs(remaining) <= 0.01;
+  const realPaymentCount = payments.filter((p) => p.type !== PAYMENT_METHODS.LOYALTY).length;
+  // Any weighted cart line with qty ≤ 0 means the cashier hasn't entered a weight yet.
+  const hasUnweighedItems = cartItems.some(
+    (ci) => ci.measurementType === "weight" && (ci.quantity == null || ci.quantity <= 0)
+  );
+  const isBalanced = isShiftOpen && cartItems.length > 0 && realPaymentCount > 0 && Math.abs(remaining) <= 0.01 && !hasUnweighedItems;
 
-  // Auto-adjust last payment entry when cart total changes
+  // Auto-adjust last REAL payment entry when effective total changes
   useEffect(() => {
-    if (payments.length === 0) return;
+    const realPayments = payments.filter((p) => p.type !== PAYMENT_METHODS.LOYALTY);
+    if (realPayments.length === 0) return;
     setPayments((prev) => {
-      if (prev.length === 1) return [{ ...prev[0], amount: total }];
-      const othersTotal = prev.slice(0, -1).reduce((s, p) => s + p.amount, 0);
-      const adjusted    = Math.max(0, total - othersTotal);
-      return [...prev.slice(0, -1), { ...prev[prev.length - 1], amount: adjusted }];
+      const loyalty = prev.filter((p) => p.type === PAYMENT_METHODS.LOYALTY);
+      const real    = prev.filter((p) => p.type !== PAYMENT_METHODS.LOYALTY);
+      if (real.length === 1) return [...loyalty, { ...real[0], amount: effectiveTotal }];
+      const othersTotal = real.slice(0, -1).reduce((s, p) => s + p.amount, 0);
+      const adjusted    = Math.max(0, effectiveTotal - othersTotal);
+      return [...loyalty, ...real.slice(0, -1), { ...real[real.length - 1], amount: adjusted }];
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [total]);
+  }, [effectiveTotal]);
 
   // ── Cart action handlers ──────────────────────────────────────────────────
   const handleAddToCart = useCallback((item) => {
     const effectivePrice = item.discount_price
       ? parseFloat(item.discount_price)
       : parseFloat(item.selling_price);
+
+    const measurementType = item.measurement_type ?? "quantity";
+    const unitLabel = item.unit_type ?? "unit";
+
+    // Items that require weighing: open the weight modal instead of adding directly.
+    if (measurementType === "weight" && item.requires_weight) {
+      setWeighModal({
+        item: {
+          itemId:        item.id,
+          sku:           item.sku ?? "",
+          name:          item.item_name,
+          price:         effectivePrice,
+          originalPrice: parseFloat(item.selling_price),
+          hasDiscount:   !!item.discount_price && parseFloat(item.discount_price) < parseFloat(item.selling_price),
+          taxRate:       item.taxable ? parseFloat(item.tax_rate ?? "7.5") : 0,
+          unitLabel,
+          measurementType,
+          categoryName:  item.category_name ?? "",
+        },
+        qty: "",
+      });
+      return;
+    }
+
+    // Regular add: weight items without requires_weight start at 0 so
+    // the cashier can manually enter the weight; quantity items start at 1.
+    const initialQty = measurementType === "weight" ? 0 : 1;
+
+    // Check if item already exists in cart to give feedback
+    const existing = cartItems.find((ci) => ci.itemId === item.id);
+    if (existing && measurementType !== "weight") {
+      const newQty = existing.quantity + initialQty;
+      toast(`${item.item_name} — qty updated to ${newQty}`, { duration: 1500 });
+    }
 
     addItem({
       itemId:        item.id,
@@ -218,18 +318,92 @@ export default function PosPage() {
       price:         effectivePrice,
       originalPrice: parseFloat(item.selling_price),
       hasDiscount:   !!item.discount_price && parseFloat(item.discount_price) < parseFloat(item.selling_price),
-      quantity:      1,
+      quantity:      initialQty,
       taxRate:       item.taxable ? parseFloat(item.tax_rate ?? "7.5") : 0,
       discount:      0,
-      unit:          item.unit ?? "unit",
+      unit:          unitLabel,
+      measurementType,
       categoryName:  item.category_name ?? "",
     });
-  }, [addItem]);
+  }, [addItem, cartItems]);
+
+  // ── Weigh modal handlers ─────────────────────────────────────────────────────
+  const handleWeighConfirm = useCallback(() => {
+    const weight = parseFloat(weighModal.qty);
+    if (!weight || weight <= 0) {
+      toast.error("Please enter a valid weight greater than zero.");
+      return;
+    }
+    const mi = weighModal.item;
+    addItem({
+      itemId:        mi.itemId,
+      sku:           mi.sku,
+      name:          mi.name,
+      price:         mi.price,
+      originalPrice: mi.originalPrice,
+      hasDiscount:   mi.hasDiscount,
+      quantity:      weight,
+      taxRate:       mi.taxRate,
+      discount:      0,
+      unit:          mi.unitLabel,
+      measurementType: "weight",
+      categoryName:  mi.categoryName,
+    });
+    setWeighModal({ item: null, qty: "" });
+  }, [weighModal, addItem]);
+
+  const handleWeighCancel = useCallback(() => {
+    setWeighModal({ item: null, qty: "" });
+  }, []);
 
   const handleClearCart = useCallback(() => {
     clearCart();
     setPayments([]);
   }, [clearCart]);
+
+  // ── Wallet pay ────────────────────────────────────────────────────────────
+  const handleWalletPay = useCallback(() => {
+    if (!activeCustomer) {
+      toast.error("Select a customer to use their wallet.");
+      setShowCustomerSearch(true);
+      return;
+    }
+    if (walletBalance <= 0) {
+      toast.error("Customer wallet balance is ₦0.");
+      return;
+    }
+    if (payments.find((p) => p.type === PAYMENT_METHODS.WALLET)) {
+      toast("Wallet payment already added.");
+      return;
+    }
+    const amount = Math.min(walletBalance, Math.max(0, remaining));
+    if (amount <= 0) return;
+    setPayments((prev) => [...prev, { id: Date.now(), type: PAYMENT_METHODS.WALLET, amount }]);
+  }, [activeCustomer, walletBalance, remaining, payments]);
+
+  // ── Loyalty toggle ────────────────────────────────────────────────────────
+  const handleLoyaltyToggle = useCallback(() => {
+    if (!activeCustomer) {
+      toast.error("Select a customer to redeem loyalty points.");
+      setShowCustomerSearch(true);
+      return;
+    }
+    if (loyaltyPoints <= 0) {
+      toast.error("Customer has no redeemable loyalty points.");
+      return;
+    }
+    const alreadyOn = !!payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY);
+    if (alreadyOn) {
+      setPayments((prev) => prev.filter((p) => p.type !== PAYMENT_METHODS.LOYALTY));
+    } else {
+      setPayments((prev) => [...prev, {
+        id:            Date.now(),
+        type:          PAYMENT_METHODS.LOYALTY,
+        amount:        Math.min(loyaltyNaira, total),
+        loyaltyPoints,
+      }]);
+    }
+  }, [activeCustomer, loyaltyPoints, loyaltyNaira, total, payments]);
 
   // ── Payment handlers ──────────────────────────────────────────────────────
   const handlePaymentClick = useCallback((type) => {
@@ -260,6 +434,7 @@ export default function PosPage() {
     if (!isBalanced || isCharging) return;
     setIsCharging(true);
     try {
+      const loyaltyEntry = payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY);
       const result = await charge({
         cartItems,
         payments,
@@ -267,6 +442,7 @@ export default function PosPage() {
         customer: activeCustomer,
         note,
         heldTxId,
+        loyaltyPointsRedeemed: loyaltyEntry?.loyaltyPoints ?? null,
       });
       setLastTransaction(result);
       setShowReceipt(true);
@@ -338,18 +514,18 @@ export default function PosPage() {
   // ── Shift guard ───────────────────────────────────────────────────────────
   if (!isShiftOpen) {
     return (
-      <div className="flex flex-1 items-center justify-center flex-col gap-5 text-center py-20">
-        <div className="flex h-20 w-20 items-center justify-center rounded-2xl border border-border bg-card">
-          <Clock className="h-9 w-9 text-muted-foreground/30" />
+      <div className="flex flex-1 items-center justify-center flex-col gap-6 text-center py-20">
+        <div className="flex h-24 w-24 items-center justify-center rounded-3xl border border-border/60 bg-card/80 shadow-inner">
+          <Clock className="h-10 w-10 text-muted-foreground/25" />
         </div>
-        <div className="space-y-1">
-          <p className="text-sm font-bold text-foreground">No Active Shift</p>
-          <p className="text-xs text-muted-foreground">
-            Open a shift from the Shifts page before making sales.
+        <div className="space-y-2 max-w-xs">
+          <p className="text-base font-bold text-foreground">No Active Shift</p>
+          <p className="text-[13px] text-muted-foreground leading-relaxed">
+            You need to open a shift before you can process sales. Go to the Shifts page and click "Open Shift".
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => window.history.back()}>
-          Go to Shifts
+        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => window.history.back()}>
+          <Clock className="h-3.5 w-3.5" />Go to Shifts
         </Button>
       </div>
     );
@@ -380,6 +556,15 @@ export default function PosPage() {
                 </span>
               )}
             </div>
+
+            {/* Lock POS button */}
+            <button
+              onClick={lockPos}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-all"
+              title="Lock POS screen"
+            >
+              <Lock className="h-3 w-3" /> Lock
+            </button>
 
             {/* Grid / List toggle */}
             <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background/80 p-0.5">
@@ -608,25 +793,36 @@ export default function PosPage() {
 
           {/* Cart discount input (shown when cart has items) */}
           {cartItems.length > 0 && (
-            <div className="px-3 py-2 border-t border-border/40 bg-card/20 shrink-0">
+            <div className="px-3 py-2 border-t border-border/40 bg-muted/10 shrink-0">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground shrink-0">Discount (₦)</span>
-                <Input
-                  type="number"
-                  placeholder="0"
-                  value={cartDiscount > 0 ? cartDiscount : ""}
-                  onChange={(e) => setCartDiscount(parseFloat(e.target.value) || 0)}
-                  className="h-7 text-[11px] bg-background/50 border-border/50 flex-1 font-mono"
-                  min="0"
-                  step="1"
-                />
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Tag className="h-3 w-3 text-success/70" />
+                  <span className="text-[10px] font-semibold text-muted-foreground">Discount</span>
+                </div>
+                <div className="relative flex-1">
+                  <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground font-bold">₦</span>
+                  <Input
+                    type="number"
+                    placeholder="0.00"
+                    value={cartDiscount > 0 ? cartDiscount : ""}
+                    onChange={(e) => setCartDiscount(parseFloat(e.target.value) || 0)}
+                    className="h-7 text-[11px] bg-background/60 border-border/50 pl-5 pr-2 font-mono"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
                 {cartDiscount > 0 && (
-                  <button
-                    onClick={() => setCartDiscount(0)}
-                    className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="rounded-full bg-success/15 border border-success/25 px-1.5 py-0.5 text-[9px] font-bold text-success leading-none tabular-nums">
+                      -{formatCurrency(cartDiscount)}
+                    </span>
+                    <button
+                      onClick={() => setCartDiscount(0)}
+                      className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -659,7 +855,21 @@ export default function PosPage() {
         amountDue={amountDue}
         isBalanced={isBalanced}
         isCharging={isCharging}
+        walletBalance={walletBalance}
+        loyaltyPoints={loyaltyPoints}
+        loyaltyNaira={loyaltyNaira}
+        loyaltyApplied={!!payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY)}
+        onWalletPay={handleWalletPay}
+        onLoyaltyToggle={handleLoyaltyToggle}
       />
+
+      {/* ── POS Lock overlay ────────────────────────────────────────────── */}
+      {isPosLocked && (
+        <PinLockScreen
+          onUnlock={unlockPos}
+          userName={user?.full_name ?? user?.username}
+        />
+      )}
 
       {/* ── Modals / sheets ──────────────────────────────────────────────── */}
       <HoldDrawer
@@ -687,6 +897,15 @@ export default function PosPage() {
         transaction={lastTransaction}
         storeName={storeName}
       />
+
+      {/* ── Weigh Item Modal ──────────────────────────────────────────────── */}
+      <WeighItemModal
+        item={weighModal.item}
+        qty={weighModal.qty}
+        onQtyChange={(v) => setWeighModal((s) => ({ ...s, qty: v }))}
+        onConfirm={handleWeighConfirm}
+        onCancel={handleWeighCancel}
+      />
     </div>
   );
 }
@@ -699,6 +918,7 @@ function ItemCard({ item, onAdd }) {
   const origPrice   = parseFloat(item.selling_price ?? "0");
   const hasDiscount = !!item.discount_price && price < origPrice;
   const stock       = parseFloat(item.available_quantity ?? "0");
+  const unitLabel   = item.unit_type ?? null;
   const minStock    = item.min_stock_level ?? 5;
   const isTracked   = item.track_stock;
   const isOut       = isTracked && stock <= 0;
@@ -713,55 +933,67 @@ function ItemCard({ item, onAdd }) {
         "transition-all duration-150",
         isOut
           ? "opacity-40 cursor-not-allowed border-border bg-card"
-          : "cursor-pointer border-border bg-card hover:border-primary/40 hover:shadow-lg hover:shadow-black/30 active:scale-[0.98]"
+          : "cursor-pointer border-border/70 bg-card hover:border-primary/50 hover:shadow-xl hover:shadow-black/40 hover:bg-card/80 active:scale-[0.97]"
       )}
     >
-      {/* Letter avatar header */}
+      {/* Image / letter avatar header */}
       <div className={cn(
-        "flex items-center justify-center h-[52px] w-full border-b border-border/30",
-        "text-[22px] font-bold leading-none",
-        avatarCls(item.item_name),
+        "relative flex items-center justify-center w-full border-b border-border/20 overflow-hidden",
+        item.image_data ? "h-[100px]" : "h-[56px] text-[24px] font-bold leading-none",
+        !item.image_data && avatarCls(item.item_name),
       )}>
-        {(item.item_name ?? "?").charAt(0).toUpperCase()}
+        {item.image_data ? (
+          <img
+            src={item.image_data}
+            alt={item.item_name}
+            className="h-full w-full object-contain bg-muted/20"
+          />
+        ) : (
+          (item.item_name ?? "?").charAt(0).toUpperCase()
+        )}
+        {/* Discount badge */}
+        {hasDiscount && (
+          <div className="absolute top-1.5 right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-success/25 border border-success/30">
+            <Tag className="h-2.5 w-2.5 text-success" />
+          </div>
+        )}
       </div>
 
-      <div className="px-2.5 pt-2 pb-2.5 flex flex-col gap-1.5 flex-1">
+      <div className="px-2.5 pt-2 pb-2.5 flex flex-col gap-1 flex-1">
         <p className="text-[11px] font-semibold text-foreground leading-snug line-clamp-2 min-h-[2.4em]">
           {item.item_name}
         </p>
-        <div className="flex items-end justify-between gap-1">
+        {item.category_name && (
+          <p className="text-[9px] text-muted-foreground/50 truncate -mt-0.5">{item.category_name}</p>
+        )}
+        <div className="flex items-end justify-between gap-1 mt-auto pt-1">
           <div>
             <p className="text-[13px] font-bold text-foreground tabular-nums leading-none">
               {formatCurrency(price)}
             </p>
             {hasDiscount && (
-              <p className="text-[10px] text-muted-foreground/50 line-through tabular-nums mt-0.5">
+              <p className="text-[10px] text-muted-foreground/40 line-through tabular-nums mt-0.5">
                 {formatCurrency(origPrice)}
               </p>
             )}
           </div>
           {isTracked && (
             <span className={cn(
-              "rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none shrink-0",
-              isOut ? "bg-destructive/15 text-destructive" :
-              isLow ? "bg-warning/15 text-warning"        :
-                      "bg-muted text-muted-foreground"
+              "rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none shrink-0 border",
+              isOut ? "bg-destructive/10 text-destructive border-destructive/20" :
+              isLow ? "bg-warning/10 text-warning border-warning/20"             :
+                      "bg-muted/60 text-muted-foreground border-border/40"
             )}>
-              {isOut ? "Out" : String(stock)}
+              {isOut ? "Out" : unitLabel ? `${stock} ${unitLabel}` : stock}
             </span>
           )}
         </div>
       </div>
 
-      {hasDiscount && (
-        <div className="absolute top-1.5 right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-success/20">
-          <Tag className="h-2.5 w-2.5 text-success" />
-        </div>
-      )}
-
+      {/* Hover overlay with + button */}
       {!isOut && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150 bg-primary/[0.03]">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl shadow-primary/50 border border-primary/40">
             <Plus className="h-4 w-4" />
           </div>
         </div>
@@ -778,6 +1010,7 @@ function ItemRow({ item, index, onAdd }) {
   const origPrice   = parseFloat(item.selling_price ?? "0");
   const hasDiscount = !!item.discount_price && price < origPrice;
   const stock       = parseFloat(item.available_quantity ?? "0");
+  const unitLabel   = item.unit_type ?? null;
   const isOut       = item.track_stock && stock <= 0;
   const isLow       = item.track_stock && !isOut && stock <= (item.min_stock_level ?? 5);
 
@@ -785,49 +1018,64 @@ function ItemRow({ item, index, onAdd }) {
     <div
       onClick={() => !isOut && onAdd(item)}
       className={cn(
-        "grid grid-cols-12 items-center gap-2 px-4 py-2.5 group transition-colors duration-100 select-none",
-        isOut ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:bg-muted/30 active:bg-muted/50"
+        "grid grid-cols-12 items-center gap-2 px-4 py-2 group transition-colors duration-100 select-none",
+        isOut ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:bg-primary/[0.04] active:bg-muted/40"
       )}
     >
       <div className="col-span-1">
-        <span className="text-[10px] text-muted-foreground/40 tabular-nums">{index}</span>
+        <span className="text-[10px] text-muted-foreground/30 tabular-nums">{index}</span>
       </div>
-      <div className="col-span-5 min-w-0">
-        <p className="text-[12px] font-medium text-foreground truncate">{item.item_name}</p>
-        {item.category_name && (
-          <p className="text-[10px] text-muted-foreground/60 truncate">{item.category_name}</p>
-        )}
+      <div className="col-span-5 min-w-0 flex items-center gap-2">
+        {/* Thumbnail */}
+        <div className={cn(
+          "shrink-0 h-7 w-7 rounded-md overflow-hidden border border-border/40 flex items-center justify-center text-[10px] font-bold",
+          !item.image_data && avatarCls(item.item_name),
+        )}>
+          {item.image_data
+            ? <img src={item.image_data} alt={item.item_name} className="h-full w-full object-cover" />
+            : (item.item_name ?? "?").charAt(0).toUpperCase()
+          }
+        </div>
+        <div className="min-w-0">
+          <p className="text-[12px] font-semibold text-foreground truncate">{item.item_name}</p>
+          {item.category_name && (
+            <p className="text-[9px] text-muted-foreground/50 truncate">{item.category_name}</p>
+          )}
+        </div>
       </div>
       <div className="col-span-3 flex items-center gap-1.5">
-        <span className="text-[12px] font-bold text-foreground tabular-nums">
+        <span className={cn(
+          "text-[12px] font-bold tabular-nums",
+          hasDiscount ? "text-success" : "text-foreground"
+        )}>
           {formatCurrency(price)}
         </span>
         {hasDiscount && (
           <>
-            <span className="text-[10px] text-muted-foreground/40 line-through tabular-nums">
+            <span className="text-[10px] text-muted-foreground/35 line-through tabular-nums">
               {formatCurrency(origPrice)}
             </span>
-            <Tag className="h-3 w-3 text-success shrink-0" />
+            <Tag className="h-2.5 w-2.5 text-success shrink-0" />
           </>
         )}
       </div>
       <div className="col-span-2">
         {item.track_stock ? (
           <span className={cn(
-            "text-[10px] tabular-nums",
-            isOut ? "text-destructive" : isLow ? "text-warning" : "text-muted-foreground/60"
+            "text-[10px] tabular-nums font-medium",
+            isOut ? "text-destructive" : isLow ? "text-warning" : "text-muted-foreground/50"
           )}>
-            {isOut ? "Out of stock" : `${stock} left`}
+            {isOut ? "Out of stock" : unitLabel ? `${stock} ${unitLabel}` : `${stock} left`}
           </span>
         ) : (
-          <span className="text-[10px] text-muted-foreground/30">—</span>
+          <span className="text-[10px] text-muted-foreground/25">—</span>
         )}
       </div>
       <div className="col-span-1 flex justify-end">
         <div className={cn(
-          "h-6 w-6 rounded-md border flex items-center justify-center transition-all duration-100",
+          "h-6 w-6 rounded-md border flex items-center justify-center transition-all duration-150",
           "border-transparent text-transparent",
-          !isOut && "group-hover:border-primary/30 group-hover:bg-primary/10 group-hover:text-primary",
+          !isOut && "group-hover:border-primary/40 group-hover:bg-primary/15 group-hover:text-primary",
         )}>
           <Plus className="h-3 w-3" />
         </div>
@@ -841,27 +1089,33 @@ function ItemRow({ item, index, onAdd }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function CartItemRow({ item, onRemove, onSetQty }) {
   const lineTotal = Math.max(0, item.price * item.quantity - (item.discount ?? 0));
+  const measurementType = item.measurementType ?? "quantity";
+  const isWeighted = measurementType === "weight" || measurementType === "volume" || measurementType === "length";
+  const step = isWeighted ? 0.001 : 1;
+  const hasTax = (item.taxRate ?? 0) > 0;
 
   return (
-    <div className="group flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2.5 hover:border-border/60 transition-colors">
+    <div className="group flex items-center gap-2 rounded-xl border border-border/70 bg-card px-3 py-2 hover:border-primary/20 hover:bg-card/80 transition-all duration-150">
       <div className="flex-1 min-w-0">
-        <p className="text-[12px] font-semibold text-foreground truncate leading-snug">
+        <p className="text-[12px] font-semibold text-foreground truncate leading-tight">
           {item.name}
         </p>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <span className="text-[11px] text-muted-foreground tabular-nums">
-            {formatCurrency(item.price)}
+        <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+          <span className="text-[11px] text-muted-foreground tabular-nums font-mono">
+            {formatCurrency(item.price)}{item.unit ? `/${item.unit}` : ""}
           </span>
           {item.hasDiscount && (
             <>
-              <span className="text-[10px] text-muted-foreground/40 line-through tabular-nums">
+              <span className="text-[10px] text-muted-foreground/35 line-through tabular-nums">
                 {formatCurrency(item.originalPrice)}
               </span>
-              <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-[9px] font-bold text-success leading-none">DISC</span>
+              <span className="rounded-full bg-success/15 border border-success/20 px-1.5 py-0.5 text-[8px] font-bold text-success leading-none">DISC</span>
             </>
           )}
-          {item.categoryName && (
-            <span className="text-[10px] text-muted-foreground/40">· {item.categoryName}</span>
+          {hasTax && (
+            <span className="rounded-full bg-warning/10 border border-warning/20 px-1.5 py-0.5 text-[8px] font-bold text-warning/80 leading-none">
+              VAT {item.taxRate}%
+            </span>
           )}
         </div>
       </div>
@@ -869,8 +1123,8 @@ function CartItemRow({ item, onRemove, onSetQty }) {
       {/* Qty controls */}
       <div className="flex items-center gap-0.5 shrink-0">
         <button
-          onClick={() => onSetQty(item.itemId, item.quantity - 1)}
-          className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all"
+          onClick={() => onSetQty(item.itemId, Math.max(0, item.quantity - step))}
+          className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
         >
           <Minus className="h-2.5 w-2.5" />
         </button>
@@ -881,11 +1135,11 @@ function CartItemRow({ item, onRemove, onSetQty }) {
           onFocus={(e) => e.target.select()}
           className="h-6 w-14 text-center text-[12px] px-1 tabular-nums font-mono border-border bg-background/50"
           min="0"
-          step="1"
+          step={step}
         />
         <button
-          onClick={() => onSetQty(item.itemId, item.quantity + 1)}
-          className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all"
+          onClick={() => onSetQty(item.itemId, item.quantity + step)}
+          className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
         >
           <Plus className="h-2.5 w-2.5" />
         </button>
@@ -896,17 +1150,101 @@ function CartItemRow({ item, onRemove, onSetQty }) {
         <p className="text-[13px] font-bold text-foreground tabular-nums font-mono">
           {formatCurrency(lineTotal)}
         </p>
+        {hasTax && (
+          <p className="text-[9px] text-muted-foreground/50 tabular-nums font-mono">
+            +{formatCurrency(lineTotal * (item.taxRate / 100))} tax
+          </p>
+        )}
       </div>
 
       {/* Remove */}
       <button
         onClick={() => onRemove(item.itemId)}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-destructive/30 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-all"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-destructive/25 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-all"
         title="Remove item"
       >
         <Trash2 className="h-3 w-3" />
       </button>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WeighItemModal
+// ─────────────────────────────────────────────────────────────────────────────
+function WeighItemModal({ item, qty, onQtyChange, onConfirm, onCancel }) {
+  const isValid = parseFloat(qty) > 0;
+
+  return (
+    <Dialog open={!!item} onOpenChange={(open) => { if (!open) onCancel(); }}>
+      <DialogContent className="sm:max-w-sm bg-card border-border shadow-2xl shadow-black/60">
+        <DialogHeader>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15 border border-primary/20">
+              <Scale className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <DialogTitle className="text-[15px] font-bold text-foreground leading-tight">
+                {item?.name ?? "Weigh Item"}
+              </DialogTitle>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Unit: <span className="font-semibold text-foreground">{item?.unitLabel ?? "unit"}</span>
+                {item?.price != null && (
+                  <span className="ml-2">· {formatCurrency(item.price)}<span className="text-muted-foreground/60">/{item?.unitLabel ?? "unit"}</span></span>
+                )}
+              </p>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="py-2">
+          <label className="block text-[11px] font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+            Weight ({item?.unitLabel ?? "unit"})
+          </label>
+          <div className="relative">
+            <Input
+              type="number"
+              placeholder="0.250"
+              value={qty}
+              onChange={(e) => onQtyChange(e.target.value)}
+              onFocus={(e) => e.target.select()}
+              onKeyDown={(e) => { if (e.key === "Enter" && isValid) onConfirm(); }}
+              className="h-12 text-base font-mono tabular-nums pr-16 bg-background/60 border-border focus:border-primary"
+              min="0.001"
+              step="0.001"
+              autoFocus
+            />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] font-semibold text-muted-foreground">
+              {item?.unitLabel ?? "unit"}
+            </span>
+          </div>
+          {qty && !isValid && (
+            <p className="text-[11px] text-destructive mt-1.5">
+              Weight must be greater than zero.
+            </p>
+          )}
+          {isValid && (
+            <p className="text-[11px] text-muted-foreground mt-1.5 tabular-nums">
+              Line total ≈ <span className="font-semibold text-foreground">{formatCurrency((item?.price ?? 0) * parseFloat(qty))}</span>
+            </p>
+          )}
+        </div>
+
+        <DialogFooter className="gap-2 sm:gap-2">
+          <Button variant="outline" className="flex-1" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button
+            className="flex-1"
+            disabled={!isValid}
+            onClick={onConfirm}
+          >
+            <ShoppingCart className="h-3.5 w-3.5 mr-1.5" />
+            Add to Cart
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -921,6 +1259,8 @@ function BottomBar({
   subtotal, tax, discountAmt, grossSubtotal, total,
   totalPaid, remaining, change, amountDue,
   isBalanced, isCharging,
+  walletBalance, loyaltyPoints, loyaltyNaira, loyaltyApplied,
+  onWalletPay, onLoyaltyToggle,
 }) {
   const hasCart = cartItems.length > 0;
   const popCfg  = popover.type ? PM_CONFIG[popover.type] : null;
@@ -930,117 +1270,176 @@ function BottomBar({
     ? [activeCustomer.first_name, activeCustomer.last_name].filter(Boolean).join(" ") || activeCustomer.name || "Customer"
     : "Walk-in";
 
-  return (
-    <div className="shrink-0 border-t border-border bg-card shadow-[0_-6px_32px_rgba(0,0,0,0.4)]">
-      <div className="flex items-stretch">
+  // Helper: is this method already in the payments list?
+  const methodAdded = (type) => payments.some((p) => p.type === type);
 
-        {/* ── ZONE 1: Payment method buttons ──────────────────────── */}
-        <div className="flex items-center gap-2 px-4 py-3">
-          <Popover
-            open={popover.open}
-            onOpenChange={(v) => !v && setPopover({ open: false, type: null, amount: "" })}
-          >
-            <PopoverTrigger asChild>
+  return (
+    <div className="shrink-0 border-t border-border bg-card shadow-[0_-8px_40px_rgba(0,0,0,0.45)]">
+
+      {/* ── ROW 1: Payment method buttons ───────────────────────────── */}
+      <div className="border-b border-border/50 bg-muted/10">
+        <Popover
+          open={popover.open}
+          onOpenChange={(v) => !v && setPopover({ open: false, type: null, amount: "" })}
+        >
+          {/* PopoverAnchor — positions the floating popover without toggle behaviour */}
+          <PopoverAnchor asChild>
+            <div className="flex items-center gap-2 px-4 py-2">
+
+              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-wider shrink-0 mr-1">
+                Pay via
+              </span>
+
+              {/* Cash */}
               <Button
                 variant="outline" size="sm"
                 disabled={!hasCart}
                 onClick={() => onPaymentClick(PAYMENT_METHODS.CASH)}
-                className={cn("h-10 gap-1.5 text-[12px] font-semibold transition-all", PM_CONFIG[PAYMENT_METHODS.CASH].btnCls, "disabled:opacity-30")}
+                className={cn(
+                  "h-8 gap-1.5 text-[11px] font-semibold transition-all",
+                  PM_CONFIG[PAYMENT_METHODS.CASH].btnCls,
+                  "disabled:opacity-30",
+                  methodAdded(PAYMENT_METHODS.CASH) && "ring-1 ring-success/50 bg-success/10",
+                )}
               >
-                <Banknote className="h-4 w-4" /> Cash
+                <Banknote className="h-3.5 w-3.5" /> Cash
               </Button>
-            </PopoverTrigger>
 
-            {/* Card + Transfer + Credit outside trigger — same controlled popover */}
-            {[
-              [PAYMENT_METHODS.CARD,     CreditCard, "Card"],
-              [PAYMENT_METHODS.TRANSFER, Smartphone, "Transfer"],
-              [PAYMENT_METHODS.CREDIT,   Receipt,    "Credit"],
-            ].map(([method, Icon, label]) => (
+              {/* Card + Transfer + Credit */}
+              {[
+                [PAYMENT_METHODS.CARD,     CreditCard, "Card"],
+                [PAYMENT_METHODS.TRANSFER, Smartphone, "Transfer"],
+                [PAYMENT_METHODS.CREDIT,   Receipt,    "Credit"],
+              ].map(([method, Icon, label]) => (
+                <Button
+                  key={method}
+                  variant="outline" size="sm"
+                  disabled={!hasCart}
+                  onClick={() => onPaymentClick(method)}
+                  className={cn(
+                    "h-8 gap-1.5 text-[11px] font-semibold transition-all",
+                    PM_CONFIG[method].btnCls,
+                    "disabled:opacity-30",
+                    methodAdded(method) && `ring-1 ${PM_CONFIG[method].badgeCls.split(" ").find((c) => c.startsWith("border-"))} bg-opacity-10`,
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" /> {label}
+                </Button>
+              ))}
+
+              <div className="w-px h-5 bg-border/60 mx-1" />
+
+              {/* Wallet */}
               <Button
-                key={method}
                 variant="outline" size="sm"
                 disabled={!hasCart}
-                onClick={() => onPaymentClick(method)}
-                className={cn("h-10 gap-1.5 text-[12px] font-semibold transition-all", PM_CONFIG[method].btnCls, "disabled:opacity-30")}
+                onClick={onWalletPay}
+                className={cn(
+                  "h-8 gap-1.5 text-[11px] font-semibold transition-all",
+                  PM_CONFIG[PAYMENT_METHODS.WALLET].btnCls,
+                  "disabled:opacity-30",
+                  methodAdded(PAYMENT_METHODS.WALLET) && "ring-1 ring-violet-500/40 bg-violet-500/10",
+                )}
+                title={activeCustomer ? `Wallet balance: ${formatCurrency(walletBalance)}` : "Select a customer first"}
               >
-                <Icon className="h-4 w-4" /> {label}
+                <Wallet className="h-3.5 w-3.5" />
+                Wallet
+                {activeCustomer && walletBalance > 0 && (
+                  <span className="ml-0.5 text-[9px] opacity-70 tabular-nums">{formatCurrency(walletBalance)}</span>
+                )}
               </Button>
-            ))}
 
-            {/* Amount entry popover */}
-            <PopoverContent
-              side="top" align="start" sideOffset={10}
-              className="w-72 p-4 bg-card border-border/80 shadow-2xl shadow-black/70"
-            >
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  {PopIcon && (
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-background">
-                      <PopIcon className="h-4 w-4 text-foreground" />
-                    </div>
-                  )}
-                  <div>
-                    <p className="text-sm font-bold text-foreground leading-tight">
-                      {popCfg?.label ?? ""} Payment
-                    </p>
-                    <p className="text-[11px] text-muted-foreground leading-tight mt-0.5">
-                      Balance:{" "}
-                      <span className={cn(
-                        "font-semibold tabular-nums font-mono",
-                        remaining > 0.01 ? "text-warning" : "text-success"
-                      )}>
-                        {formatCurrency(Math.max(0, remaining))}
-                      </span>
-                    </p>
-                  </div>
-                </div>
+              {/* Loyalty */}
+              <Button
+                variant="outline" size="sm"
+                disabled={!hasCart}
+                onClick={onLoyaltyToggle}
+                className={cn(
+                  "h-8 gap-1.5 text-[11px] font-semibold transition-all",
+                  PM_CONFIG[PAYMENT_METHODS.LOYALTY].btnCls,
+                  "disabled:opacity-30",
+                  loyaltyApplied && "ring-1 ring-amber-500/40 bg-amber-500/10",
+                )}
+                title={activeCustomer ? `${loyaltyPoints} pts = ${formatCurrency(loyaltyNaira)}` : "Select a customer first"}
+              >
+                <Star className="h-3.5 w-3.5" />
+                {loyaltyApplied ? "Loyalty ✓" : "Loyalty"}
+                {activeCustomer && loyaltyPoints > 0 && (
+                  <span className="ml-0.5 text-[9px] opacity-70 tabular-nums">{loyaltyPoints}pts</span>
+                )}
+              </Button>
 
-                <div className="relative">
-                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-muted-foreground">₦</span>
-                  <Input
-                    type="number"
-                    placeholder="0.00"
-                    value={popover.amount}
-                    onChange={(e) => setPopover((p) => ({ ...p, amount: e.target.value }))}
-                    onFocus={(e) => e.target.select()}
-                    onKeyDown={(e) => e.key === "Enter" && onPaymentSubmit()}
-                    className="pl-7 h-12 font-mono tabular-nums text-base bg-background/60 border-border"
-                    autoFocus
-                    min="0"
-                    step="0.01"
-                  />
-                </div>
+              {/* Remaining hint */}
+              {hasCart && remaining > 0.01 && (
+                <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
+                  Remaining: <span className="font-semibold text-foreground">{formatCurrency(remaining)}</span>
+                </span>
+              )}
+            </div>
+          </PopoverAnchor>
 
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline" size="sm" className="flex-1"
-                    onClick={() => setPopover({ open: false, type: null, amount: "" })}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm" className="flex-1"
-                    disabled={!popover.amount || parseFloat(popover.amount) <= 0}
-                    onClick={onPaymentSubmit}
-                  >
-                    Add Payment
-                  </Button>
+          {/* Amount entry popover — anchored to the whole button row above */}
+          <PopoverContent
+            side="top" align="start" sideOffset={8}
+            className="w-72 p-0 bg-card border-border/80 shadow-2xl shadow-black/70 overflow-hidden"
+          >
+            {popCfg && (
+              <div className={cn("flex items-center gap-3 px-4 py-3 border-b border-border/50", popCfg.badgeCls)}>
+                {PopIcon && <PopIcon className="h-4 w-4 shrink-0" />}
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] font-bold leading-tight">{popCfg.label} Payment</p>
+                  <p className="text-[10px] opacity-80 leading-tight mt-0.5 tabular-nums">
+                    Remaining: {formatCurrency(Math.max(0, remaining))}
+                  </p>
                 </div>
               </div>
-            </PopoverContent>
-          </Popover>
-        </div>
+            )}
+            <div className="p-4 space-y-3">
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-muted-foreground">₦</span>
+                <Input
+                  type="number"
+                  placeholder="0.00"
+                  value={popover.amount}
+                  onChange={(e) => setPopover((p) => ({ ...p, amount: e.target.value }))}
+                  onFocus={(e) => e.target.select()}
+                  onKeyDown={(e) => e.key === "Enter" && onPaymentSubmit()}
+                  className="pl-7 h-12 font-mono tabular-nums text-base bg-background/60 border-border focus:border-primary"
+                  autoFocus
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline" size="sm" className="flex-1"
+                  onClick={() => setPopover({ open: false, type: null, amount: "" })}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm" className="flex-1"
+                  disabled={!popover.amount || parseFloat(popover.amount) <= 0}
+                  onClick={onPaymentSubmit}
+                >
+                  Add Payment
+                </Button>
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
 
-        <div className="w-px bg-border my-2" />
+      {/* ── ROW 2: Actions + Summary ────────────────────────────────── */}
+      <div className="flex items-stretch">
 
-        {/* ── ZONE 2: Hold · Cancel · Charge ──────────────────────── */}
-        <div className="flex items-center gap-2 px-4 py-3">
+        {/* Actions: Hold · Cancel · Charge */}
+        <div className="flex items-center gap-2.5 px-4 py-2.5 shrink-0">
           <Button
             variant="ghost" size="sm"
             disabled={!hasCart}
             onClick={onHold}
-            className="h-10 gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+            className="h-10 gap-1.5 text-[12px] text-muted-foreground hover:text-foreground hover:bg-muted/40"
           >
             <Clock className="h-3.5 w-3.5" /> Hold
           </Button>
@@ -1060,40 +1459,41 @@ function BottomBar({
             disabled={!isBalanced || isCharging}
             onClick={onCharge}
             className={cn(
-              "h-10 px-6 text-[13px] font-bold gap-1.5 transition-all",
-              isBalanced && !isCharging ? "shadow-lg shadow-success/20" : "opacity-40 cursor-not-allowed"
+              "h-10 px-8 text-[13px] font-bold gap-2 transition-all duration-200",
+              isBalanced && !isCharging
+                ? "shadow-lg shadow-success/30 hover:shadow-success/50 hover:scale-[1.02] active:scale-[0.98]"
+                : "opacity-40 cursor-not-allowed",
             )}
           >
-            {isCharging ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              isBalanced && <CheckCircle2 className="h-4 w-4" />
-            )}
+            {isCharging
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : isBalanced && <CheckCircle2 className="h-4 w-4" />
+            }
             {isCharging ? "Processing…" : "Charge"}
           </Button>
         </div>
 
-        {/* ── ZONE 3: Summary ─────────────────────────────────────── */}
-        <div className="ml-auto border-l border-border px-5 py-3 w-[300px] shrink-0 flex flex-col justify-center">
-          <div className="space-y-0.5 text-[11px]">
+        {/* Customer pill — quick access from the actions row */}
+        <div className="flex items-center ml-4 self-center">
+          <button
+            onClick={onCustomerClick}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold border transition-all",
+              activeCustomer
+                ? "border-primary/30 bg-primary/8 text-primary hover:bg-primary/15"
+                : "border-border/50 bg-muted/20 text-muted-foreground hover:text-foreground hover:bg-muted/40",
+            )}
+            title="Change customer"
+          >
+            <User className="h-3 w-3 shrink-0" />
+            {customerName}
+            <ChevronDown className="h-2.5 w-2.5 opacity-50" />
+          </button>
+        </div>
 
-            {/* Customer — clickable */}
-            <button
-              onClick={onCustomerClick}
-              className="flex items-center justify-between w-full py-0.5 group"
-              title="Change customer"
-            >
-              <span className="flex items-center gap-1 text-muted-foreground group-hover:text-foreground transition-colors">
-                <User className="h-3 w-3" /> Customer
-              </span>
-              <span className={cn(
-                "flex items-center gap-1 font-medium transition-colors group-hover:text-primary",
-                activeCustomer ? "text-primary" : "text-foreground"
-              )}>
-                {customerName}
-                <ChevronDown className="h-2.5 w-2.5 opacity-50" />
-              </span>
-            </button>
+        {/* Summary panel (right) */}
+        <div className="ml-auto border-l border-border px-5 py-2.5 w-[310px] shrink-0 flex flex-col justify-center">
+          <div className="space-y-0.5 text-[11px]">
 
             {/* Items qty */}
             <div className="flex items-center justify-between py-0.5">
@@ -1101,7 +1501,9 @@ function BottomBar({
               <span className="font-semibold tabular-nums text-foreground">
                 {cartItems.length}
                 <span className="text-muted-foreground font-normal ml-1">
-                  ({cartItems.reduce((s, i) => s + i.quantity, 0)} qty)
+                  ({cartItems.reduce((s, i) => s + i.quantity, 0).toFixed(
+                    cartItems.some((i) => i.measurementType !== "quantity") ? 3 : 0
+                  )} qty)
                 </span>
               </span>
             </div>
@@ -1111,11 +1513,17 @@ function BottomBar({
               const cfg  = PM_CONFIG[p.type] ?? PM_CONFIG[PAYMENT_METHODS.CASH];
               const Icon = cfg.Icon;
               return (
-                <div key={p.id} className="flex items-center justify-between py-0.5">
+                <div key={p.id} className={cn(
+                  "flex items-center justify-between py-0.5 rounded px-1 -mx-1",
+                  p.type === PAYMENT_METHODS.LOYALTY && "bg-amber-500/5",
+                )}>
                   <span className="flex items-center gap-1.5 text-muted-foreground">
                     <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", cfg.dotCls)} />
                     <Icon className="h-3 w-3" />
                     {cfg.label}
+                    {p.type === PAYMENT_METHODS.LOYALTY && p.loyaltyPoints && (
+                      <span className="text-[9px] text-amber-400/70">({p.loyaltyPoints} pts)</span>
+                    )}
                   </span>
                   <div className="flex items-center gap-1.5">
                     <span className="font-semibold tabular-nums font-mono text-foreground">
@@ -1123,7 +1531,7 @@ function BottomBar({
                     </span>
                     <button
                       onClick={() => onRemovePayment(p.id)}
-                      className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                      className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground/25 hover:text-destructive hover:bg-destructive/10 transition-colors"
                     >
                       <X className="h-2.5 w-2.5" />
                     </button>
@@ -1132,10 +1540,10 @@ function BottomBar({
               );
             })}
 
-            <div className="!my-1.5 border-t border-border/50" />
+            <div className="!my-1 border-t border-border/40" />
 
             <div className="flex items-center justify-between py-0.5">
-              <span className="text-muted-foreground">Subtotal</span>
+              <span className="text-muted-foreground">{discountAmt > 0 ? "Gross" : "Subtotal"}</span>
               <span className="font-semibold tabular-nums font-mono text-foreground">
                 {formatCurrency(grossSubtotal)}
               </span>
@@ -1143,42 +1551,41 @@ function BottomBar({
 
             {discountAmt > 0 && (
               <div className="flex items-center justify-between py-0.5">
-                <span className="text-success">Discount</span>
-                <span className="font-semibold tabular-nums font-mono text-success">
-                  −{formatCurrency(discountAmt)}
-                </span>
+                <span className="text-success font-medium">Discount</span>
+                <span className="font-bold tabular-nums font-mono text-success">−{formatCurrency(discountAmt)}</span>
               </div>
             )}
 
             {tax > 0.001 && (
               <div className="flex items-center justify-between py-0.5">
-                <span className="text-muted-foreground">Tax (VAT)</span>
-                <span className="font-semibold tabular-nums font-mono text-muted-foreground">
-                  +{formatCurrency(tax)}
-                </span>
+                <span className="text-muted-foreground">VAT</span>
+                <span className="font-semibold tabular-nums font-mono text-muted-foreground">+{formatCurrency(tax)}</span>
               </div>
             )}
 
-            <div className="flex items-center justify-between py-1.5 border-t border-border/30 mt-0.5">
+            <div className="flex items-center justify-between py-1 border-t border-border/40 mt-0.5">
               <span className="text-[13px] font-bold text-foreground">Total</span>
-              <span className="text-[14px] font-bold tabular-nums font-mono text-foreground">
+              <span className={cn(
+                "text-[15px] font-bold tabular-nums font-mono",
+                isBalanced ? "text-success" : "text-foreground",
+              )}>
                 {formatCurrency(total)}
               </span>
             </div>
 
             {amountDue > 0.01 && (
-              <div className="flex items-center justify-between py-0.5">
-                <span className="font-bold text-destructive">Amount Due</span>
-                <span className="font-bold tabular-nums font-mono text-destructive">
+              <div className="flex items-center justify-between py-1 px-2 -mx-2 rounded-lg bg-destructive/8 border border-destructive/20">
+                <span className="font-bold text-destructive text-[12px]">Still Owed</span>
+                <span className="font-bold tabular-nums font-mono text-destructive text-[12px]">
                   {formatCurrency(amountDue)}
                 </span>
               </div>
             )}
 
             {change > 0.01 && (
-              <div className="flex items-center justify-between py-0.5">
-                <span className="font-bold text-success">Change</span>
-                <span className="font-bold tabular-nums font-mono text-success">
+              <div className="flex items-center justify-between py-1 px-2 -mx-2 rounded-lg bg-success/8 border border-success/20">
+                <span className="font-bold text-success text-[12px]">Change</span>
+                <span className="font-bold tabular-nums font-mono text-success text-[12px]">
                   {formatCurrency(change)}
                 </span>
               </div>

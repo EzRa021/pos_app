@@ -17,7 +17,8 @@ pub struct SalesSummary {
     pub total_discounts: Decimal,
     pub net_revenue: Decimal,
     pub average_order: Decimal,
-    pub total_items_sold: i64,
+    /// Total units sold (supports fractional quantities for weight/volume items).
+    pub total_items_sold: Decimal,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -36,6 +37,8 @@ pub struct TopItem {
     pub sku: String,
     pub qty_sold: Decimal,
     pub revenue: Decimal,
+    pub measurement_type: Option<String>,
+    pub unit_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -94,6 +97,8 @@ pub struct ItemAnalytics {
     pub qty_sold: Decimal,
     pub revenue: Decimal,
     pub avg_price: Decimal,
+    pub measurement_type: Option<String>,
+    pub unit_type: Option<String>,
 }
 
 // ── Extended AnalyticsFilters (fully backward-compatible) ─────────────────────
@@ -146,6 +151,8 @@ pub struct SlowMovingItem {
     pub last_sold_at: Option<DateTime<Utc>>,
     pub days_since_last_sale: Option<i64>,
     pub current_stock: Decimal,
+    pub measurement_type: Option<String>,
+    pub unit_type: Option<String>,
 }
 
 // ── Dead stock ────────────────────────────────────────────────────────────────
@@ -163,6 +170,8 @@ pub struct DeadStockItem {
     pub selling_price: Decimal,
     /// current_stock × cost_price
     pub stock_value: Decimal,
+    pub measurement_type: Option<String>,
+    pub unit_type: Option<String>,
 }
 
 // ── Profit analysis ───────────────────────────────────────────────────────────
@@ -272,6 +281,8 @@ pub struct StockVelocityItem {
     pub stock_value_at_cost: Decimal,
     /// "critical" (<7 days) | "low" (7–14) | "adequate" (15–60) | "overstocked" (>60)
     pub reorder_urgency: String,
+    pub measurement_type: Option<String>,
+    pub unit_type: Option<String>,
 }
 
 // ── Peak hours ────────────────────────────────────────────────────────────────

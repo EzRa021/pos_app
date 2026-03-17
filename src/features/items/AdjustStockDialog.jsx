@@ -20,7 +20,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Input }  from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { formatDecimal, formatCurrency } from "@/lib/format";
+import { formatCurrency, formatQuantity, stepForType } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // ── Adjustment type config ────────────────────────────────────────────────────
@@ -51,6 +51,10 @@ export function AdjustStockDialog({ open, onOpenChange, item, storeId, mutation 
 
   const typeConfig    = TYPES.find((t) => t.key === adjType) ?? TYPES[0];
   const currentQty    = parseFloat(item?.quantity ?? 0);
+  const measureType   = item?.measurement_type ?? null;
+  const unitType      = item?.unit_type ?? null;
+  const minIncrement  = item?.min_increment != null ? parseFloat(item.min_increment) : null;
+  const step          = stepForType(measureType, minIncrement);
   const qtyNum        = parseFloat(qty) || 0;
 
   // Compute actual signed delta
@@ -85,10 +89,10 @@ export function AdjustStockDialog({ open, onOpenChange, item, storeId, mutation 
             <DialogTitle className="text-[15px] font-bold text-foreground">
               Adjust Stock
             </DialogTitle>
-            <DialogDescription className="text-[11px] text-muted-foreground mt-0.5">
+              <DialogDescription className="text-[11px] text-muted-foreground mt-0.5">
               <span className="font-semibold text-foreground">{item?.item_name}</span>
-              {" "}— SKU: {item?.sku} · Current: {formatDecimal(currentQty)} units
-            </DialogDescription>
+              {" "}— SKU: {item?.sku} · Current: {formatQuantity(currentQty, measureType, unitType)}
+              </DialogDescription>
           </DialogHeader>
 
           {/* Type selector */}
@@ -129,8 +133,8 @@ export function AdjustStockDialog({ open, onOpenChange, item, storeId, mutation 
             </label>
             <Input
               type="number"
-              min={typeConfig.sign === 0 ? undefined : "0"}
-              step="0.01"
+              min={typeConfig.sign === 0 ? undefined : step}
+              step={step}
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               placeholder={typeConfig.sign === 0 ? "e.g. -5 or +10" : "e.g. 50"}
@@ -161,12 +165,12 @@ export function AdjustStockDialog({ open, onOpenChange, item, storeId, mutation 
               <div className="space-y-0.5">
                 <p className="text-muted-foreground">Current → New Stock</p>
                 <p className="font-bold text-foreground">
-                  {formatDecimal(currentQty)} → {formatDecimal(newQty)} units
+                  {formatQuantity(currentQty, measureType, unitType)} → {formatQuantity(newQty, measureType, unitType)}
                   <span className={cn(
                     "ml-2 font-semibold",
                     delta > 0 ? "text-success" : delta < 0 ? "text-destructive" : "text-foreground",
                   )}>
-                    ({delta > 0 ? "+" : ""}{formatDecimal(delta)})
+                    ({delta > 0 ? "+" : ""}{formatQuantity(delta, measureType, unitType)})
                   </span>
                 </p>
               </div>

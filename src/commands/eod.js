@@ -14,3 +14,7 @@ export const getEodReport = (storeId, date) =>
 // EodHistoryFilters: { store_id, date_from?, date_to?, limit? }
 export const getEodHistory = (params = {}) =>
   rpc("get_eod_history", params);
+
+// Returns EodBreakdown: { departments, categories, top_items, payment_methods, hourly, cashiers }
+export const getEodBreakdown = (storeId, date) =>
+  rpc("get_eod_breakdown", { store_id: storeId, date });

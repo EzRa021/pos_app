@@ -8,6 +8,7 @@ import {
   submitPurchaseOrder, approvePurchaseOrder, rejectPurchaseOrder,
   deletePurchaseOrder,
 } from "@/commands/purchase_orders";
+import { invalidateAfterPOReceive, invalidateAfterPOChange } from "@/lib/invalidations";
 
 // ── PO list hook ──────────────────────────────────────────────────────────────
 export function usePurchaseOrders({
@@ -57,7 +58,8 @@ export function usePurchaseOrders({
 
 // ── Single PO hook ────────────────────────────────────────────────────────────
 export function usePurchaseOrder(id) {
-  const qc = useQueryClient();
+  const qc      = useQueryClient();
+  const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const { data: detail, isLoading, error, refetch } = useQuery({
     queryKey: ["purchase-order", id],
@@ -66,24 +68,17 @@ export function usePurchaseOrder(id) {
     staleTime: 30 * 1000,
   });
 
-  const invalidate = useCallback(() => {
-    qc.invalidateQueries({ queryKey: ["purchase-order",  id] });
-    qc.invalidateQueries({ queryKey: ["purchase-orders"] });
-    // Receiving stock also changes item quantities — invalidate items
-    qc.invalidateQueries({ queryKey: ["items"] });
-    qc.invalidateQueries({ queryKey: ["inventory"] });
-  }, [qc, id]);
+  // receive: stock changes + PO status changes
+  const invalidateReceive = useCallback(() => invalidateAfterPOReceive(storeId, id), [storeId, id]);
+  // all other status transitions: only PO list/detail changes, no stock
+  const invalidateChange  = useCallback(() => invalidateAfterPOChange(id), [id]);
 
-  const receive  = useMutation({ mutationFn: ({ items, notes }) => receivePurchaseOrder(id, items, notes), onSuccess: invalidate });
-  const cancel   = useMutation({ mutationFn: () => cancelPurchaseOrder(id),              onSuccess: invalidate });
-  const submit   = useMutation({ mutationFn: () => submitPurchaseOrder(id),              onSuccess: invalidate });
-  const approve  = useMutation({ mutationFn: () => approvePurchaseOrder(id),             onSuccess: invalidate });
-  const reject   = useMutation({ mutationFn: (reason) => rejectPurchaseOrder(id, reason), onSuccess: invalidate });
-  const remove   = useMutation({ mutationFn: () => deletePurchaseOrder(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["purchase-orders"] });
-    },
-  });
+  const receive  = useMutation({ mutationFn: ({ items, notes }) => receivePurchaseOrder(id, items, notes), onSuccess: invalidateReceive });
+  const cancel   = useMutation({ mutationFn: () => cancelPurchaseOrder(id),               onSuccess: invalidateChange });
+  const submit   = useMutation({ mutationFn: () => submitPurchaseOrder(id),               onSuccess: invalidateChange });
+  const approve  = useMutation({ mutationFn: () => approvePurchaseOrder(id),              onSuccess: invalidateChange });
+  const reject   = useMutation({ mutationFn: (reason) => rejectPurchaseOrder(id, reason), onSuccess: invalidateChange });
+  const remove   = useMutation({ mutationFn: () => deletePurchaseOrder(id),               onSuccess: invalidateChange });
 
   return {
     detail,

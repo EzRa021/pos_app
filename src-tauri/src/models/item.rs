@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 pub struct Item {
     pub id:             Uuid,
     pub store_id:       i32,
-    pub category_id:    i32,
+    pub category_id:    Option<i32>,
     pub department_id:  Option<i32>,
     pub sku:            String,
     pub barcode:        Option<String>,
@@ -35,17 +35,27 @@ pub struct Item {
     pub taxable:               Option<bool>,
     pub allow_discount:        Option<bool>,
     pub max_discount_percent:  Option<Decimal>,
+    /// How the item quantity is measured:
+    /// 'quantity' = pieces/packs (default)
+    /// 'weight'   = kg / g / lb / oz
+    /// 'volume'   = litre / ml / cl
+    /// 'length'   = m / cm / mm
+    pub measurement_type:      Option<String>,
     pub unit_type:             Option<String>,
     pub unit_value:            Option<Decimal>,
     pub requires_weight:       Option<bool>,
     pub allow_negative_stock:  Option<bool>,
     pub min_stock_level:       Option<i32>,
     pub max_stock_level:       Option<i32>,
+    pub min_increment:         Option<Decimal>,
+    pub default_qty:           Option<Decimal>,
     pub archived_at:           Option<DateTime<Utc>>,
     // item_stock
     pub quantity:              Option<Decimal>,
     pub available_quantity:    Option<Decimal>,
     pub reserved_quantity:     Option<Decimal>,
+    /// Base64 data URL of the item image — None if no image has been set.
+    pub image_data:            Option<String>,
 }
 
 /// Filters for `get_items`
@@ -60,6 +70,8 @@ pub struct ItemFilters {
     pub available_for_pos: Option<bool>,
     pub low_stock:         Option<bool>,
     pub search:            Option<String>,
+    /// Optional filter: only items of this measurement type
+    pub measurement_type:  Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,14 +94,23 @@ pub struct CreateItemDto {
     pub taxable:               Option<bool>,
     pub allow_discount:        Option<bool>,
     pub max_discount_percent:  Option<f64>,
+    /// Measurement type: 'quantity' | 'weight' | 'volume' | 'length'
+    pub measurement_type:      Option<String>,
     pub unit_type:             Option<String>,
     pub unit_value:            Option<f64>,
     pub requires_weight:       Option<bool>,
     pub allow_negative_stock:  Option<bool>,
     pub min_stock_level:       Option<i32>,
     pub max_stock_level:       Option<i32>,
+    /// Minimum quantity step — None means use system default for measurement_type.
+    pub min_increment:         Option<f64>,
+    /// Default quantity pre-filled in POS / inventory dialogs.
+    pub default_qty:           Option<f64>,
     // initial stock
     pub initial_quantity:      Option<f64>,
+    /// Optional base64 data URL (e.g. "data:image/jpeg;base64,...").
+    /// Sent by the frontend after client-side resize/compression.
+    pub image_data:            Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,12 +132,18 @@ pub struct UpdateItemDto {
     pub taxable:               Option<bool>,
     pub allow_discount:        Option<bool>,
     pub max_discount_percent:  Option<f64>,
+    /// Measurement type: 'quantity' | 'weight' | 'volume' | 'length'
+    pub measurement_type:      Option<String>,
     pub unit_type:             Option<String>,
     pub unit_value:            Option<f64>,
     pub requires_weight:       Option<bool>,
     pub allow_negative_stock:  Option<bool>,
     pub min_stock_level:       Option<i32>,
     pub max_stock_level:       Option<i32>,
+    pub min_increment:         Option<f64>,
+    pub default_qty:           Option<f64>,
+    /// Set to Some(data) to update image; None leaves existing image unchanged.
+    pub image_data:            Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,6 +157,8 @@ pub struct AdjustStockDto {
 }
 
 /// Lightweight search result (for POS barcode / autocomplete).
+/// Includes measurement_type and unit_type so the POS can render the
+/// correct quantity input (integer for pieces, decimal for weight/volume).
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct ItemSearchResult {
     pub id:                 Uuid,
@@ -144,6 +173,10 @@ pub struct ItemSearchResult {
     pub quantity:           Option<Decimal>,
     pub available_quantity: Option<Decimal>,
     pub category_name:      Option<String>,
+    pub measurement_type:   Option<String>,
+    pub unit_type:          Option<String>,
+    pub min_increment:      Option<Decimal>,
+    pub default_qty:        Option<Decimal>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

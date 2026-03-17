@@ -6,8 +6,18 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use rust_decimal::Decimal;
+use crate::models::payment::Payment;
 
 // ── Sale Creation ─────────────────────────────────────────────────────────────
+
+/// One leg of a split payment (cash + card, card + transfer, etc.)
+#[derive(Debug, Deserialize, Clone)]
+pub struct SplitPaymentDto {
+    /// Payment method key: "cash" | "card" | "transfer" | "mobile_money" | "wallet"
+    pub method: String,
+    /// Amount tendered for this leg
+    pub amount: f64,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTransactionDto {
@@ -27,6 +37,10 @@ pub struct CreateTransactionDto {
     pub payment_terms:   Option<String>,
     /// ISO date string for credit due date — only used when payment_method = "credit"
     pub due_date:        Option<String>,
+    /// Individual legs when payment_method = "split"
+    pub split_payments:  Option<Vec<SplitPaymentDto>>,
+    /// Wallet portion when wallet is used alongside another method
+    pub wallet_amount:   Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,22 +108,25 @@ pub struct Transaction {
 
 #[derive(Debug, Serialize, Clone, sqlx::FromRow)]
 pub struct TransactionItem {
-    pub id:          i32,
-    pub tx_id:       i32,
-    pub item_id:     Uuid,
-    pub item_name:   String,
-    pub sku:         String,
-    pub quantity:    Decimal,
-    pub unit_price:  Decimal,
-    pub discount:    Decimal,
-    pub tax_amount:  Decimal,
-    pub line_total:  Decimal,
+    pub id:               i32,
+    pub tx_id:            i32,
+    pub item_id:          Uuid,
+    pub item_name:        String,
+    pub sku:              String,
+    pub quantity:         Decimal,
+    pub unit_price:       Decimal,
+    pub discount:         Decimal,
+    pub tax_amount:       Decimal,
+    pub line_total:       Decimal,
+    pub measurement_type: Option<String>,
+    pub unit_type:        Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct TransactionDetail {
     pub transaction: Transaction,
     pub items:       Vec<TransactionItem>,
+    pub payments:    Vec<Payment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -129,15 +146,16 @@ pub struct RefundResult {
 
 #[derive(Debug, Deserialize)]
 pub struct TransactionFilters {
-    pub page:        Option<i64>,
-    pub limit:       Option<i64>,
-    pub store_id:    Option<i32>,
-    pub cashier_id:  Option<i32>,
-    pub customer_id: Option<i32>,
-    pub status:      Option<String>,
-    pub date_from:   Option<String>,
-    pub date_to:     Option<String>,
-    pub search:      Option<String>,
+    pub page:           Option<i64>,
+    pub limit:          Option<i64>,
+    pub store_id:       Option<i32>,
+    pub cashier_id:     Option<i32>,
+    pub customer_id:    Option<i32>,
+    pub status:         Option<String>,
+    pub payment_method: Option<String>,
+    pub date_from:      Option<String>,
+    pub date_to:        Option<String>,
+    pub search:         Option<String>,
 }
 
 // ── Held Transactions ─────────────────────────────────────────────────────────
@@ -176,4 +194,7 @@ pub struct FetchedItem {
     pub taxable:             bool,
     pub tax_rate:            Decimal,
     pub available_quantity:  Decimal,
+    pub measurement_type:    String,
+    pub unit_type:           Option<String>,
+    pub requires_weight:     Option<bool>,
 }

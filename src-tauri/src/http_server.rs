@@ -316,6 +316,58 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "search_users" => {
+            let query: String = params.get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let limit = params.get("limit").and_then(|v| v.as_i64());
+            let result = users::search_users(as_state(state), require_token()?, query, limit).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "activate_user" => {
+            let id = i32_param(&params, "id")?;
+            let result = users::activate_user(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "deactivate_user" => {
+            let id = i32_param(&params, "id")?;
+            let result = users::deactivate_user(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "reset_user_password" => {
+            let id = i32_param(&params, "id")?;
+            let new_password: String = params.get("new_password")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AppError::Validation("new_password is required".into()))?
+                .to_string();
+            users::reset_user_password(as_state(state), require_token()?, id, new_password).await?;
+            Ok(Value::Null)
+        }
+
+        "get_permissions" => {
+            let result = users::get_permissions(as_state(state), require_token()?).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_role_permissions" => {
+            let role_id = i32_param(&params, "role_id")?;
+            let result = users::get_role_permissions(as_state(state), require_token()?, role_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "set_role_permissions" => {
+            let role_id = i32_param(&params, "role_id")?;
+            let permission_ids: Vec<i32> = params.get("permission_ids")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            users::set_role_permissions(as_state(state), require_token()?, role_id, permission_ids).await?;
+            Ok(Value::Null)
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // STORES
         // ════════════════════════════════════════════════════════════════════
@@ -611,9 +663,12 @@ async fn dispatch(
 
         "get_item_history" => {
             let item_id: uuid::Uuid = parse(params.get("item_id").cloned().unwrap_or(Value::Null))?;
-            let page  = opt_i64(&params, "page");
-            let limit = opt_i64(&params, "limit");
-            let result = items::get_item_history_inner(state, require_token()?, item_id, page, limit).await?;
+            let page       = opt_i64(&params, "page");
+            let limit      = opt_i64(&params, "limit");
+            let date_from  = opt_str(&params, "date_from");
+            let date_to    = opt_str(&params, "date_to");
+            let event_type = opt_str(&params, "event_type");
+            let result = items::get_item_history_inner(state, require_token()?, item_id, page, limit, date_from, date_to, event_type).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -635,6 +690,12 @@ async fn dispatch(
         "deactivate_item" => {
             let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
             let result = items::deactivate_item_inner(state, require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "remove_item_image" => {
+            let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
+            let result = items::remove_item_image_inner(state, require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1111,6 +1172,12 @@ async fn dispatch(
             let id    = i32_param(&params, "id")?;
             let notes = opt_str(&params, "notes");
             let result = shifts::reconcile_shift_inner(state, require_token()?, id, notes).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_shift_detail_stats" => {
+            let shift_id = i32_param(&params, "shift_id")?;
+            let result = shifts::get_shift_detail_stats_inner(state, require_token()?, shift_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1637,6 +1704,13 @@ async fn dispatch(
         "get_eod_history" => {
             let filters: EodHistoryFilters = parse(params)?;
             let result = eod::get_eod_history(as_state(state), require_token()?, filters).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_eod_breakdown" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let date     = params.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let result = eod::get_eod_breakdown(as_state(state), require_token()?, store_id, date).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 

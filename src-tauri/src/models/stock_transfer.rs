@@ -33,6 +33,7 @@ pub struct TransferItem {
     pub qty_requested: Decimal,
     pub qty_sent:      Option<Decimal>,
     pub qty_received:  Option<Decimal>,
+    pub unit_type:     Option<String>,
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────

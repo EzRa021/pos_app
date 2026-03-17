@@ -12,7 +12,7 @@
 //   8. All clear                    => RouterProvider (main POS)
 // ============================================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke }              from '@tauri-apps/api/core';
 import { getCurrentWindow }    from '@tauri-apps/api/window';
 import { RouterProvider }      from 'react-router-dom';
@@ -24,6 +24,7 @@ import router                      from './router';
 import { useAuthStore }  from './stores/auth.store';
 import { useBranchStore } from './stores/branch.store';
 import { setApiBaseUrl }           from './lib/apiClient';
+import { TitleBar }                from './components/layout/TitleBar';
 import { Button }                  from './components/ui/button';
 import { Input }                   from './components/ui/input';
 import { Separator }               from './components/ui/separator';
@@ -39,9 +40,11 @@ function setWindowBg(hex) {
 }
 
 // ── Shared wrapper ────────────────────────────────────────────────────────────
-function ScreenShell({ children }) {
+// Uses h-full instead of min-h-screen — it lives inside the flex-1 content
+// area below the TitleBar, so h-full fills exactly the remaining viewport.
+function ScreenShell({ children, className }) {
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+    <div className={`h-full w-full bg-background flex flex-col items-center justify-center p-4 ${className ?? ""}`}>
       <div className="w-full max-w-sm">
         {children}
         <p className="text-center text-[11px] text-muted-foreground mt-5">
@@ -70,7 +73,7 @@ function Brand({ iconClassName = "bg-primary/15 border-primary/20", iconContent,
 // ── Splash ────────────────────────────────────────────────────────────────────
 function Splash({ message = 'Starting Quantum POS…' }) {
   return (
-    <ScreenShell>
+    <ScreenShell className="w-full">
       <div className="flex flex-col items-center gap-5">
         <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/15 border border-primary/20">
           <span className="text-3xl font-bold text-primary spinning">Q</span>
@@ -222,6 +225,10 @@ export default function App() {
   const [apiReady,      setApiReady]      = useState(false);
   const [connectFailed, setConnectFailed] = useState(false);
   const [isChecking,    setIsChecking]    = useState(true);
+  // Prevents React Strict Mode’s double-invoke of useEffect from starting two
+  // concurrent initConnection calls, which would race and could leave the app
+  // on the login screen even with a valid refresh token.
+  const initInProgress = useRef(false);
 
   // Read only primitive/stable values from stores — never objects or functions
   // as selector return values (new object refs cause infinite re-render loops).
@@ -260,9 +267,14 @@ export default function App() {
           });
         }
 
-        // The HTTP API server is spawned in Tauri's setup() before the WebView
-        // loads, so get_api_port is always available immediately.
-        const apiPort = await invoke('get_api_port');
+        // The HTTP API server is spawned as an async task in setup().
+        // Poll until it reports a real port (> 0), giving it up to 5 s.
+        let apiPort = 0;
+        for (let attempt = 0; attempt < 50 && !apiPort; attempt++) {
+          apiPort = await invoke('get_api_port').catch(() => 0);
+          if (!apiPort) await new Promise(r => setTimeout(r, 100));
+        }
+        if (!apiPort) throw new Error('API server did not start in time');
         setApiBaseUrl(`http://localhost:${apiPort}`);
 
         // Persist the resolved port so client terminals can read it.
@@ -292,6 +304,12 @@ export default function App() {
   }
 
   useEffect(() => {
+    // Guard: React Strict Mode fires this effect twice in dev. The second call
+    // must be a no-op — the ref persists across both invocations because Strict
+    // Mode does NOT reset refs between the simulated unmount and remount.
+    if (initInProgress.current) return;
+    initInProgress.current = true;
+
     const saved = localStorage.getItem(CONFIG_KEY);
     if (!saved) { setConfig(false); setIsChecking(false); return; }
     try {
@@ -321,36 +339,35 @@ export default function App() {
     setWindowBg(colors[screen]);
   }, [isChecking, apiReady, connectFailed, config, user]);
 
-  if (isChecking)
-    return <Splash />;
+  // ── Screen resolution ─────────────────────────────────────────────────────
+  let content;
+  if      (isChecking)                  content = <Splash />;
+  else if (!config)                     content = <SetupWizard onComplete={(cfg) => initConnection(cfg)} />;
+  else if (connectFailed)               content = (
+    <ConnectionError
+      config={config}
+      onRetry={() => initConnection(config)}
+      onReconfigure={() => {
+        localStorage.removeItem(CONFIG_KEY);
+        setConfig(false);
+        setConnectFailed(false);
+      }}
+    />
+  );
+  else if (!apiReady || !isInitialized) content = <Splash message="Connecting…" />;
+  else if (!user)                       content = <LoginScreen config={config} />;
+  else if (!isBranchInitialized)        content = <Splash message="Loading branch data…" />;
+  else if (needsPicker)                 content = <StorePicker />;
+  else                                  content = <RouterProvider router={router} />;
 
-  if (!config)
-    return <SetupWizard onComplete={(cfg) => initConnection(cfg)} />;
-
-  if (connectFailed)
-    return (
-      <ConnectionError
-        config={config}
-        onRetry={() => initConnection(config)}
-        onReconfigure={() => {
-          localStorage.removeItem(CONFIG_KEY);
-          setConfig(false);
-          setConnectFailed(false);
-        }}
-      />
-    );
-
-  if (!apiReady || !isInitialized)
-    return <Splash message="Connecting…" />;
-
-  if (!user)
-    return <LoginScreen config={config} />;
-
-  if (!isBranchInitialized)
-    return <Splash message="Loading branch data…" />;
-
-  if (needsPicker)
-    return <StorePicker />;
-
-  return <RouterProvider router={router} />;
+  return (
+    <div className="flex flex-col h-screen overflow-hidden">
+      {/* Custom title bar — always visible, always on top */}
+      <TitleBar />
+      {/* Main content area fills remaining height */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {content}
+      </div>
+    </div>
+  );
 }

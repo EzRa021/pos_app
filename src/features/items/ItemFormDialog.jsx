@@ -16,6 +16,7 @@ import {
   Package, RefreshCw, ShoppingCart, BarChart2,
   Tag, Building2, DollarSign, Layers, Settings2,
   Percent, Scale, AlertTriangle, CheckCircle2, XCircle,
+  ImagePlus, Trash2,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Input }  from "@/components/ui/input";
@@ -126,6 +127,21 @@ function NativeSelect({ value, onChange, children, placeholder, disabled }) {
   );
 }
 
+// ── Measurement type option definitions ──────────────────────────────────────
+const MEASUREMENT_TYPES = [
+  { value: "quantity", label: "Quantity",        hint: "Sold in discrete units: piece, pack, box…" },
+  { value: "weight",   label: "Weight (kg/g…)",  hint: "Sold by weight — enables decimal input on POS" },
+  { value: "volume",   label: "Volume (L/ml…)",  hint: "Sold by volume: litre, ml, cl" },
+  { value: "length",   label: "Length (m/cm…)",  hint: "Sold by length: m, cm, mm" },
+];
+
+const UNIT_OPTIONS = {
+  quantity: ["piece", "pack", "box", "dozen", "carton", "bag", "bottle", "can", "roll"],
+  weight:   ["kg", "g", "lb", "oz"],
+  volume:   ["litre", "ml", "cl", "fl oz"],
+  length:   ["m", "cm", "mm"],
+};
+
 // ── Default form values ────────────────────────────────────────────────────────
 const DEFAULTS = {
   item_name: "", sku: "", barcode: "", description: "",
@@ -136,9 +152,37 @@ const DEFAULTS = {
   allow_negative_stock: false,
   is_active: true, sellable: true, available_for_pos: true,
   taxable: false, allow_discount: true, max_discount_percent: "",
-  unit_type: "", unit_value: "",
+  measurement_type: "quantity", unit_type: "", unit_value: "",
   requires_weight: false,
+  min_increment: "", default_qty: "",
+  image_data: null,  // base64 data URL
 };
+
+// ── Image helpers ─────────────────────────────────────────────────────────────
+
+// Client-side compress + convert to base64 data URL.
+// Resizes to max 400×400, JPEG quality 0.72  → typical ~30–80KB output.
+async function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const MAX = 400;
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width  = Math.round(img.width  * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.72));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 function itemToForm(item) {
   if (!item) return DEFAULTS;
@@ -163,9 +207,13 @@ function itemToForm(item) {
     taxable:              item.taxable              ?? false,
     allow_discount:       item.allow_discount       ?? true,
     max_discount_percent: item.max_discount_percent != null ? String(parseFloat(item.max_discount_percent)) : "",
-    unit_type:            item.unit_type            ?? "",
-    unit_value:           item.unit_value           != null ? String(parseFloat(item.unit_value)) : "",
-    requires_weight:      item.requires_weight      ?? false,
+    measurement_type:     item.measurement_type      ?? "quantity",
+    unit_type:            item.unit_type             ?? "",
+    unit_value:           item.unit_value            != null ? String(parseFloat(item.unit_value)) : "",
+    requires_weight:      item.requires_weight       ?? false,
+    min_increment:        item.min_increment         != null ? String(parseFloat(item.min_increment)) : "",
+    default_qty:          item.default_qty           != null ? String(parseFloat(item.default_qty)) : "",
+    image_data:           item.image_data             ?? null,
   };
 }
 
@@ -212,10 +260,14 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
       taxable:              form.taxable,
       allow_discount:       form.allow_discount,
       max_discount_percent: toNum(form.max_discount_percent) ?? null,
+      measurement_type:      form.measurement_type || "quantity",
       unit_type:            form.unit_type.trim() || null,
       unit_value:           toNum(form.unit_value) ?? null,
-      requires_weight:      form.requires_weight,
+      requires_weight:      form.measurement_type === "weight" || form.requires_weight,
+      min_increment:        toNum(form.min_increment) ?? null,
+      default_qty:          toNum(form.default_qty) ?? null,
       ...(!isEdit && { initial_quantity: toNum(form.initial_quantity) ?? 0 }),
+      image_data: form.image_data ?? null,
     };
 
     const opts = { onSuccess: () => onOpenChange(false) };
@@ -300,6 +352,71 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
                     placeholder="Short product description"
                   />
                 </FieldRow>
+              </div>
+            </FormSection>
+
+            {/* ── 1b. Product Image ─────────────────────────────────────── */}
+            <FormSection icon={ImagePlus} title="Product Image">
+              <div className="flex items-start gap-4">
+                {/* Preview / placeholder */}
+                <div className="shrink-0">
+                  {form.image_data ? (
+                    <img
+                      src={form.image_data}
+                      alt="Preview"
+                      className="h-24 w-24 rounded-xl object-cover border border-border/60"
+                    />
+                  ) : (
+                    <div className="h-24 w-24 rounded-xl border-2 border-dashed border-border/60
+                                    bg-muted/30 flex flex-col items-center justify-center gap-1
+                                    text-muted-foreground">
+                      <ImagePlus className="h-6 w-6" />
+                      <span className="text-[9px] text-center leading-tight">No image</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Controls */}
+                <div className="flex flex-col gap-2 flex-1 min-w-0">
+                  <label
+                    htmlFor="item-image-upload"
+                    className="flex items-center gap-2 cursor-pointer rounded-lg border border-border/60
+                               bg-muted/30 hover:bg-muted/50 px-3 py-2 text-xs font-medium
+                               text-foreground transition-colors w-fit"
+                  >
+                    <ImagePlus className="h-3.5 w-3.5" />
+                    {form.image_data ? "Change image" : "Upload image"}
+                  </label>
+                  <input
+                    id="item-image-upload"
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        const compressed = await compressImage(file);
+                        set("image_data", compressed);
+                      } catch { /* ignore */ }
+                      e.target.value = "";
+                    }}
+                  />
+                  {form.image_data && (
+                    <button
+                      type="button"
+                      onClick={() => set("image_data", null)}
+                      className="flex items-center gap-1.5 text-[11px] text-destructive
+                                 hover:text-destructive/80 transition-colors w-fit"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      Remove image
+                    </button>
+                  )}
+                  <p className="text-[10px] text-muted-foreground leading-relaxed">
+                    PNG, JPG or WEBP · Resized to 400×400px · ~30–80KB.
+                  </p>
+                </div>
               </div>
             </FormSection>
 
@@ -391,7 +508,7 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
                 onChange={(v) => set("track_stock", v)}
               />
               {form.track_stock && (
-                <div className="grid grid-cols-3 gap-3 mt-1">
+                <div className={cn("gap-3 mt-1", !isEdit ? "grid grid-cols-3" : "grid grid-cols-2")}>
                   {!isEdit && (
                     <FieldRow label="Opening Stock">
                       <Input
@@ -404,7 +521,7 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
                   )}
                   <FieldRow label="Min Level" hint="Alert threshold.">
                     <Input
-                      type="number" min="0" step="1"
+                      type="number" min="0" step="0.01"
                       value={form.min_stock_level}
                       onChange={(e) => set("min_stock_level", e.target.value)}
                       placeholder="0"
@@ -412,7 +529,7 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
                   </FieldRow>
                   <FieldRow label="Max Level" hint="Reorder ceiling.">
                     <Input
-                      type="number" min="0" step="1"
+                      type="number" min="0" step="0.01"
                       value={form.max_stock_level}
                       onChange={(e) => set("max_stock_level", e.target.value)}
                       placeholder="1000"
@@ -449,9 +566,92 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
                 ))}
               </div>
 
-              {/* Conditional: max discount % */}
-              {form.allow_discount && (
-                <div className="grid grid-cols-3 gap-3 pt-2 border-t border-border/30">
+              {/* Measurement type — always visible */}
+              <div className="pt-2 border-t border-border/30 space-y-3">
+                <FieldRow label="Measurement Type" hint={MEASUREMENT_TYPES.find(m => m.value === form.measurement_type)?.hint}>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {MEASUREMENT_TYPES.map((m) => (
+                      <button
+                        key={m.value}
+                        type="button"
+                        onClick={() => {
+                          set("measurement_type", m.value);
+                          // Reset unit_type when measurement type changes
+                          set("unit_type", UNIT_OPTIONS[m.value][0] ?? "");
+                        }}
+                        className={cn(
+                          "rounded-lg border px-2 py-2 text-[10px] font-semibold transition-all",
+                          form.measurement_type === m.value
+                            ? "border-primary/40 bg-primary/10 text-primary"
+                            : "border-border/60 bg-muted/30 text-muted-foreground hover:border-border",
+                        )}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </FieldRow>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <FieldRow label="Unit" hint="Specific unit label shown on POS.">
+                    <div className="flex gap-1.5">
+                      <NativeSelect
+                        value={form.unit_type}
+                        onChange={(v) => set("unit_type", v ?? "")}
+                        placeholder="— select —"
+                      >
+                        {(UNIT_OPTIONS[form.measurement_type] ?? []).map((u) => (
+                          <option key={u} value={u}>{u}</option>
+                        ))}
+                      </NativeSelect>
+                      <Input
+                        value={form.unit_type}
+                        onChange={(e) => set("unit_type", e.target.value)}
+                        placeholder="or type custom"
+                        className="w-28 shrink-0"
+                      />
+                    </div>
+                  </FieldRow>
+                  <FieldRow label="Unit Value" hint="Units per pack/container (optional).">
+                    <Input
+                      type="number" min="0" step="0.001"
+                      value={form.unit_value}
+                      onChange={(e) => set("unit_value", e.target.value)}
+                      placeholder="e.g. 1"
+                    />
+                  </FieldRow>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <FieldRow
+                    label="Min Increment"
+                    hint={form.measurement_type === "quantity" ? "Whole numbers only (e.g. 1, 2). Leave blank for default (1)." : "Smallest qty step (e.g. 0.1, 0.5). Leave blank for default (0.001)."}
+                  >
+                    <Input
+                      type="number"
+                      min={form.measurement_type === "quantity" ? "1" : "0.001"}
+                      step={form.measurement_type === "quantity" ? "1" : "0.001"}
+                      value={form.min_increment}
+                      onChange={(e) => set("min_increment", e.target.value)}
+                      placeholder={form.measurement_type === "quantity" ? "1" : "0.001"}
+                    />
+                  </FieldRow>
+                  <FieldRow
+                    label="Default Qty"
+                    hint="Pre-filled qty when adding to POS cart or inventory dialogs."
+                  >
+                    <Input
+                      type="number"
+                      min={form.measurement_type === "quantity" ? "1" : "0.001"}
+                      step={form.measurement_type === "quantity" ? "1" : "0.001"}
+                      value={form.default_qty}
+                      onChange={(e) => set("default_qty", e.target.value)}
+                      placeholder={form.measurement_type === "quantity" ? "1" : "1.000"}
+                    />
+                  </FieldRow>
+                </div>
+
+                {form.allow_discount && (
                   <FieldRow label="Max Discount %" hint="Leave blank for no limit.">
                     <Input
                       type="number" min="0" max="100" step="0.1"
@@ -460,23 +660,8 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
                       placeholder="e.g. 20"
                     />
                   </FieldRow>
-                  <FieldRow label="Unit Type" hint="e.g. kg, litre, piece.">
-                    <Input
-                      value={form.unit_type}
-                      onChange={(e) => set("unit_type", e.target.value)}
-                      placeholder="piece"
-                    />
-                  </FieldRow>
-                  <FieldRow label="Unit Value" hint="Quantity per unit (for weighing).">
-                    <Input
-                      type="number" min="0" step="0.001"
-                      value={form.unit_value}
-                      onChange={(e) => set("unit_value", e.target.value)}
-                      placeholder="1"
-                    />
-                  </FieldRow>
-                </div>
-              )}
+                )}
+              </div>
             </FormSection>
 
           </form>

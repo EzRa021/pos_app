@@ -54,3 +54,8 @@ export const getStoreActiveShifts = (storeId) =>
 
 export const reconcileShift = (shiftId, notes = "") =>
   rpc("reconcile_shift", { id: shiftId, notes: notes || null });
+
+// Returns items sold, top item, unique customers, credit sales for a shift.
+// These are computed on-demand from transaction_items — not stored on the shift row.
+export const getShiftDetailStats = (shiftId) =>
+  rpc("get_shift_detail_stats", { shift_id: shiftId });

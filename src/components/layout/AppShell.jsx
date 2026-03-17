@@ -6,6 +6,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { AppSidebar } from "@/components/app-sidebar";
+import { NotificationBell } from "@/features/notifications/NotificationBell";
 import { ChevronRight, Home } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,10 @@ const ROUTE_META = {
   "/price-management": { label: "Price Management", group: "Finance"    },
   "/users":            { label: "Users",            group: "Admin"      },
   "/settings":         { label: "Settings",         group: "Admin"      },
+  "/eod":              { label: "EOD Reports",       group: "Operations" },
+  "/notifications":    { label: "Notifications",    group: "Operations" },
+  "/stock-transfers":  { label: "Stock Transfers",  group: "Catalog"    },
+  "/audit":            { label: "Audit Log",         group: "Admin"      },
 };
 
 function Breadcrumb() {
@@ -49,8 +54,9 @@ function Breadcrumb() {
 
 export function AppShell() {
   return (
-    // SidebarProvider is now h-screen + overflow-hidden (fixed in sidebar.jsx)
-    <SidebarProvider>
+    // h-full fills the flex-1 container below the TitleBar (not h-screen —
+    // the title bar already consumed 36px of the viewport height).
+    <SidebarProvider style={{ height: "100%" }}>
       <AppSidebar />
 
       {/* SidebarInset is now flex-1 + overflow-hidden + h-screen (fixed in sidebar.jsx) */}
@@ -64,6 +70,9 @@ export function AppShell() {
           )} />
           <Separator orientation="vertical" className="h-4 bg-border mx-0.5 shrink-0" />
           <Breadcrumb />
+          <div className="ml-auto">
+            <NotificationBell />
+          </div>
         </header>
 
         {/* Content — flex-1 + overflow-hidden; each page controls its own scroll */}

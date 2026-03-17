@@ -28,7 +28,7 @@ import { Separator } from "@/components/ui/separator";
 
 import { usePrintReceipt }          from "@/hooks/usePrintReceipt";
 import { getReceiptSettings }        from "@/commands/receipts";
-import { formatCurrency, formatDateTime, formatRef } from "@/lib/format";
+import { formatCurrency, formatDateTime, formatRef, formatQuantity } from "@/lib/format";
 import { PAYMENT_METHOD_LABELS }    from "@/lib/constants";
 import { useBranchStore }           from "@/stores/branch.store";
 import { useQuery }                 from "@tanstack/react-query";
@@ -45,8 +45,9 @@ export function ReceiptModal({ open, onClose, transaction, storeName }) {
     staleTime: 5 * 60 * 1000, // 5 min
   });
 
-  const tx    = transaction?.transaction ?? transaction;
-  const items = transaction?.items ?? [];
+  const tx       = transaction?.transaction ?? transaction;
+  const items    = transaction?.items     ?? [];
+  const payments = transaction?.payments  ?? [];
 
   const transactionId = tx?.id;
   const autoPrint     = receiptSettings?.auto_print === true;
@@ -74,7 +75,6 @@ export function ReceiptModal({ open, onClose, transaction, storeName }) {
 
   if (!tx) return null;
 
-  const payLabel = PAYMENT_METHOD_LABELS[tx.payment_method] ?? tx.payment_method;
   const change   = tx.change_amount   ? parseFloat(tx.change_amount)   : 0;
   const tendered = tx.amount_tendered ? parseFloat(tx.amount_tendered) : 0;
 
@@ -116,7 +116,7 @@ export function ReceiptModal({ open, onClose, transaction, storeName }) {
             {items.map((item) => (
               <div key={item.id} className="flex items-center justify-between px-3 py-2 text-[11px]">
                 <span className="text-foreground font-medium truncate max-w-[180px]">
-                  {item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(2)}×{" "}
+                  {formatQuantity(parseFloat(item.quantity), item.measurement_type, item.unit_type)}×{" "}
                   {item.item_name}
                 </span>
                 <span className="text-foreground font-semibold tabular-nums font-mono shrink-0 ml-2">
@@ -151,10 +151,23 @@ export function ReceiptModal({ open, onClose, transaction, storeName }) {
                 {formatCurrency(parseFloat(tx.total_amount))}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">{payLabel}</span>
-              <span className="text-foreground font-mono">{formatCurrency(tendered)}</span>
-            </div>
+            {payments.length > 0 ? (
+              payments.map((p) => (
+                <div key={p.id} className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    {PAYMENT_METHOD_LABELS[p.payment_method] ?? p.payment_method}
+                  </span>
+                  <span className="text-foreground font-mono">{formatCurrency(parseFloat(p.amount))}</span>
+                </div>
+              ))
+            ) : (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">
+                  {PAYMENT_METHOD_LABELS[tx.payment_method] ?? tx.payment_method}
+                </span>
+                <span className="text-foreground font-mono">{formatCurrency(tendered)}</span>
+              </div>
+            )}
             {change > 0.001 && (
               <div className="flex justify-between font-bold text-success">
                 <span>Change</span>

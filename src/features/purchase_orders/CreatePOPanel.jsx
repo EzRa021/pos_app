@@ -18,7 +18,7 @@ import { PageHeader }        from "@/components/shared/PageHeader";
 import { Button }            from "@/components/ui/button";
 import { Input }             from "@/components/ui/input";
 import { cn }                from "@/lib/utils";
-import { formatCurrency }    from "@/lib/format";
+import { formatCurrency, stepForType, unitLabel, measurementTypeLabel } from "@/lib/format";
 import { useBranchStore }    from "@/stores/branch.store";
 import { Link }              from "react-router-dom";
 
@@ -97,11 +97,13 @@ function ItemSearchBox({ storeId, onAdd, addedIds }) {
                   <p className="text-xs font-semibold text-foreground truncate">{item.item_name}</p>
                   <p className="text-[10px] text-muted-foreground font-mono">{item.sku}</p>
                 </div>
-                <div className="text-right shrink-0">
+                <div className="text-right shrink-0 space-y-0.5">
                   <p className="text-xs font-mono font-semibold text-foreground">
                     {formatCurrency(parseFloat(item.cost_price ?? item.selling_price ?? 0))}
                   </p>
-                  <p className="text-[10px] text-muted-foreground">cost</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {unitLabel(item.measurement_type, item.unit_type)} · cost
+                  </p>
                 </div>
                 {alreadyAdded && (
                   <Check className="h-3.5 w-3.5 text-success shrink-0" />
@@ -209,6 +211,8 @@ function SupplierSearchBox({ storeId, value, onChange }) {
 
 function LineItem({ line, onQtyChange, onCostChange, onRemove }) {
   const lineTotal = (parseFloat(line.quantity) || 0) * (parseFloat(line.unit_cost) || 0);
+  const step      = stepForType(line.measurement_type, line.min_increment);
+  const minQty    = step;
 
   return (
     <div className="flex items-start gap-3 py-3 border-b border-border/40 last:border-0">
@@ -219,32 +223,50 @@ function LineItem({ line, onQtyChange, onCostChange, onRemove }) {
         </div>
         <div className="min-w-0">
           <p className="text-xs font-semibold text-foreground truncate">{line.item_name}</p>
-          <p className="text-[10px] font-mono text-muted-foreground">{line.sku}</p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <p className="text-[10px] font-mono text-muted-foreground">{line.sku}</p>
+            {line.measurement_type && line.measurement_type !== "quantity" && (
+              <span className="inline-flex items-center rounded border border-primary/20 bg-primary/8 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-primary">
+                {unitLabel(line.measurement_type, line.unit_type)}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Qty */}
       <div className="flex items-center gap-1 shrink-0">
         <button
-          onClick={() => onQtyChange(Math.max(1, (parseFloat(line.quantity) || 1) - 1))}
+          onClick={() => {
+            const cur  = parseFloat(line.quantity) || 0;
+            const next = parseFloat((Math.max(minQty, cur - step)).toFixed(6));
+            onQtyChange(next);
+          }}
           className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted transition-colors"
         >
           <Minus className="h-3 w-3" />
         </button>
         <Input
           type="number"
-          min="1"
-          step="1"
+          min={minQty}
+          step="any"
           value={line.quantity}
           onChange={(e) => onQtyChange(e.target.value)}
           className="h-6 w-16 text-center text-xs px-1"
         />
         <button
-          onClick={() => onQtyChange((parseFloat(line.quantity) || 1) + 1)}
+          onClick={() => {
+            const cur  = parseFloat(line.quantity) || 0;
+            const next = parseFloat((cur + step).toFixed(6));
+            onQtyChange(next);
+          }}
           className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted transition-colors"
         >
           <Plus className="h-3 w-3" />
         </button>
+        <span className="text-[10px] font-semibold text-muted-foreground w-6 shrink-0">
+          {unitLabel(line.measurement_type, line.unit_type)}
+        </span>
       </div>
 
       {/* Unit cost */}
@@ -299,11 +321,14 @@ export function CreatePOPanel() {
     setLines((prev) => [
       ...prev,
       {
-        item_id:   item.id,
-        item_name: item.item_name,
-        sku:       item.sku,
-        quantity:  1,
-        unit_cost: parseFloat(item.cost_price ?? item.selling_price ?? 0) || 0,
+        item_id:          item.id,
+        item_name:        item.item_name,
+        sku:              item.sku,
+        measurement_type: item.measurement_type,
+        unit_type:        item.unit_type,
+        min_increment:    item.min_increment,
+        quantity:         stepForType(item.measurement_type, item.min_increment),
+        unit_cost:        parseFloat(item.cost_price ?? item.selling_price ?? 0) || 0,
       },
     ]);
   }, []);

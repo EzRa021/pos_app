@@ -149,28 +149,6 @@ function CustomerFormDialog({ open, onOpenChange, customer, onCreate, onUpdate, 
   const [form, setForm] = useState(INITIAL_FORM);
   const [saving, setSaving] = useState(false);
 
-  // Sync form when opening
-  useState(() => {
-    if (open) {
-      if (customer) {
-        setForm({
-          first_name:     customer.first_name ?? "",
-          last_name:      customer.last_name  ?? "",
-          email:          customer.email      ?? "",
-          phone:          customer.phone      ?? "",
-          address:        customer.address    ?? "",
-          city:           customer.city       ?? "",
-          customer_type:  customer.customer_type ?? "regular",
-          credit_limit:   customer.credit_limit != null ? String(parseFloat(customer.credit_limit)) : "",
-          credit_enabled: customer.credit_enabled ?? false,
-        });
-      } else {
-        setForm(INITIAL_FORM);
-      }
-    }
-  });
-
-  // Reset form when dialog opens/closes
   const handleOpenChange = useCallback((val) => {
     if (!val) { setForm(INITIAL_FORM); setSaving(false); }
     if (val && customer) {
@@ -186,6 +164,7 @@ function CustomerFormDialog({ open, onOpenChange, customer, onCreate, onUpdate, 
         credit_enabled: customer.credit_enabled ?? false,
       });
     }
+    if (val && !customer) setForm(INITIAL_FORM);
     onOpenChange(val);
   }, [onOpenChange, customer]);
 
@@ -208,7 +187,7 @@ function CustomerFormDialog({ open, onOpenChange, customer, onCreate, onUpdate, 
         address:        form.address.trim() || undefined,
         city:           form.city.trim()    || undefined,
         customer_type:  form.customer_type  || "regular",
-        credit_limit:   form.credit_limit   ? parseFloat(form.credit_limit) : undefined,
+        credit_limit:   form.credit_limit !== "" ? parseFloat(form.credit_limit) : undefined,
         credit_enabled: form.credit_enabled,
       };
       if (isEdit) {
@@ -473,7 +452,13 @@ function DeleteDialog({ open, onOpenChange, customer, onConfirm }) {
 export function CustomersPanel() {
   const navigate   = useNavigate();
   const storeId    = useBranchStore((s) => s.activeStore?.id);
-  const canManage  = usePermission("customers.create");
+
+  // Separate permission checks so each action is shown to whoever has the right
+  const canCreate  = usePermission("customers.create");
+  const canUpdate  = usePermission("customers.update");
+  const canDelete  = usePermission("customers.delete");
+  // Show the actions column if the user can do anything
+  const hasActions = canUpdate || canDelete;
 
   const [search,       setSearch]       = useState("");
   const [statusTab,    setStatusTab]    = useState("all");
@@ -489,9 +474,7 @@ export function CustomersPanel() {
   const { items, total, totalPages, isLoading, error, create, update, activate, deactivate, remove } =
     useCustomers({ search: search || undefined, isActive, customerType: typeTab || undefined, page });
 
-  // Derived counts — computed from fetched page (we use total from server, locally compute type counts)
   const { activeCount, inactiveCount, vipCount, wholesaleCount, regularCount } = useMemo(() => {
-    // These are page-relative counts; real totals would need separate queries
     const active    = items.filter((i) =>  i.is_active).length;
     const inactive  = items.filter((i) => !i.is_active).length;
     const vip       = items.filter((i) => i.customer_type === "vip").length;
@@ -516,7 +499,7 @@ export function CustomersPanel() {
   const openCreate = useCallback(() => { setEditTarget(null); setFormOpen(true); }, []);
   const openEdit   = useCallback((c) => { setEditTarget(c);   setFormOpen(true); }, []);
 
-  const handleCreate = useCallback((p) => create.mutateAsync(p),  [create]);
+  const handleCreate = useCallback((p) => create.mutateAsync(p), [create]);
   const handleUpdate = useCallback(({ id, ...p }) => update.mutateAsync({ id, ...p }), [update]);
   const handleToggle = useCallback(async (id) => {
     if (toggleTarget?.is_active) await deactivate.mutateAsync(id);
@@ -610,31 +593,37 @@ export function CustomersPanel() {
       header: "Status",
       render: (row) => <StatusBadge status={row.is_active ? "active" : "inactive"} />,
     },
-    ...(canManage ? [{
+    ...(hasActions ? [{
       key: "actions",
       header: "",
       align: "right",
       render: (row) => (
         <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-          <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit"
-            onClick={() => openEdit(row)}>
-            <Edit3 className="h-3.5 w-3.5 text-muted-foreground" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7"
-            title={row.is_active ? "Deactivate" : "Activate"}
-            onClick={() => setToggleTarget(row)}>
-            {row.is_active
-              ? <PowerOff className="h-3.5 w-3.5 text-warning" />
-              : <Power    className="h-3.5 w-3.5 text-success" />}
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7" title="Delete"
-            onClick={() => setDeleteTarget(row)}>
-            <Trash2 className="h-3.5 w-3.5 text-destructive" />
-          </Button>
+          {canUpdate && (
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit"
+              onClick={() => openEdit(row)}>
+              <Edit3 className="h-3.5 w-3.5 text-muted-foreground" />
+            </Button>
+          )}
+          {canUpdate && (
+            <Button variant="ghost" size="icon" className="h-7 w-7"
+              title={row.is_active ? "Deactivate" : "Activate"}
+              onClick={() => setToggleTarget(row)}>
+              {row.is_active
+                ? <PowerOff className="h-3.5 w-3.5 text-warning" />
+                : <Power    className="h-3.5 w-3.5 text-success" />}
+            </Button>
+          )}
+          {canDelete && (
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="Delete"
+              onClick={() => setDeleteTarget(row)}>
+              <Trash2 className="h-3.5 w-3.5 text-destructive" />
+            </Button>
+          )}
         </div>
       ),
     }] : []),
-  ], [canManage, openEdit]);
+  ], [hasActions, canUpdate, canDelete, openEdit]);
 
   if (error) return (
     <div className="flex flex-1 items-center justify-center text-destructive text-sm">
@@ -647,7 +636,7 @@ export function CustomersPanel() {
       <PageHeader
         title="Customers"
         description="Manage customer profiles, credit limits, and loyalty points."
-        action={canManage && (
+        action={canCreate && (
           <Button size="sm" onClick={openCreate}>
             <UserPlus className="h-3.5 w-3.5 mr-1.5" />
             New Customer
@@ -705,7 +694,7 @@ export function CustomersPanel() {
                   icon={Users}
                   title="No customers found"
                   description={search ? "Try a different search term." : "Add your first customer to get started."}
-                  action={canManage && !search && (
+                  action={canCreate && !search && (
                     <Button size="sm" onClick={openCreate}>
                       <UserPlus className="h-3.5 w-3.5 mr-1.5" />
                       New Customer
@@ -717,12 +706,12 @@ export function CustomersPanel() {
           </Section>
 
           {/* Legend */}
-          {items.length > 0 && canManage && (
+          {items.length > 0 && hasActions && (
             <div className="flex flex-wrap items-center gap-5 px-1 text-[11px] text-muted-foreground">
-              <div className="flex items-center gap-1.5"><Edit3    className="h-3 w-3" /><span>Edit</span></div>
-              <div className="flex items-center gap-1.5"><Power    className="h-3 w-3 text-success" /><span>Activate</span></div>
-              <div className="flex items-center gap-1.5"><PowerOff className="h-3 w-3 text-warning" /><span>Deactivate</span></div>
-              <div className="flex items-center gap-1.5"><Trash2   className="h-3 w-3 text-destructive" /><span>Delete</span></div>
+              {canUpdate && <div className="flex items-center gap-1.5"><Edit3    className="h-3 w-3" /><span>Edit</span></div>}
+              {canUpdate && <div className="flex items-center gap-1.5"><Power    className="h-3 w-3 text-success" /><span>Activate</span></div>}
+              {canUpdate && <div className="flex items-center gap-1.5"><PowerOff className="h-3 w-3 text-warning" /><span>Deactivate</span></div>}
+              {canDelete && <div className="flex items-center gap-1.5"><Trash2   className="h-3 w-3 text-destructive" /><span>Delete</span></div>}
             </div>
           )}
 

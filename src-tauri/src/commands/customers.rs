@@ -310,7 +310,8 @@ pub async fn create_customer(
 ) -> AppResult<Customer> {
     guard_permission(&state, &token, "customers.create").await?;
     let pool    = state.pool().await?;
-    let limit   = payload.credit_limit.map(to_dec);
+    // credit_limit is NOT NULL in the DB — default to 0 when caller omits it.
+    let limit = payload.credit_limit.map(to_dec).unwrap_or(Decimal::ZERO);
 
     let id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO customers
@@ -327,7 +328,7 @@ pub async fn create_customer(
         payload.phone,
         payload.address,
         payload.city,
-        limit,
+        limit,         // always Decimal, never NULL
         payload.customer_type,
         payload.credit_enabled,
     )

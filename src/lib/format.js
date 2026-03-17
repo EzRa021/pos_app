@@ -49,6 +49,132 @@ export function formatDecimal(value, maxDecimals = 2) {
   }).format(num);
 }
 
+// ── Measurement Utilities ─────────────────────────────────────────────────────
+
+/**
+ * Returns the canonical singular unit label for an item.
+ *
+ * Priority: explicit unit_type from DB → sensible default from measurement_type.
+ *
+ * Examples:
+ *   unitLabel("weight", "kg")       → "kg"
+ *   unitLabel("quantity", "piece")  → "piece"
+ *   unitLabel("quantity", null)     → "pcs"
+ *   unitLabel("weight", null)       → "kg"
+ */
+export function unitLabel(measurementType, unitType) {
+  if (unitType && String(unitType).trim()) return String(unitType).trim();
+  switch (measurementType) {
+    case "weight":  return "kg";
+    case "volume":  return "L";
+    case "length":  return "m";
+    case "quantity":
+    default:        return "pcs";
+  }
+}
+
+/**
+ * Human-readable label for a measurement type enum value.
+ *
+ * measurementTypeLabel("weight")   → "Weight"
+ * measurementTypeLabel("quantity") → "Quantity"
+ */
+export function measurementTypeLabel(measurementType) {
+  switch (measurementType) {
+    case "weight":   return "Weight";
+    case "volume":   return "Volume";
+    case "length":   return "Length";
+    case "quantity":
+    default:         return "Quantity";
+  }
+}
+
+/**
+ * Formats a raw numeric quantity with the appropriate precision and unit suffix.
+ *
+ * * quantity items  → whole number, "pcs" suffix (or unit_type)
+ * * weight/volume/length → up to 3 decimal places, unit suffix
+ *
+ * Examples:
+ *   formatQuantity(5,     "quantity", "piece") → "5 piece"
+ *   formatQuantity(2.5,   "weight",  "kg")    → "2.500 kg"
+ *   formatQuantity(1.2,   "volume",  "litre") → "1.200 litre"
+ *   formatQuantity(0,     "quantity", null)   → "0 pcs"
+ */
+export function formatQuantity(value, measurementType, unitType) {
+  const num = typeof value === "string" ? parseFloat(value) : (value ?? 0);
+  if (isNaN(num)) return `0 ${unitLabel(measurementType, unitType)}`;
+
+  const unit = unitLabel(measurementType, unitType);
+
+  switch (measurementType) {
+    case "weight":
+    case "volume":
+    case "length":
+      return `${num.toFixed(3).replace(/\.?0+$/, "")} ${unit}`;
+    case "quantity":
+    default:
+      return `${Math.round(num).toLocaleString("en-NG")} ${unit}`;
+  }
+}
+
+/**
+ * Formats "price per unit" for display on product tiles, cart rows, and receipts.
+ *
+ * Examples:
+ *   formatPricePerUnit(500, "quantity", "piece") → "₦500.00 / piece"
+ *   formatPricePerUnit(2500, "weight",  "kg")   → "₦2,500.00 / kg"
+ *   formatPricePerUnit(150, "volume",  "litre") → "₦150.00 / litre"
+ */
+export function formatPricePerUnit(price, measurementType, unitType) {
+  const unit = unitLabel(measurementType, unitType);
+  return `${formatCurrency(price)} / ${unit}`;
+}
+
+/**
+ * Returns the appropriate stepper increment for a given measurement type.
+ * Used in cart qty inputs, restock dialogs, stock count dialogs.
+ *
+ *   stepForType("quantity") → 1
+ *   stepForType("weight")   → 0.001
+ *   stepForType("volume")   → 0.001
+ *   stepForType("length")   → 0.001
+ *
+ * If the item has a `min_increment` setting, pass it as `override`.
+ */
+export function stepForType(measurementType, override = null) {
+  // Always parse to a number — min_increment from the Rust backend is a
+  // Decimal that serialises as a string (e.g. "5.0000"). Returning the raw
+  // string causes `qty + step` to become string concatenation in JS.
+  if (override != null) {
+    const n = parseFloat(override);
+    if (n > 0) return n;
+  }
+  switch (measurementType) {
+    case "weight":
+    case "volume":
+    case "length":  return 0.001;
+    case "quantity":
+    default:        return 1;
+  }
+}
+
+/**
+ * Determines the number of decimal places to display for a given measurement type.
+ *
+ *   decimalsForType("quantity") → 0
+ *   decimalsForType("weight")   → 3
+ */
+export function decimalsForType(measurementType) {
+  switch (measurementType) {
+    case "weight":
+    case "volume":
+    case "length":  return 3;
+    case "quantity":
+    default:        return 0;
+  }
+}
+
 // ── Dates & times ─────────────────────────────────────────────────────────────
 // ISO timestamp → "Mar 2, 2026"
 export function formatDate(iso) {
