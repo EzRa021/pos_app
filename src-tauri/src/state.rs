@@ -55,15 +55,21 @@ pub struct AppState {
 
     /// The port the Axum HTTP server is listening on (0 = not started yet).
     pub api_port: Arc<AtomicU16>,
+
+    /// Permission cache: role_id → Vec<permission_slug>.
+    /// Populated on first permission check for a role; invalidated when
+    /// set_role_permissions is called. Avoids a DB round-trip per RPC call.
+    pub permissions_cache: Arc<RwLock<HashMap<i32, Vec<String>>>>,
 }
 
 impl AppState {
     pub fn new(jwt_secret: String) -> Self {
         Self {
-            db:         Arc::new(Mutex::new(None)),
-            jwt_secret: Arc::new(jwt_secret),
-            sessions:   Arc::new(RwLock::new(HashMap::new())),
-            api_port:   Arc::new(AtomicU16::new(0)),
+            db:                Arc::new(Mutex::new(None)),
+            jwt_secret:        Arc::new(jwt_secret),
+            sessions:          Arc::new(RwLock::new(HashMap::new())),
+            api_port:          Arc::new(AtomicU16::new(0)),
+            permissions_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

@@ -23,3 +23,6 @@ export const getTransfers = (params = {}) =>
 
 export const getTransfer = (id) =>
   rpc("get_transfer", { id });
+
+export const searchTransfers = (query, storeId, limit = 8) =>
+  rpc("search_transfers", { query, store_id: storeId ?? null, limit });

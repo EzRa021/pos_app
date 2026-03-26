@@ -4,7 +4,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, CheckCircle2, AlertCircle, Settings2, Star, Gift, Clock, Coins } from "lucide-react";
-import { toast } from "sonner";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 import { Button }   from "@/components/ui/button";
 import { Input }    from "@/components/ui/input";
 import { cn }       from "@/lib/utils";
@@ -72,9 +72,9 @@ export function LoyaltySettingsPanel() {
       qc.setQueryData(["loyalty-settings", storeId], d);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-      toast.success("Loyalty settings saved.");
+      toastSuccess("Loyalty Settings Saved", `Programme is now ${d.is_active ? "active — customers will earn points" : "paused — no points will be earned"}.`);
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => onMutationError("Couldn't Save Loyalty Settings", e),
   });
 
   const set = (key) => (val) => setForm((f) => ({ ...f, [key]: val }));

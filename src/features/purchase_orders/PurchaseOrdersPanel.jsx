@@ -3,13 +3,14 @@
 // ============================================================================
 import { useState, useMemo, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { useEffect } from "react";
 import {
   ShoppingCart, Plus, Search, X, Calendar, Truck,
   CheckCircle2, Clock, Ban, ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { usePurchaseOrders } from "./usePurchaseOrders";
+import { usePurchaseOrders, usePoStats } from "./usePurchaseOrders";
 import { PageHeader }   from "@/components/shared/PageHeader";
 import { DataTable }    from "@/components/shared/DataTable";
 import { EmptyState }   from "@/components/shared/EmptyState";
@@ -121,39 +122,42 @@ export function PurchaseOrdersPanel() {
   const navigate   = useNavigate();
   const canCreate  = usePermission("purchase_orders.create");
 
+  const [search,       setSearch]       = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status,   setStatus]   = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo,   setDateTo]   = useState("");
   const [page,     setPage]     = useState(1);
 
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
   const { orders, total, totalPages, isLoading, isFetching } = usePurchaseOrders({
-    status:   status   || undefined,
-    dateFrom: dateFrom || undefined,
-    dateTo:   dateTo   || undefined,
+    search:   debouncedSearch || undefined,
+    status:   status         || undefined,
+    dateFrom: dateFrom        || undefined,
+    dateTo:   dateTo          || undefined,
     page,
     limit: 20,
   });
 
-  // Derived counts (from all loaded data)
-  const counts = useMemo(() => {
-    const base = { "": total };
-    STATUS_TABS.slice(1).forEach((t) => {
-      base[t.key] = orders.filter((o) => o.status === t.key).length;
-    });
-    return base;
-  }, [orders, total]);
+  // Store-wide aggregate stats — single query, not derived from the current page.
+  const poStats = usePoStats();
 
-  // KPI stats from the current page data
-  const { totalValue, pendingCount, receivedCount, cancelledCount } = useMemo(() => ({
-    totalValue:     orders.reduce((s, o) => s + parseFloat(o.total_amount ?? 0), 0),
-    pendingCount:   orders.filter((o) => o.status === "pending"   || o.status === "approved").length,
-    receivedCount:  orders.filter((o) => o.status === "received").length,
-    cancelledCount: orders.filter((o) => o.status === "cancelled" || o.status === "rejected").length,
-  }), [orders]);
+  // Tab badge counts from real store-wide totals
+  const counts = useMemo(() => ({
+    "":         poStats.total,
+    pending:    poStats.pending,
+    approved:   poStats.approved,
+    received:   poStats.received,
+    cancelled:  poStats.cancelled,
+  }), [poStats]);
 
-  const hasFilters = status || dateFrom || dateTo;
+  const hasFilters = search || status || dateFrom || dateTo;
   const clearFilters = useCallback(() => {
-    setStatus(""); setDateFrom(""); setDateTo(""); setPage(1);
+    setSearch(""); setStatus(""); setDateFrom(""); setDateTo(""); setPage(1);
   }, []);
 
   const columns = useMemo(() => [
@@ -235,10 +239,16 @@ export function PurchaseOrdersPanel() {
 
           {/* Stats */}
           <div className="grid grid-cols-4 gap-3">
-            <StatCard label="Total Orders"  value={total}                        sub="in this store"      accent="primary" />
-            <StatCard label="Open / Active" value={pendingCount}                 sub="pending or approved" accent={pendingCount > 0 ? "warning" : "muted"} />
-            <StatCard label="Received"      value={receivedCount}                sub="goods delivered"     accent="success" />
-            <StatCard label="Order Value"   value={formatCurrency(totalValue)}   sub="current page total"  accent="default" />
+            <StatCard label="Total Orders"  value={poStats.total}                              sub="in this store"       accent="primary" />
+            <StatCard label="Open / Active" value={poStats.pending + poStats.approved}
+              sub="pending or approved"
+              accent={(poStats.pending + poStats.approved) > 0 ? "warning" : "muted"}
+            />
+            <StatCard label="Received"      value={poStats.received}                           sub="goods delivered"     accent="success" />
+            <StatCard label="Cancelled"     value={poStats.cancelled + poStats.rejected}
+              sub="cancelled or rejected"
+              accent={(poStats.cancelled + poStats.rejected) > 0 ? "muted" : "default"}
+            />
           </div>
 
           {/* Table */}
@@ -246,6 +256,21 @@ export function PurchaseOrdersPanel() {
             title="Purchase Orders"
             action={
               <div className="flex items-center gap-2 flex-wrap">
+                {/* Search */}
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                  <Input
+                    value={search}
+                    onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                    placeholder="Search PO#, supplier…"
+                    className="pl-7 h-7 w-44 text-[11px]"
+                  />
+                  {search && (
+                    <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
                 {/* Date filters */}
                 <div className="flex items-center gap-1.5">
                   <Calendar className="h-3 w-3 text-muted-foreground shrink-0" />

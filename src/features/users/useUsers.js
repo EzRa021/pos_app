@@ -1,6 +1,6 @@
 // features/users/useUsers.js
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 import {
   getUsers, getUser, createUser, updateUser,
   deleteUser, getRoles, activateUser, deactivateUser, resetUserPassword,
@@ -43,50 +43,58 @@ export function useUserActions() {
 
   const create = useMutation({
     mutationFn: (payload) => createUser(payload),
-    onSuccess: () => { toast.success("User created successfully"); invalidate(); },
-    onError: (e) => toast.error(typeof e === "string" ? e : (e?.message ?? "Failed to create user")),
+    onSuccess: (user) => {
+      toastSuccess("User Created", `${user.first_name} ${user.last_name} can now sign in to Quantum POS.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Create User", e),
   });
 
   const update = useMutation({
     mutationFn: ({ id, payload }) => updateUser(id, payload),
     onSuccess: (user) => {
-      toast.success("User updated");
+      toastSuccess("User Updated", `Profile changes for ${user.first_name} ${user.last_name} have been saved.`);
       invalidate();
       qc.setQueryData(["user", user.id], user);
     },
-    onError: (e) => toast.error(typeof e === "string" ? e : (e?.message ?? "Failed to update user")),
+    onError: (e) => onMutationError("Couldn't Update User", e),
   });
 
   const remove = useMutation({
     mutationFn: (id) => deleteUser(id),
-    onSuccess: () => { toast.success("User deactivated"); invalidate(); },
-    onError: (e) => toast.error(typeof e === "string" ? e : (e?.message ?? "Failed to delete user")),
+    onSuccess: () => {
+      toastSuccess("User Deactivated", "The user's account has been deactivated.");
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Deactivate User", e),
   });
 
   const activate = useMutation({
     mutationFn: (id) => activateUser(id),
     onSuccess: (user) => {
-      toast.success(`${user.first_name} activated`);
+      toastSuccess("User Activated", `${user.first_name} ${user.last_name} can now sign in again.`);
       invalidate();
       qc.setQueryData(["user", user.id], user);
     },
-    onError: (e) => toast.error(typeof e === "string" ? e : (e?.message ?? "Failed to activate")),
+    onError: (e) => onMutationError("Couldn't Activate User", e),
   });
 
   const deactivate = useMutation({
     mutationFn: (id) => deactivateUser(id),
     onSuccess: (user) => {
-      toast.success(`${user.first_name} deactivated`);
+      toastSuccess("User Deactivated", `${user.first_name}'s access to the system has been suspended.`);
       invalidate();
       qc.setQueryData(["user", user.id], user);
     },
-    onError: (e) => toast.error(typeof e === "string" ? e : (e?.message ?? "Failed to deactivate")),
+    onError: (e) => onMutationError("Couldn't Deactivate User", e),
   });
 
   const resetPassword = useMutation({
     mutationFn: ({ id, newPassword }) => resetUserPassword(id, newPassword),
-    onSuccess: () => toast.success("Password reset successfully"),
-    onError: (e) => toast.error(typeof e === "string" ? e : (e?.message ?? "Failed to reset password")),
+    onSuccess: (_, vars) => {
+      toastSuccess("Password Reset", "The user's password has been updated. They can sign in with the new credentials.");
+    },
+    onError: (e) => onMutationError("Password Reset Failed", e),
   });
 
   return { create, update, remove, activate, deactivate, resetPassword };
@@ -118,8 +126,8 @@ export function useSetRolePermissions() {
     mutationFn: ({ roleId, permissionIds }) => setRolePermissions(roleId, permissionIds),
     onSuccess: (_, { roleId }) => {
       qc.invalidateQueries({ queryKey: ["role_permissions", roleId] });
-      toast.success("Permissions updated");
+      toastSuccess("Permissions Updated", "The role's access rights have been saved.");
     },
-    onError: (e) => toast.error(typeof e === "string" ? e : (e?.message ?? "Failed to update permissions")),
+    onError: (e) => onMutationError("Couldn't Update Permissions", e),
   });
 }

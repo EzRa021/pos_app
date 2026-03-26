@@ -1,5 +1,5 @@
 // pages/StockTransfersPage.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeftRight, Plus, Loader2, Send, PackageCheck, X, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -184,20 +184,32 @@ function CreateTransferDialog({ open, onOpenChange, onCreate }) {
 export default function StockTransfersPage() {
   const navigate   = useNavigate();
   const canCreate  = usePermission("inventory.create");
-  const [status, setStatus]   = useState("");
-  const [page,   setPage]     = useState(1);
+  const [status,     setStatus]     = useState("");
+  const [page,       setPage]       = useState(1);
+  const [search,     setSearch]     = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
 
-  const { transfers, total, isLoading, isFetching, create } = useStockTransfers({ status, page, limit: 25 });
+  useEffect(() => {
+    const id = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
+  const { transfers, total, isLoading, isFetching, create } = useStockTransfers({
+    search: debouncedSearch || undefined,
+    status,
+    page,
+    limit: 25,
+  });
 
   const columns = [
-    { key: "reference",    header: "Reference", render: (r) => <span className="text-xs font-mono font-semibold text-primary">{r.reference ?? r.id?.slice(0, 8).toUpperCase()}</span> },
-    { key: "from_store",   header: "From",      render: (r) => <span className="text-xs text-muted-foreground">{r.from_store_name}</span> },
-    { key: "to_store",     header: "To",        render: (r) => <span className="text-xs text-muted-foreground">{r.to_store_name}</span> },
-    { key: "item_count",   header: "Items",     align: "right", render: (r) => <span className="text-xs tabular-nums">{r.item_count ?? "—"}</span> },
-    { key: "status",       header: "Status",    render: (r) => <StatusBadge status={r.status} /> },
-    { key: "created_at",   header: "Created",   render: (r) => <span className="text-xs text-muted-foreground">{formatDate(r.created_at)}</span> },
-    { key: "actions",      header: "",          align: "right", render: (r) => (
+    { key: "transfer_number", header: "Reference",  render: (r) => <span className="text-xs font-mono font-semibold text-primary">{r.transfer_number}</span> },
+    { key: "from_store_name", header: "From",       render: (r) => <span className="text-xs text-muted-foreground">{r.from_store_name ?? "—"}</span> },
+    { key: "to_store_name",   header: "To",         render: (r) => <span className="text-xs text-muted-foreground">{r.to_store_name ?? "—"}</span> },
+    { key: "item_count",      header: "Items",      align: "right", render: (r) => <span className="text-xs tabular-nums">{r.items?.length ?? "—"}</span> },
+    { key: "status",          header: "Status",     render: (r) => <StatusBadge status={r.status} /> },
+    { key: "requested_at",    header: "Created",    render: (r) => <span className="text-xs text-muted-foreground">{formatDate(r.requested_at)}</span> },
+    { key: "actions",         header: "",           align: "right", render: (r) => (
       <Button variant="ghost" size="sm" className="h-7 text-[11px] text-primary" onClick={() => navigate(`/stock-transfers/${r.id}`)}>
         View
       </Button>
@@ -220,17 +232,39 @@ export default function StockTransfersPage() {
         <div className="flex-1 overflow-auto">
           <div className="mx-auto max-w-5xl px-6 py-5 space-y-4">
 
-            {/* Status tabs */}
-            <div className="flex items-center gap-1 rounded-lg bg-muted/50 p-1 border border-border/60 w-fit flex-wrap">
-              {STATUS_TABS.map((t) => (
-                <button key={t.key} onClick={() => { setStatus(t.key); setPage(1); }}
-                  className={cn(
-                    "rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all",
-                    status === t.key ? "bg-card text-foreground shadow-sm border border-border/60" : "text-muted-foreground hover:text-foreground",
-                  )}>
-                  {t.label}
-                </button>
-              ))}
+            {/* Toolbar: search + status tabs */}
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search transfer #, store…"
+                  className="pl-8 h-8 w-52 text-xs"
+                />
+                {search && (
+                  <button
+                    onClick={() => { setSearch(""); setDebouncedSearch(""); setPage(1); }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+
+              {/* Status tabs */}
+              <div className="flex items-center gap-1 rounded-lg bg-muted/50 p-1 border border-border/60 flex-wrap">
+                {STATUS_TABS.map((t) => (
+                  <button key={t.key} onClick={() => { setStatus(t.key); setPage(1); }}
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all",
+                      status === t.key ? "bg-card text-foreground shadow-sm border border-border/60" : "text-muted-foreground hover:text-foreground",
+                    )}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <DataTable

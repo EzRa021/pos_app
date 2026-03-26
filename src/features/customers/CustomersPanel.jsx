@@ -1,7 +1,7 @@
 // ============================================================================
 // features/customers/CustomersPanel.jsx
 // ============================================================================
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Users, Search, X, UserPlus, Edit3, Power, PowerOff, Trash2,
@@ -460,10 +460,16 @@ export function CustomersPanel() {
   // Show the actions column if the user can do anything
   const hasActions = canUpdate || canDelete;
 
-  const [search,       setSearch]       = useState("");
-  const [statusTab,    setStatusTab]    = useState("all");
-  const [typeTab,      setTypeTab]      = useState("");
-  const [page,         setPage]         = useState(1);
+  const [search,          setSearch]          = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [statusTab,       setStatusTab]       = useState("all");
+  const [typeTab,         setTypeTab]         = useState("");
+  const [page,            setPage]            = useState(1);
+
+  useEffect(() => {
+    const id = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
+    return () => clearTimeout(id);
+  }, [search]);
   const [formOpen,     setFormOpen]     = useState(false);
   const [editTarget,   setEditTarget]   = useState(null);
   const [toggleTarget, setToggleTarget] = useState(null);
@@ -472,7 +478,7 @@ export function CustomersPanel() {
   const isActive = statusTab === "active" ? true : statusTab === "inactive" ? false : undefined;
 
   const { items, total, totalPages, isLoading, error, create, update, activate, deactivate, remove } =
-    useCustomers({ search: search || undefined, isActive, customerType: typeTab || undefined, page });
+    useCustomers({ search: debouncedSearch || undefined, isActive, customerType: typeTab || undefined, page });
 
   const { activeCount, inactiveCount, vipCount, wholesaleCount, regularCount } = useMemo(() => {
     const active    = items.filter((i) =>  i.is_active).length;
@@ -693,8 +699,8 @@ export function CustomersPanel() {
                 <EmptyState
                   icon={Users}
                   title="No customers found"
-                  description={search ? "Try a different search term." : "Add your first customer to get started."}
-                  action={canCreate && !search && (
+                  description={debouncedSearch ? "Try a different search term." : "Add your first customer to get started."}
+                  action={canCreate && !debouncedSearch && (
                     <Button size="sm" onClick={openCreate}>
                       <UserPlus className="h-3.5 w-3.5 mr-1.5" />
                       New Customer

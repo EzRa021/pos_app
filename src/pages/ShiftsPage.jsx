@@ -14,7 +14,7 @@
 //  ── Shift history shows only their own shifts.
 // ============================================================================
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useNavigate }  from "react-router-dom";
 import {
@@ -36,12 +36,13 @@ import { ShiftSummaryCards }   from "@/features/shifts/ShiftSummaryCards";
 import { CashMovementsList }   from "@/features/shifts/CashMovementsList";
 import { ShiftHistoryTable }   from "@/features/shifts/ShiftHistoryTable";
 
-import { useShift }            from "@/hooks/useShift";
-import { useShiftStore }       from "@/stores/shift.store";
-import { useAuthStore }        from "@/stores/auth.store";
-import { getShiftSummary }     from "@/commands/cash_movements";
-import { getStoreActiveShifts, cancelShift } from "@/commands/shifts";
-import { toast }               from "sonner";
+import { useShift }              from "@/hooks/useShift";
+import { useShiftStore }         from "@/stores/shift.store";
+import { useAuthStore }          from "@/stores/auth.store";
+import { useStoreActiveShifts }  from "@/features/shifts/useShifts";
+import { getShiftSummary }       from "@/commands/cash_movements";
+import { cancelShift }           from "@/commands/shifts";
+import { toast }                 from "sonner";
 import { formatDateTime, formatDuration, formatCurrency } from "@/lib/format";
 import { cn }                  from "@/lib/utils";
 
@@ -198,17 +199,12 @@ function ActiveShiftCard({ shift, onClick, currentUserId, onCancel, isCancelling
 }
 
 function GlobalShiftsView({ storeId, currentUserId }) {
-  const navigate   = useNavigate();
-  const qc         = useQueryClient();
+  const navigate     = useNavigate();
+  const qc           = useQueryClient();
   const initForStore = useShiftStore((s) => s.initForStore);
 
-  const { data: activeShifts = [], isLoading } = useQuery({
-    queryKey:        ["store-active-shifts", storeId],
-    queryFn:         () => getStoreActiveShifts(storeId),
-    enabled:         !!storeId,
-    refetchInterval: 30_000,
-    staleTime:       0,
-  });
+  const { shifts: activeShifts, isLoading, storeTotalSales, storeTotalTxns } =
+    useStoreActiveShifts(storeId);
 
   const cancelMutation = useMutation({
     mutationFn: (shiftId) => cancelShift(shiftId),
@@ -222,14 +218,6 @@ function GlobalShiftsView({ storeId, currentUserId }) {
       toast.error(typeof err === "string" ? err : "Failed to cancel shift.");
     },
   });
-
-  // Store-wide totals across all active shifts
-  const storeTotalSales = activeShifts.reduce(
-    (s, sh) => s + parseFloat(sh.total_sales ?? 0), 0,
-  );
-  const storeTotalTxns = activeShifts.reduce(
-    (s, sh) => s + (sh.transaction_count ?? 0), 0,
-  );
 
   return (
     <div className="space-y-5">
@@ -442,12 +430,9 @@ export default function ShiftsPage() {
   const user       = useAuthStore((s) => s.user);
   const isGlobal   = user?.is_global === true;
 
+  // initForStore is called by branch.store when the active store changes — never from useEffect
+  // (calling it from useEffect caused the forceStoreRerender crash; see CLAUDE.md)
   const { activeShift, isShiftOpen, isLoading: shiftLoading, shiftNumber, shiftId, storeId } = useShift();
-  const initForStore = useShiftStore((s) => s.initForStore);
-
-  useEffect(() => {
-    if (storeId) initForStore(storeId).catch(() => {});
-  }, [storeId, initForStore]);
 
   const { data: summary, isLoading: summaryLoading } = useQuery({
     queryKey:        ["shift-summary", shiftId],

@@ -26,9 +26,9 @@ export const closeShift = (shiftId, actualCash, closingNotes = "") =>
     closing_notes: closingNotes || null,
   });
 
-// SuspendShiftDto: { reason? }
+// SuspendShiftDto: { reason? }  — params are flat, not nested
 export const suspendShift = (shiftId, reason = "") =>
-  rpc("suspend_shift", { id: shiftId, payload: { reason: reason || null } });
+  rpc("suspend_shift", { id: shiftId, reason: reason || undefined });
 
 export const resumeShift = (shiftId) =>
   rpc("resume_shift", { id: shiftId });

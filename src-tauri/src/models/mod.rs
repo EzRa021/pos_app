@@ -36,5 +36,3 @@ pub mod fx_rates;
 pub mod label;
 pub mod price_scheduling;
 pub mod customer_wallet;
-
-pub use pagination::*;

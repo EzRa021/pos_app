@@ -48,6 +48,15 @@ export function setApiBaseUrl(url) {
   apiClient.defaults.baseURL = url;
 }
 
+/**
+ * Returns true once setApiBaseUrl() has been called (i.e. the DB is connected
+ * and the HTTP server is listening). Used as the `enabled` flag in queries
+ * that must not fire during the splash / setup / login screens.
+ */
+export function isApiReady() {
+  return !!apiClient.defaults.baseURL;
+}
+
 export function setAuthToken(token) {
   if (token) {
     apiClient.defaults.headers.common["Authorization"] = `Bearer ${token}`;

@@ -1,15 +1,17 @@
 // ============================================================================
 // features/expenses/ExpensesPanel.jsx
 // ============================================================================
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Receipt, Plus, Edit3, Trash2, ThumbsUp, ThumbsDown,
-  Calendar, X, AlertTriangle, CheckCircle2, Clock, Ban,
+  Calendar, X, Search, AlertTriangle, CheckCircle2, Clock, Ban,
   DollarSign, TrendingDown, Tag,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { useExpenses, useExpenseSummary } from "./useExpenses";
+import { useBranchStore } from "@/stores/branch.store";
 import { PageHeader }    from "@/components/shared/PageHeader";
 import { DataTable }     from "@/components/shared/DataTable";
 import { EmptyState }    from "@/components/shared/EmptyState";
@@ -394,6 +396,8 @@ export function ExpensesPanel() {
   const canApprove = usePermission("expenses.approve");
   const canDelete  = usePermission("expenses.delete");
 
+  const [search,       setSearch]       = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [approvalTab,  setApprovalTab]  = useState("");
   const [dateFrom,     setDateFrom]     = useState("");
   const [dateTo,       setDateTo]       = useState("");
@@ -402,32 +406,46 @@ export function ExpensesPanel() {
   const [editing,      setEditing]      = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
+  const storeId = useBranchStore((s) => s.activeStore?.id);
+
   const {
     expenses, total, isLoading, isFetching,
     create, update, approve, reject, remove,
   } = useExpenses({
-    approvalStatus: approvalTab || undefined,
-    dateFrom:       dateFrom    || undefined,
-    dateTo:         dateTo      || undefined,
+    search:         debouncedSearch || undefined,
+    approvalStatus: approvalTab     || undefined,
+    dateFrom:       dateFrom        || undefined,
+    dateTo:         dateTo          || undefined,
     page,
     limit: 25,
   });
 
   const { summary, breakdownList } = useExpenseSummary(dateFrom, dateTo);
 
-  const hasFilters = approvalTab || dateFrom || dateTo;
+  const hasFilters = search || approvalTab || dateFrom || dateTo;
   const clearFilters = useCallback(() => {
-    setApprovalTab(""); setDateFrom(""); setDateTo(""); setPage(1);
+    setSearch(""); setApprovalTab(""); setDateFrom(""); setDateTo(""); setPage(1);
   }, []);
 
-  // Counts for tabs (from current page data)
-  const counts = useMemo(() => {
-    const base = { "": total };
-    APPROVAL_TABS.slice(1).forEach((t) => {
-      base[t.key] = expenses.filter((e) => (e.approval_status ?? "pending") === t.key).length;
-    });
-    return base;
-  }, [expenses, total]);
+  // Counts for status tabs — fetched from the server for accuracy.
+  // We fire four cheap limit:1 queries to get the total count per status
+  // rather than computing from the current page (which only has 25 rows).
+  // These queries piggyback on the same cache used by useExpenses.
+  const { data: pendingData }  = useQuery({ queryKey: ["expenses", storeId, { approvalStatus: "pending",  page: 1, limit: 1 }], queryFn: () => import("@/commands/expenses").then(m => m.getExpenses({ store_id: storeId, approval_status: "pending",  page: 1, limit: 1 })), enabled: !!storeId, staleTime: 60_000 });
+  const { data: approvedData } = useQuery({ queryKey: ["expenses", storeId, { approvalStatus: "approved", page: 1, limit: 1 }], queryFn: () => import("@/commands/expenses").then(m => m.getExpenses({ store_id: storeId, approval_status: "approved", page: 1, limit: 1 })), enabled: !!storeId, staleTime: 60_000 });
+  const { data: rejectedData } = useQuery({ queryKey: ["expenses", storeId, { approvalStatus: "rejected", page: 1, limit: 1 }], queryFn: () => import("@/commands/expenses").then(m => m.getExpenses({ store_id: storeId, approval_status: "rejected", page: 1, limit: 1 })), enabled: !!storeId, staleTime: 60_000 });
+
+  const counts = useMemo(() => ({
+    "":         total,
+    pending:    pendingData?.total  ?? 0,
+    approved:   approvedData?.total ?? 0,
+    rejected:   rejectedData?.total ?? 0,
+  }), [total, pendingData, approvedData, rejectedData]);
 
   const totalBreakdown = useMemo(() =>
     breakdownList.reduce((s, b) => s + parseFloat(b.total_amount ?? 0), 0),
@@ -624,6 +642,21 @@ export function ExpensesPanel() {
                 title="Expense Records"
                 action={
                   <div className="flex items-center gap-2">
+                    {/* Search */}
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                      <Input
+                        value={search}
+                        onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                        placeholder="Search description, category…"
+                        className="pl-7 h-7 w-48 text-[11px]"
+                      />
+                      {search && (
+                        <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1.5">
                       <Calendar className="h-3 w-3 text-muted-foreground shrink-0" />
                       <Input type="date" value={dateFrom}

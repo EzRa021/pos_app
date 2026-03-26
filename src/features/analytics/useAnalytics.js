@@ -1,7 +1,8 @@
 // features/analytics/useAnalytics.js
 import { useQuery } from "@tanstack/react-query";
 import {
-  getSalesSummary, getRevenueByPeriod, getDailySummary,
+  getBusinessHealthSummary,
+  getSalesSummary, getRevenueByPeriod,
   getItemAnalytics, getCategoryAnalytics, getDepartmentAnalytics,
   getProfitAnalysis, getProfitLossSummary, getLowMarginItems,
   getSlowMovingItems, getDeadStock, getStockVelocity,
@@ -28,7 +29,8 @@ function makeHook(queryKey, fn, params = {}, staleMs = 2 * 60_000) {
 }
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
-export const useSalesSummary         = makeHook("analytics-sales-summary",     getSalesSummary);
+export const useBusinessHealthSummary = makeHook("analytics-health",             getBusinessHealthSummary, {}, 60_000);
+export const useSalesSummary          = makeHook("analytics-sales-summary",      getSalesSummary);
 export const useRevenueByPeriod      = makeHook("analytics-revenue-period",    getRevenueByPeriod);
 export const useItemAnalytics        = makeHook("analytics-items",             getItemAnalytics);
 export const useCategoryAnalytics    = makeHook("analytics-categories",        getCategoryAnalytics);

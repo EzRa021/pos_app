@@ -1,6 +1,7 @@
 // ============================================================================
 // ANALYTICS MODELS
 // ============================================================================
+#![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -130,6 +131,8 @@ pub struct AnalyticsFilters {
     pub threshold: Option<f64>,
     /// previous_week | previous_month | previous_year
     pub compare_with: Option<String>,
+    /// Days since last purchase to consider "lapsed" (default: 60)
+    pub lapsed_days: Option<i64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +316,19 @@ pub struct CustomerAnalytics {
     pub outstanding_balance: Option<Decimal>,
 }
 
+/// Wrapper returned by get_customer_analytics — includes aggregate KPIs
+/// that the Customers tab KPI cards need.
+#[derive(Debug, Serialize)]
+pub struct CustomerAnalyticsReport {
+    pub total_customers: i64,
+    /// Customers with a purchase in the last `lapsed_days` days (default 60).
+    pub active_customers: i64,
+    /// Customers with last purchase between lapsed_days and 365 days ago.
+    pub lapsed_customers: i64,
+    pub avg_lifetime_value: f64,
+    pub top_customers: Vec<CustomerAnalytics>,
+}
+
 // ── Return analysis ───────────────────────────────────────────────────────────
 
 /// Per-item return rate.
@@ -341,12 +357,24 @@ pub struct CashierReturnStats {
     pub total_return_value: Decimal,
 }
 
+/// Pre-computed summary block for the Returns tab KPI cards.
+#[derive(Debug, Serialize)]
+pub struct ReturnSummary {
+    pub total_return_value: Decimal,
+    pub return_count: i64,
+    /// Overall return rate % (units returned / units sold × 100)
+    pub return_rate: Decimal,
+    pub items_returned: Decimal,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ReturnAnalysisReport {
     pub total_returns: i64,
     pub total_return_value: Decimal,
     /// total_returned_items / total_sold_items × 100
     pub overall_return_rate: Decimal,
+    /// Pre-aggregated KPI summary for the frontend cards.
+    pub summary: ReturnSummary,
     pub by_item: Vec<ReturnAnalysisItem>,
     pub by_cashier: Vec<CashierReturnStats>,
 }
@@ -381,12 +409,25 @@ pub struct DiscountByCashier {
     pub avg_discount_amount: Decimal,
 }
 
+/// Per-item discount breakdown — added to DiscountAnalytics in Phase 1 fix.
+#[derive(Debug, Serialize)]
+pub struct DiscountByItem {
+    pub item_id: Option<Uuid>,
+    pub item_name: String,
+    pub tx_count: i64,
+    pub qty_sold: Decimal,
+    pub total_discount: Decimal,
+    pub avg_discount_amount: Decimal,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DiscountAnalytics {
     pub total_discounts_given: Decimal,
     pub transactions_with_discounts: i64,
     pub avg_discount_per_transaction: Decimal,
     pub by_cashier: Vec<DiscountByCashier>,
+    /// Added in Phase 1 fix — was missing, causing Discounts tab to show empty.
+    pub by_item: Vec<DiscountByItem>,
 }
 
 // ── Payment trends ────────────────────────────────────────────────────────────
@@ -426,6 +467,28 @@ pub struct TaxReportRow {
     pub transaction_count: i64,
 }
 
+/// VAT breakdown by tax category — added in Phase 1 fix.
+#[derive(Debug, Serialize)]
+pub struct VatByCategoryRow {
+    pub category_name: String,
+    pub rate: Decimal,
+    pub taxable_sales: Decimal,
+    pub vat_amount: Decimal,
+}
+
+/// Full tax report returned by get_tax_report — wraps period rows + category
+/// breakdown + aggregate totals needed by the TaxTab KPI cards.
+#[derive(Debug, Serialize)]
+pub struct TaxReport {
+    /// Sum of all vat_collected across the period rows.
+    pub total_vat: Decimal,
+    pub gross_sales: Decimal,
+    pub net_sales: Decimal,
+    pub transaction_count: i64,
+    pub period_rows: Vec<TaxReportRow>,
+    pub vat_by_category: Vec<VatByCategoryRow>,
+}
+
 // ── Low-margin items ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -439,4 +502,39 @@ pub struct LowMarginItem {
     pub margin_percent: Decimal,
     pub qty_sold: Decimal,
     pub revenue: Decimal,
+}
+
+// ── Business health summary ───────────────────────────────────────────────────
+
+/// Single-endpoint aggregate returned by get_business_health_summary.
+/// Powers the analytics landing page pulse strip without making 8 separate requests.
+#[derive(Debug, Serialize)]
+pub struct BusinessHealthSummary {
+    // Revenue windows
+    pub today_revenue: Decimal,
+    pub today_transactions: i64,
+    /// % change: today vs yesterday (at same elapsed time)
+    pub today_vs_yesterday: Decimal,
+    pub week_revenue: Decimal,
+    /// % change: rolling 7 days vs prior 7 days
+    pub week_vs_last_week: Decimal,
+    pub month_revenue: Decimal,
+    /// % change: rolling 30 days vs prior 30 days
+    pub month_vs_last_month: Decimal,
+    /// Gross profit margin % for current calendar month
+    pub gross_profit_margin: Decimal,
+    // Inventory
+    pub low_stock_count: i64,
+    pub out_of_stock_count: i64,
+    // Credit
+    pub open_credit_total: Decimal,
+    pub overdue_credit_count: i64,
+    // Pending work
+    pub pending_expenses_count: i64,
+    pub pending_po_count: i64,
+    // Top performers (current month)
+    pub top_item_name: Option<String>,
+    pub top_item_qty: Decimal,
+    pub top_cashier_name: Option<String>,
+    pub top_cashier_sales: Decimal,
 }

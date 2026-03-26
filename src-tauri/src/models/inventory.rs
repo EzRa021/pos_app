@@ -1,6 +1,7 @@
 // ============================================================================
 // INVENTORY MODELS  (aligned with quantum-pos-app inventory.service.js)
 // ============================================================================
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
@@ -163,8 +164,8 @@ pub struct StockDeductResult {
 // ── Stock Count Models ────────────────────────────────────────────────────────
 
 /// Full stock-count session row (includes JOIN columns).
-/// total_items / items_counted / items_with_variance are Option<i32> so that
-/// `query_as!` can accommodate them whether the migration has run or not.
+/// total_items / items_counted / items_with_variance are i32 NOT NULL DEFAULT 0
+/// in the DB, so they always come back as i32 (not Option).
 #[derive(Debug, Serialize, Clone, sqlx::FromRow)]
 pub struct StockCount {
     pub id:                    i32,
@@ -173,18 +174,24 @@ pub struct StockCount {
     pub count_type:            Option<String>,
     pub started_by:            Option<i32>,
     pub completed_by:          Option<i32>,
+    /// "in_progress" | "completed" | "cancelled"
     pub status:                String,
     pub notes:                 Option<String>,
-    pub total_items:           Option<i32>,
-    pub items_counted:         Option<i32>,
-    pub items_with_variance:   Option<i32>,
-    pub total_variance_value:  Option<Decimal>,
+    pub total_items:           i32,
+    pub items_counted:         i32,
+    pub items_with_variance:   i32,
+    pub total_variance_value:  Decimal,
     pub started_at:            DateTime<Utc>,
     pub completed_at:          Option<DateTime<Utc>>,
     pub created_at:            DateTime<Utc>,
+    // Cancellation audit trail (added in migration 0059)
+    pub cancelled_by:          Option<i32>,
+    pub cancelled_at:          Option<DateTime<Utc>>,
+    pub cancel_reason:         Option<String>,
     // JOINs
     pub started_by_username:   Option<String>,
     pub completed_by_username: Option<String>,
+    pub cancelled_by_username: Option<String>,
     pub store_name:            Option<String>,
 }
 
@@ -226,6 +233,32 @@ pub struct StockCountSession {
     pub status:         String,
     pub started_at:     DateTime<Utc>,
     pub completed_at:   Option<DateTime<Utc>>,
+}
+
+/// Aggregate stats returned by get_stock_count_stats (from v_stock_count_stats).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct StockCountStats {
+    pub total_count:               i64,
+    pub in_progress_count:         i64,
+    pub completed_count:           i64,
+    pub cancelled_count:           i64,
+    pub total_variance_value:      Decimal,
+    pub total_items_with_variance: i64,
+}
+
+/// Slim item record returned by get_inventory_for_count.
+/// Contains only fields needed by StockCountRunner — no pagination.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CountableItem {
+    pub item_id:          Uuid,
+    pub item_name:        String,
+    pub sku:              String,
+    pub barcode:          Option<String>,
+    pub category_name:    Option<String>,
+    pub quantity:         Decimal,
+    pub measurement_type: Option<String>,
+    pub unit_type:        Option<String>,
+    pub min_increment:    Option<Decimal>,
 }
 
 /// Summary block inside a VarianceReport.
@@ -313,4 +346,6 @@ pub struct CountSessionFilters {
     pub store_id:   Option<i32>,
     pub status:     Option<String>,
     pub count_type: Option<String>,
+    /// Free-text search against session_number and notes
+    pub search:     Option<String>,
 }

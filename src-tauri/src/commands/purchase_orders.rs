@@ -13,13 +13,24 @@ use crate::{
     models::pagination::PagedResult,
     state::AppState,
 };
-use super::auth::{guard, guard_permission};
+use super::auth::guard_permission;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub struct PurchaseOrderDetail {
     pub order: PurchaseOrder,
     pub items: Vec<PurchaseOrderItem>,
+}
+
+/// Slim read model for command palette search.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PurchaseOrderSearchResult {
+    pub id:            i32,
+    pub po_number:     String,
+    pub supplier_name: Option<String>,
+    pub status:        String,
+    pub total_amount:  rust_decimal::Decimal,
+    pub ordered_at:    chrono::DateTime<chrono::Utc>,
 }
 
 fn to_dec(v: f64) -> Decimal {
@@ -66,32 +77,42 @@ async fn fetch_po_items(pool: &sqlx::PgPool, po_id: i32) -> AppResult<Vec<Purcha
     .map_err(AppError::from)
 }
 
-pub(crate) async fn get_purchase_orders_inner(state: &AppState, token: String, filters: crate::models::purchase_order::PurchaseOrderFilters) -> AppResult<crate::models::pagination::PagedResult<PurchaseOrder>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_purchase_orders(s, token, filters).await
-}
-pub(crate) async fn get_purchase_order_inner(state: &AppState, token: String, id: i32) -> AppResult<PurchaseOrderDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_purchase_order(s, token, id).await
-}
-pub(crate) async fn create_purchase_order_inner(state: &AppState, token: String, payload: crate::models::purchase_order::CreatePurchaseOrderDto) -> AppResult<PurchaseOrderDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; create_purchase_order(s, token, payload).await
-}
-pub(crate) async fn receive_purchase_order_inner(state: &AppState, token: String, id: i32, payload: crate::models::purchase_order::ReceivePurchaseOrderDto) -> AppResult<PurchaseOrderDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; receive_purchase_order(s, token, id, payload).await
-}
-pub(crate) async fn cancel_purchase_order_inner(state: &AppState, token: String, id: i32) -> AppResult<PurchaseOrderDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; cancel_purchase_order(s, token, id).await
-}
-pub(crate) async fn submit_purchase_order_inner(state: &AppState, token: String, id: i32) -> AppResult<PurchaseOrderDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; submit_purchase_order(s, token, id).await
-}
-pub(crate) async fn approve_purchase_order_inner(state: &AppState, token: String, id: i32) -> AppResult<PurchaseOrderDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; approve_purchase_order(s, token, id).await
-}
-pub(crate) async fn reject_purchase_order_inner(state: &AppState, token: String, id: i32, reason: Option<String>) -> AppResult<PurchaseOrderDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; reject_purchase_order(s, token, id, reason).await
-}
-pub(crate) async fn delete_purchase_order_inner(state: &AppState, token: String, id: i32) -> AppResult<()> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; delete_purchase_order(s, token, id).await
+/// Fast text search for the command palette.
+/// Matches po_number, supplier_name, notes — capped at limit (default 8, max 20).
+pub(crate) async fn search_purchase_orders_inner(
+    state:    &AppState,
+    token:    String,
+    query:    String,
+    store_id: Option<i32>,
+    limit:    Option<i64>,
+) -> AppResult<Vec<PurchaseOrderSearchResult>> {
+    guard_permission(state, &token, "purchase_orders.read").await?;
+    let pool   = state.pool().await?;
+    let limit  = limit.unwrap_or(8).clamp(1, 20);
+    let search = format!("%{}%", query.trim());
+
+    sqlx::query_as!(
+        PurchaseOrderSearchResult,
+        r#"SELECT po.id, po.po_number,
+                  s.supplier_name,
+                  po.status, po.total_amount, po.ordered_at
+           FROM   purchase_orders po
+           JOIN   suppliers s ON s.id = po.supplier_id
+           WHERE  ($1::int IS NULL OR po.store_id = $1)
+             AND  (
+                   po.po_number    ILIKE $2
+                OR s.supplier_name ILIKE $2
+                OR po.notes        ILIKE $2
+             )
+           ORDER  BY po.ordered_at DESC
+           LIMIT  $3"#,
+        store_id,
+        search,
+        limit,
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -108,14 +129,26 @@ pub async fn get_purchase_orders(
     let df     = filters.date_from.as_deref();
     let dt     = filters.date_to.as_deref();
 
+    let search = filters.search.as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
+
     let total: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM purchase_orders
-           WHERE ($1::int  IS NULL OR store_id    = $1)
-             AND ($2::int  IS NULL OR supplier_id = $2)
-             AND ($3::text IS NULL OR status      = $3)
-             AND ($4::text IS NULL OR ordered_at >= $4::timestamptz)
-             AND ($5::text IS NULL OR ordered_at <= $5::timestamptz)"#,
-        filters.store_id, filters.supplier_id, filters.status, df, dt,
+        r#"SELECT COUNT(*)
+           FROM   purchase_orders po
+           JOIN   suppliers s ON s.id = po.supplier_id
+           WHERE ($1::int  IS NULL OR po.store_id    = $1)
+             AND ($2::int  IS NULL OR po.supplier_id = $2)
+             AND ($3::text IS NULL OR po.status      = $3)
+             AND ($4::text IS NULL OR po.ordered_at >= $4::timestamptz)
+             AND ($5::text IS NULL OR po.ordered_at <= $5::timestamptz)
+             AND ($6::text IS NULL OR (
+                   po.po_number      ILIKE $6
+                OR s.supplier_name   ILIKE $6
+                OR po.notes          ILIKE $6
+             ))"#,
+        filters.store_id, filters.supplier_id, filters.status, df, dt, search.as_deref(),
     )
     .fetch_one(&pool)
     .await?
@@ -136,10 +169,15 @@ pub async fn get_purchase_orders(
              AND ($3::text IS NULL OR po.status      = $3)
              AND ($4::text IS NULL OR po.ordered_at >= $4::timestamptz)
              AND ($5::text IS NULL OR po.ordered_at <= $5::timestamptz)
+             AND ($6::text IS NULL OR (
+                   po.po_number      ILIKE $6
+                OR s.supplier_name   ILIKE $6
+                OR po.notes          ILIKE $6
+             ))
            ORDER  BY po.ordered_at DESC
-           LIMIT $6 OFFSET $7"#,
+           LIMIT $7 OFFSET $8"#,
         filters.store_id, filters.supplier_id, filters.status,
-        df, dt, limit, offset,
+        df, dt, search.as_deref(), limit, offset,
     )
     .fetch_all(&pool)
     .await?;
@@ -187,7 +225,8 @@ pub async fn create_purchase_order(
     .flatten()
     .unwrap_or_else(|| format!("PO-{}", chrono::Utc::now().timestamp()));
 
-    // Validate all item quantities before inserting
+    // Validate all item quantities before inserting.
+    // Bulk-fetch all item metadata in one query to avoid N+1 per-item round-trips.
     struct ValidatedLine {
         item_id:   uuid::Uuid,
         unit_type: Option<String>,
@@ -195,30 +234,37 @@ pub async fn create_purchase_order(
         cost:      Decimal,
         line_tot:  Decimal,
     }
+    let item_ids: Vec<uuid::Uuid> = payload.items.iter().map(|i| i.item_id).collect();
+    let meta_rows = sqlx::query!(
+        r#"SELECT i.id,
+                  i.item_name,
+                  ist.measurement_type,
+                  ist.unit_type
+           FROM   items i
+           LEFT JOIN item_settings ist ON ist.item_id = i.id
+           WHERE  i.id = ANY($1)"#,
+        &item_ids as &[uuid::Uuid],
+    )
+    .fetch_all(&mut *db_tx)
+    .await?;
+    let item_meta_map: std::collections::HashMap<uuid::Uuid, _> =
+        meta_rows.into_iter().filter_map(|r| r.id.map(|id| (id, r))).collect();
+
     let mut validated_lines: Vec<ValidatedLine> = Vec::with_capacity(payload.items.len());
     for item in &payload.items {
-        let meta = sqlx::query!(
-            r#"SELECT i.item_name,
-                      ist.measurement_type AS "measurement_type: Option<String>",
-                      ist.unit_type        AS "unit_type: Option<String>"
-               FROM   items i
-               LEFT JOIN item_settings ist ON ist.item_id = i.id
-               WHERE  i.id = $1"#,
-            item.item_id,
-        )
-        .fetch_one(&mut *db_tx)
-        .await?;
+        let meta = item_meta_map.get(&item.item_id)
+            .ok_or_else(|| AppError::NotFound(format!("Item {} not found", item.item_id)))?;
 
-        let qty = crate::utils::qty::validate_qty_opt(
+        let qty = crate::utils::qty::validate_qty(
             to_dec(item.quantity),
-            meta.measurement_type.as_deref(),
-            &meta.item_name,
+            &meta.measurement_type,
+            meta.item_name.as_deref().unwrap_or("Unknown Item"),
         )?;
         let cost     = to_dec(item.unit_cost);
         let line_tot = qty * cost;
         validated_lines.push(ValidatedLine {
             item_id:   item.item_id,
-            unit_type: meta.unit_type.flatten(),
+            unit_type: meta.unit_type.clone(),
             qty,
             cost,
             line_tot,
@@ -277,39 +323,50 @@ pub async fn receive_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
 
-    if order.status == "received" || order.status == "cancelled" {
+    if order.status != "approved" && order.status != "pending" {
         return Err(AppError::Validation(
-            format!("Cannot receive a {} purchase order", order.status)
+            format!("Cannot receive a {} purchase order. Order must be pending or approved.", order.status)
         ));
     }
 
     let mut db_tx = pool.begin().await?;
 
+    // Bulk-fetch all po_item metadata in one query to avoid N+1 per-item round-trips.
+    struct PoLineMeta {
+        item_id:          uuid::Uuid,
+        item_name:        String,
+        unit_type:        Option<String>,
+        measurement_type: Option<String>,
+    }
+    let po_item_ids: Vec<i32> = payload.items.iter().map(|r| r.po_item_id).collect();
+    let meta_rows = sqlx::query!(
+        r#"SELECT poi.id,
+                  poi.item_id,
+                  i.item_name,
+                  poi.unit_type,
+                  ist.measurement_type
+           FROM   purchase_order_items poi
+           JOIN   items i ON i.id = poi.item_id
+           LEFT JOIN item_settings ist ON ist.item_id = poi.item_id
+           WHERE  poi.id = ANY($1)"#,
+        &po_item_ids as &[i32],
+    )
+    .fetch_all(&mut *db_tx)
+    .await?;
+    let po_meta_map: std::collections::HashMap<i32, PoLineMeta> = meta_rows
+        .into_iter()
+        .filter_map(|r| Some((r.id?, PoLineMeta {
+            item_id:          r.item_id?,
+            item_name:        r.item_name?,
+            unit_type:        r.unit_type,
+            measurement_type: Some(r.measurement_type),
+        })))
+        .collect();
+
     for receive in &payload.items {
         let qty_raw = to_dec(receive.quantity_received);
-
-        // Fetch item_id, measurement_type, and unit metadata FIRST so we can
-        // validate the quantity before writing anything.
-        struct PoLineMeta {
-            item_id: uuid::Uuid,
-            item_name: String,
-            unit_type: Option<String>,
-            measurement_type: Option<String>,
-        }
-        let po_meta = sqlx::query_as!(
-            PoLineMeta,
-            r#"SELECT poi.item_id,
-                      i.item_name,
-                      poi.unit_type,
-                      ist.measurement_type
-               FROM   purchase_order_items poi
-               JOIN   items i ON i.id = poi.item_id
-               LEFT JOIN item_settings ist ON ist.item_id = poi.item_id
-               WHERE  poi.id = $1"#,
-            receive.po_item_id,
-        )
-        .fetch_one(&mut *db_tx)
-        .await?;
+        let po_meta = po_meta_map.get(&receive.po_item_id)
+            .ok_or_else(|| AppError::NotFound(format!("PO item {} not found", receive.po_item_id)))?;
         let item_id = po_meta.item_id;
 
         // Validate/round qty according to measurement type BEFORE any writes.
@@ -417,8 +474,10 @@ pub async fn cancel_purchase_order(
     let pool  = state.pool().await?;
     let order = fetch_po(&pool, id).await?;
 
-    if order.status == "received" {
-        return Err(AppError::Validation("Cannot cancel an already-received order".into()));
+    if order.status == "received" || order.status == "cancelled" || order.status == "rejected" {
+        return Err(AppError::Validation(
+            format!("Cannot cancel a {} purchase order", order.status)
+        ));
     }
 
     sqlx::query!(
@@ -526,6 +585,63 @@ pub async fn reject_purchase_order(
     Ok(PurchaseOrderDetail { order, items })
 }
 
+// ── PO stats (single aggregate query) ────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct PoStats {
+    pub total:     i64,
+    pub draft:     i64,
+    pub pending:   i64,
+    pub approved:  i64,
+    pub received:  i64,
+    pub cancelled: i64,
+    pub rejected:  i64,
+}
+
+#[tauri::command]
+pub async fn get_po_stats(
+    state:    State<'_, AppState>,
+    token:    String,
+    store_id: Option<i32>,
+) -> AppResult<PoStats> {
+    get_po_stats_inner(&state, token, store_id).await
+}
+
+pub(crate) async fn get_po_stats_inner(
+    state:    &AppState,
+    token:    String,
+    store_id: Option<i32>,
+) -> AppResult<PoStats> {
+    guard_permission(state, &token, "purchase_orders.read").await?;
+    let pool = state.pool().await?;
+
+    let row = sqlx::query!(
+        r#"SELECT
+               COUNT(*)                                            AS "total!: i64",
+               COUNT(*) FILTER (WHERE status = 'draft')           AS "draft!: i64",
+               COUNT(*) FILTER (WHERE status = 'pending')         AS "pending!: i64",
+               COUNT(*) FILTER (WHERE status = 'approved')        AS "approved!: i64",
+               COUNT(*) FILTER (WHERE status = 'received')        AS "received!: i64",
+               COUNT(*) FILTER (WHERE status = 'cancelled')       AS "cancelled!: i64",
+               COUNT(*) FILTER (WHERE status = 'rejected')        AS "rejected!: i64"
+           FROM purchase_orders
+           WHERE ($1::int IS NULL OR store_id = $1)"#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    Ok(PoStats {
+        total:     row.total,
+        draft:     row.draft,
+        pending:   row.pending,
+        approved:  row.approved,
+        received:  row.received,
+        cancelled: row.cancelled,
+        rejected:  row.rejected,
+    })
+}
+
 // ── Delete draft PO ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -546,4 +662,87 @@ pub async fn delete_purchase_order(
         .execute(&pool)
         .await?;
     Ok(())
+}
+
+// ── HTTP-server inner wrappers ────────────────────────────────────────────────
+// These thin wrappers allow http_server.rs to call Tauri commands directly
+// without going through the Tauri State<> machinery.
+
+#[inline]
+fn as_tauri_state(s: &AppState) -> tauri::State<'_, AppState> {
+    unsafe { std::mem::transmute(s) }
+}
+
+pub(crate) async fn get_purchase_orders_inner(
+    state:   &AppState,
+    token:   String,
+    filters: PurchaseOrderFilters,
+) -> AppResult<PagedResult<PurchaseOrder>> {
+    get_purchase_orders(as_tauri_state(state), token, filters).await
+}
+
+pub(crate) async fn get_purchase_order_inner(
+    state: &AppState,
+    token: String,
+    id:    i32,
+) -> AppResult<PurchaseOrderDetail> {
+    get_purchase_order(as_tauri_state(state), token, id).await
+}
+
+pub(crate) async fn create_purchase_order_inner(
+    state:   &AppState,
+    token:   String,
+    payload: CreatePurchaseOrderDto,
+) -> AppResult<PurchaseOrderDetail> {
+    create_purchase_order(as_tauri_state(state), token, payload).await
+}
+
+pub(crate) async fn receive_purchase_order_inner(
+    state:   &AppState,
+    token:   String,
+    id:      i32,
+    payload: ReceivePurchaseOrderDto,
+) -> AppResult<PurchaseOrderDetail> {
+    receive_purchase_order(as_tauri_state(state), token, id, payload).await
+}
+
+pub(crate) async fn cancel_purchase_order_inner(
+    state: &AppState,
+    token: String,
+    id:    i32,
+) -> AppResult<PurchaseOrderDetail> {
+    cancel_purchase_order(as_tauri_state(state), token, id).await
+}
+
+pub(crate) async fn submit_purchase_order_inner(
+    state: &AppState,
+    token: String,
+    id:    i32,
+) -> AppResult<PurchaseOrderDetail> {
+    submit_purchase_order(as_tauri_state(state), token, id).await
+}
+
+pub(crate) async fn approve_purchase_order_inner(
+    state: &AppState,
+    token: String,
+    id:    i32,
+) -> AppResult<PurchaseOrderDetail> {
+    approve_purchase_order(as_tauri_state(state), token, id).await
+}
+
+pub(crate) async fn reject_purchase_order_inner(
+    state:  &AppState,
+    token:  String,
+    id:     i32,
+    reason: Option<String>,
+) -> AppResult<PurchaseOrderDetail> {
+    reject_purchase_order(as_tauri_state(state), token, id, reason).await
+}
+
+pub(crate) async fn delete_purchase_order_inner(
+    state: &AppState,
+    token: String,
+    id:    i32,
+) -> AppResult<()> {
+    delete_purchase_order(as_tauri_state(state), token, id).await
 }

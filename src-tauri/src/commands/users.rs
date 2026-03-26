@@ -6,7 +6,7 @@ use tauri::State;
 use crate::{
     error::{AppError, AppResult},
     models::user::{User, CreateUserDto, UpdateUserDto, UserFilters, Role, Permission},
-    models::pagination::{PagedResult, PaginationParams},
+    models::pagination::PagedResult,
     state::AppState,
     utils::crypto::{hash_password, validate_password},
 };
@@ -367,5 +367,10 @@ pub async fn set_role_permissions(
     }
 
     tx.commit().await?;
+
+    // Invalidate the permission cache for this role so the next request re-loads
+    // the updated permission set from the DB.
+    state.permissions_cache.write().await.remove(&role_id);
+
     Ok(())
 }

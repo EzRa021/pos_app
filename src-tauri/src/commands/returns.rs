@@ -1,33 +1,49 @@
 // ============================================================================
 // RETURNS & REFUNDS COMMANDS
 // ============================================================================
+// All public commands are pure `#[tauri::command]` functions — no unsafe
+// transmute hacks.  The inner-function pattern has been removed; any
+// cross-module callers should use the HTTP server routes or duplicate the
+// small query they need directly.
+// ============================================================================
 
 use tauri::State;
 use rust_decimal::Decimal;
+
 use crate::{
     error::{AppError, AppResult},
-    models::returns::{Return, ReturnItem, ReturnDetail, CreateReturnDto, ReturnFilters},
-    models::pagination::PagedResult,
+    models::{
+        returns::{
+            Return, ReturnItem, ReturnDetail, ReturnStats,
+            CreateReturnDto, VoidReturnDto, ReturnFilters,
+        },
+        pagination::PagedResult,
+    },
     state::AppState,
 };
 use super::auth::guard_permission;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
 }
 
+/// Fetch a single return row with joined names.
 async fn fetch_return(pool: &sqlx::PgPool, id: i32) -> AppResult<Return> {
     sqlx::query_as!(
         Return,
-        r#"SELECT r.id, r.reference_no, r.original_tx_id,
-                  t.reference_no                            AS original_ref_no,
-                  r.store_id, r.cashier_id,
-                  CONCAT(u.first_name, ' ', u.last_name)   AS cashier_name,
-                  r.customer_id,
-                  CONCAT(c.first_name, ' ', c.last_name)   AS customer_name,
-                  r.return_type, r.subtotal, r.tax_amount,
-                  r.total_amount, r.refund_method, r.refund_reference,
-                  r.status, r.reason, r.notes, r.created_at
+        r#"SELECT
+               r.id, r.reference_no, r.original_tx_id,
+               t.reference_no                            AS original_ref_no,
+               r.store_id, r.cashier_id,
+               CONCAT(u.first_name, ' ', u.last_name)   AS cashier_name,
+               r.customer_id,
+               CONCAT(c.first_name, ' ', c.last_name)   AS customer_name,
+               r.return_type, r.subtotal, r.tax_amount,
+               r.total_amount, r.refund_method, r.refund_reference,
+               r.status, r.reason, r.notes, r.created_at,
+               r.voided_at, r.voided_by, r.void_reason
            FROM   returns r
            JOIN   transactions t ON t.id = r.original_tx_id
            JOIN   users        u ON u.id = r.cashier_id
@@ -40,13 +56,15 @@ async fn fetch_return(pool: &sqlx::PgPool, id: i32) -> AppResult<Return> {
     .ok_or_else(|| AppError::NotFound(format!("Return {id} not found")))
 }
 
+/// Fetch all items belonging to a return.
 async fn fetch_return_items(pool: &sqlx::PgPool, return_id: i32) -> AppResult<Vec<ReturnItem>> {
     sqlx::query_as!(
         ReturnItem,
-        r#"SELECT id, return_id, item_id, item_name, sku,
-                  quantity_returned, unit_price, line_total,
-                  condition, restocked, notes,
-                  measurement_type, unit_type
+        r#"SELECT
+               id, return_id, item_id, item_name, sku,
+               quantity_returned, unit_price, line_total,
+               condition, restocked, notes,
+               measurement_type, unit_type
            FROM   return_items
            WHERE  return_id = $1
            ORDER  BY id"#,
@@ -57,15 +75,141 @@ async fn fetch_return_items(pool: &sqlx::PgPool, return_id: i32) -> AppResult<Ve
     .map_err(AppError::from)
 }
 
-pub(crate) async fn create_return_inner(state: &AppState, token: String, payload: crate::models::returns::CreateReturnDto) -> AppResult<crate::models::returns::ReturnDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; create_return(s, token, payload).await
+// ── Per-item returned-quantity helper ─────────────────────────────────────────
+
+/// Per-item total quantity already returned for a transaction.
+/// Used by the frontend to cap return quantity inputs and mark fully-returned
+/// items.  Excludes voided returns.
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct ReturnedItemQty {
+    pub item_id:           uuid::Uuid,
+    pub quantity_returned: Decimal,
 }
-pub(crate) async fn get_returns_inner(state: &AppState, token: String, filters: crate::models::returns::ReturnFilters) -> AppResult<crate::models::pagination::PagedResult<crate::models::returns::Return>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_returns(s, token, filters).await
+
+#[tauri::command]
+pub async fn get_transaction_returned_quantities(
+    state: State<'_, AppState>,
+    token: String,
+    tx_id: i32,
+) -> AppResult<Vec<ReturnedItemQty>> {
+    guard_permission(&state, &token, "transactions.read").await?;
+    let pool = state.pool().await?;
+
+    sqlx::query_as!(
+        ReturnedItemQty,
+        r#"SELECT
+               ri.item_id            AS "item_id!: uuid::Uuid",
+               SUM(ri.quantity_returned) AS "quantity_returned!: Decimal"
+           FROM   return_items ri
+           JOIN   returns r ON r.id = ri.return_id
+           WHERE  r.original_tx_id = $1
+             AND  r.status        != 'voided'
+           GROUP  BY ri.item_id"#,
+        tx_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
 }
-pub(crate) async fn get_return_inner(state: &AppState, token: String, id: i32) -> AppResult<crate::models::returns::ReturnDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_return(s, token, id).await
+
+// ── Slim search result for command palette ────────────────────────────────────
+
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct ReturnSearchResult {
+    pub id:              i32,
+    pub reference_no:    String,
+    pub original_ref_no: Option<String>,
+    pub customer_name:   Option<String>,
+    pub total_amount:    Decimal,
+    pub return_type:     String,
+    pub status:          String,
+    pub created_at:      chrono::DateTime<chrono::Utc>,
 }
+
+/// Fast text search for the command palette.
+#[tauri::command]
+pub async fn search_returns(
+    state:    State<'_, AppState>,
+    token:    String,
+    query:    String,
+    store_id: Option<i32>,
+    limit:    Option<i64>,
+) -> AppResult<Vec<ReturnSearchResult>> {
+    guard_permission(&state, &token, "transactions.read").await?;
+    let pool   = state.pool().await?;
+    let limit  = limit.unwrap_or(8).clamp(1, 20);
+    let search = format!("%{}%", query.trim());
+
+    sqlx::query_as!(
+        ReturnSearchResult,
+        r#"SELECT
+               r.id, r.reference_no,
+               t.reference_no                           AS "original_ref_no",
+               CONCAT(c.first_name, ' ', c.last_name)  AS "customer_name",
+               r.total_amount, r.return_type, r.status, r.created_at
+           FROM   returns r
+           JOIN   transactions t ON t.id = r.original_tx_id
+           JOIN   users        u ON u.id = r.cashier_id
+           LEFT JOIN customers c ON c.id = r.customer_id
+           WHERE  ($1::int IS NULL OR r.store_id = $1)
+             AND  (
+                   r.reference_no                         ILIKE $2
+                OR t.reference_no                         ILIKE $2
+                OR CONCAT(c.first_name, ' ', c.last_name) ILIKE $2
+                OR CONCAT(u.first_name, ' ', u.last_name) ILIKE $2
+             )
+           ORDER  BY r.created_at DESC
+           LIMIT  $3"#,
+        store_id,
+        search,
+        limit,
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
+}
+
+// ── Aggregate stats ───────────────────────────────────────────────────────────
+
+/// Returns a single-row stats summary for the given store from v_return_stats.
+/// This replaces the 3-query pattern that the frontend was previously using.
+#[tauri::command]
+pub async fn get_return_stats(
+    state:    State<'_, AppState>,
+    token:    String,
+    store_id: i32,
+) -> AppResult<ReturnStats> {
+    guard_permission(&state, &token, "transactions.read").await?;
+    let pool = state.pool().await?;
+
+    let row = sqlx::query_as!(
+        ReturnStats,
+        r#"SELECT
+               COALESCE(total_count,     0) AS "total_count!: i64",
+               COALESCE(full_count,      0) AS "full_count!: i64",
+               COALESCE(partial_count,   0) AS "partial_count!: i64",
+               COALESCE(completed_count, 0) AS "completed_count!: i64",
+               COALESCE(voided_count,    0) AS "voided_count!: i64",
+               COALESCE(total_refunded,  0) AS "total_refunded!: Decimal"
+           FROM v_return_stats
+           WHERE store_id = $1"#,
+        store_id
+    )
+    .fetch_optional(&pool)
+    .await?
+    .unwrap_or(ReturnStats {
+        total_count:     0,
+        full_count:      0,
+        partial_count:   0,
+        completed_count: 0,
+        voided_count:    0,
+        total_refunded:  Decimal::ZERO,
+    });
+
+    Ok(row)
+}
+
+// ── Create return ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn create_return(
@@ -76,14 +220,35 @@ pub async fn create_return(
     let claims = guard_permission(&state, &token, "transactions.refund").await?;
     let pool   = state.pool().await?;
 
+    // ── Basic validation ──────────────────────────────────────────────────────
     if payload.items.is_empty() {
-        return Err(AppError::Validation("Return must include at least one item".into()));
+        return Err(AppError::Validation(
+            "Return must include at least one item".into(),
+        ));
+    }
+    let reason = payload
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| AppError::Validation("A return reason is required".into()))?;
+
+    // Validate refund method
+    let valid_methods = ["cash", "card", "transfer", "original_method", "store_credit"];
+    if !valid_methods.contains(&payload.refund_method.as_str()) {
+        return Err(AppError::Validation(format!(
+            "Invalid refund method '{}'. Must be one of: {}",
+            payload.refund_method,
+            valid_methods.join(", ")
+        )));
     }
 
-    // Fetch original transaction
+    // ── Fetch original transaction ────────────────────────────────────────────
     let orig = sqlx::query!(
         r#"SELECT id, store_id, customer_id, status, total_amount, tax_amount
-           FROM   transactions WHERE id = $1"#,
+           FROM   transactions
+           WHERE  id = $1"#,
         payload.original_tx_id
     )
     .fetch_optional(&pool)
@@ -91,20 +256,23 @@ pub async fn create_return(
     .ok_or_else(|| AppError::NotFound("Original transaction not found".into()))?;
 
     match orig.status.as_str() {
-        "voided" | "cancelled" =>
+        "voided" | "cancelled" => {
             return Err(AppError::Validation(
-                "Cannot return items from a voided or cancelled transaction".into()
-            )),
-        "refunded" =>
+                "Cannot return items from a voided or cancelled transaction".into(),
+            ))
+        }
+        "refunded" => {
             return Err(AppError::Validation(
-                "This transaction has already been fully refunded. No further returns are allowed".into()
-            )),
+                "This transaction has already been fully refunded. \
+                 No further returns are allowed.".into(),
+            ))
+        }
         _ => {}
     }
 
     let mut db_tx = pool.begin().await?;
 
-    // Generate reference number
+    // ── Generate reference number ─────────────────────────────────────────────
     let ref_no: String = sqlx::query_scalar!(
         "SELECT 'RET-' || LPAD(NEXTVAL('return_ref_seq')::text, 6, '0')"
     )
@@ -114,14 +282,14 @@ pub async fn create_return(
     .flatten()
     .unwrap_or_else(|| format!("RET-{}", chrono::Utc::now().timestamp()));
 
-    // ── Struct to carry validated data between the two loops ─────────────────
+    // ── Struct to carry validated data between passes ─────────────────────────
     struct ValidatedItem {
         item_id:          uuid::Uuid,
         item_name:        String,
         sku:              String,
         qty_ret:          Decimal,
         unit_price:       Decimal,
-        line_total:       Decimal,   // inclusive of tax, proportional
+        line_total:       Decimal,
         condition:        String,
         restock:          bool,
         notes:            Option<String>,
@@ -133,8 +301,18 @@ pub async fn create_return(
     let mut subtotal   = Decimal::ZERO;
     let mut tax_amount = Decimal::ZERO;
 
-    // ── Pass 1: validate items against original transaction, compute totals ──
+    // ── Pass 1: validate items, compute totals ────────────────────────────────
     for item_dto in &payload.items {
+        // Validate condition value
+        let valid_conditions = ["good", "damaged", "defective"];
+        if !valid_conditions.contains(&item_dto.condition.as_str()) {
+            return Err(AppError::Validation(format!(
+                "Invalid condition '{}'. Must be one of: {}",
+                item_dto.condition,
+                valid_conditions.join(", ")
+            )));
+        }
+
         let orig_item = sqlx::query!(
             r#"SELECT
                    ti.quantity,
@@ -155,9 +333,12 @@ pub async fn create_return(
         )
         .fetch_optional(&mut *db_tx)
         .await?
-        .ok_or_else(|| AppError::Validation(
-            format!("Item {} not found in original transaction", item_dto.item_id)
-        ))?;
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "Item {} not found in the original transaction",
+                item_dto.item_id
+            ))
+        })?;
 
         let qty_ret = crate::utils::qty::validate_qty_opt(
             to_dec(item_dto.quantity_returned),
@@ -165,7 +346,7 @@ pub async fn create_return(
             &orig_item.item_name,
         )?;
 
-        // How much of this item has already been returned in prior returns
+        // How much of this item has already been returned in non-voided returns
         let already_returned: Decimal = sqlx::query_scalar!(
             r#"SELECT COALESCE(SUM(ri.quantity_returned), 0)
                FROM   return_items ri
@@ -181,26 +362,29 @@ pub async fn create_return(
         .unwrap_or(Decimal::ZERO);
 
         let remaining_qty = orig_item.quantity - already_returned;
+
         if qty_ret <= Decimal::ZERO {
             return Err(AppError::Validation(format!(
-                "Return quantity for '{}' must be greater than zero", orig_item.item_name
+                "Return quantity for '{}' must be greater than zero",
+                orig_item.item_name
             )));
         }
         if qty_ret > remaining_qty {
             return Err(AppError::Validation(format!(
-                "Cannot return {} of '{}'. Only {} unit(s) remaining after {} already returned.",
+                "Cannot return {} of '{}'. Only {} unit(s) remaining \
+                 ({} already returned).",
                 qty_ret, orig_item.item_name, remaining_qty, already_returned
             )));
         }
 
-        // Proportional line total and tax based on validated qty
+        // Proportional totals based on validated qty
         let unit_price_inclusive = if orig_item.quantity > Decimal::ZERO {
             orig_item.line_total / orig_item.quantity
         } else {
             orig_item.unit_price
         };
-        let line_tot = unit_price_inclusive * qty_ret;
-        let line_tax = if orig_item.quantity > Decimal::ZERO {
+        let line_tot      = unit_price_inclusive * qty_ret;
+        let line_tax      = if orig_item.quantity > Decimal::ZERO {
             orig_item.tax_amount * qty_ret / orig_item.quantity
         } else {
             Decimal::ZERO
@@ -225,11 +409,9 @@ pub async fn create_return(
         });
     }
 
-    // Include tax in the return total so it matches original total_amount semantics
     let total_amount = subtotal + tax_amount;
 
-    // Determine if this return (combined with any prior returns) makes it a full return.
-    // Compare cumulative returned amount against the original transaction total.
+    // Determine full vs partial: compare cumulative returned vs original total
     let prior_returned: Decimal = sqlx::query_scalar!(
         r#"SELECT COALESCE(SUM(total_amount), 0)
            FROM   returns
@@ -242,8 +424,13 @@ pub async fn create_return(
     .unwrap_or(Decimal::ZERO);
 
     let cumulative_returned = prior_returned + total_amount;
-    let return_type = if cumulative_returned >= orig.total_amount { "full" } else { "partial" };
+    let return_type = if cumulative_returned >= orig.total_amount {
+        "full"
+    } else {
+        "partial"
+    };
 
+    // ── Insert returns header ─────────────────────────────────────────────────
     let return_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO returns
                (reference_no, original_tx_id, store_id, cashier_id, customer_id,
@@ -262,14 +449,13 @@ pub async fn create_return(
         total_amount,
         payload.refund_method,
         payload.refund_reference,
-        payload.reason,
+        reason,
         payload.notes,
     )
     .fetch_one(&mut *db_tx)
     .await?;
 
-    // ── Pass 2: insert return items + conditionally restock ───────────────────
-    // Uses the validated data cached in pass 1 — no re-fetch needed.
+    // ── Pass 2: insert return items, conditionally restock ────────────────────
     for vi in &validated_items {
         sqlx::query!(
             r#"INSERT INTO return_items
@@ -293,13 +479,13 @@ pub async fn create_return(
         .execute(&mut *db_tx)
         .await?;
 
-        // Restock only if item is in good condition and restock flag is set
+        // Restock only if condition is good and flag is set
         if vi.restock && vi.condition == "good" {
             sqlx::query!(
-                r#"UPDATE item_stock SET
-                   quantity           = quantity           + $1,
-                   available_quantity = available_quantity + $1,
-                   updated_at         = NOW()
+                r#"UPDATE item_stock
+                   SET quantity           = quantity           + $1,
+                       available_quantity = available_quantity + $1,
+                       updated_at         = NOW()
                    WHERE item_id = $2 AND store_id = $3"#,
                 vi.qty_ret,
                 vi.item_id,
@@ -310,7 +496,7 @@ pub async fn create_return(
 
             let unit_label = vi.unit_type.as_deref().unwrap_or("unit(s)");
             let desc = format!(
-                "Return: {} — {} {} of {}",
+                "Return {}: {} {} of {} restocked",
                 ref_no, vi.qty_ret, unit_label, vi.item_name,
             );
 
@@ -320,10 +506,9 @@ pub async fn create_return(
                         quantity_before, quantity_after, quantity_change,
                         performed_by, reference_type, reference_id, notes)
                    VALUES ($1,$2,'RETURN',$3,
-                           (SELECT quantity - $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
-                           (SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2),
-                           $4,
-                           $5,'return',$6,$7)"#,
+                       (SELECT quantity - $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                       (SELECT quantity       FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                       $4, $5, 'return', $6, $7)"#,
                 vi.item_id,
                 orig.store_id,
                 desc,
@@ -337,12 +522,16 @@ pub async fn create_return(
         }
     }
 
-    // Update transaction status — use consistent status strings that match the
-    // full_refund / void_transaction commands and the frontend status checks.
-    let new_status = if return_type == "full" { "refunded" } else { "partially_refunded" };
+    // ── Update transaction status ─────────────────────────────────────────────
+    let new_status = if return_type == "full" {
+        "refunded"
+    } else {
+        "partially_refunded"
+    };
     sqlx::query!(
         "UPDATE transactions SET status = $1, payment_status = $1 WHERE id = $2",
-        new_status, payload.original_tx_id
+        new_status,
+        payload.original_tx_id
     )
     .execute(&mut *db_tx)
     .await?;
@@ -354,6 +543,8 @@ pub async fn create_return(
 
     Ok(ReturnDetail { ret, items })
 }
+
+// ── Get returns list (paginated + filtered) ───────────────────────────────────
 
 #[tauri::command]
 pub async fn get_returns(
@@ -369,33 +560,15 @@ pub async fn get_returns(
     let df     = filters.date_from.as_deref();
     let dt     = filters.date_to.as_deref();
 
-    let total: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM returns
-           WHERE ($1::int  IS NULL OR store_id    = $1)
-             AND ($2::int  IS NULL OR cashier_id  = $2)
-             AND ($3::int  IS NULL OR customer_id = $3)
-             AND ($4::text IS NULL OR status      = $4)
-             AND ($5::text IS NULL OR return_type = $5)
-             AND ($6::text IS NULL OR created_at >= $6::timestamptz)
-             AND ($7::text IS NULL OR created_at <= $7::timestamptz)"#,
-        filters.store_id, filters.cashier_id, filters.customer_id,
-        filters.status, filters.return_type, df, dt,
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or(0);
+    let search = filters
+        .search
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
 
-    let records = sqlx::query_as!(
-        Return,
-        r#"SELECT r.id, r.reference_no, r.original_tx_id,
-                  t.reference_no                          AS original_ref_no,
-                  r.store_id, r.cashier_id,
-                  CONCAT(u.first_name, ' ', u.last_name) AS cashier_name,
-                  r.customer_id,
-                  CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
-                  r.return_type, r.subtotal, r.tax_amount,
-                  r.total_amount, r.refund_method, r.refund_reference,
-                  r.status, r.reason, r.notes, r.created_at
+    let total: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*)
            FROM   returns r
            JOIN   transactions t ON t.id = r.original_tx_id
            JOIN   users        u ON u.id = r.cashier_id
@@ -407,16 +580,75 @@ pub async fn get_returns(
              AND ($5::text IS NULL OR r.return_type = $5)
              AND ($6::text IS NULL OR r.created_at >= $6::timestamptz)
              AND ($7::text IS NULL OR r.created_at <= $7::timestamptz)
+             AND ($8::text IS NULL OR (
+                   r.reference_no                          ILIKE $8
+                OR t.reference_no                          ILIKE $8
+                OR CONCAT(c.first_name, ' ', c.last_name)  ILIKE $8
+                OR CONCAT(u.first_name, ' ', u.last_name)  ILIKE $8
+             ))"#,
+        filters.store_id,
+        filters.cashier_id,
+        filters.customer_id,
+        filters.status,
+        filters.return_type,
+        df,
+        dt,
+        search.as_deref(),
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
+
+    let records = sqlx::query_as!(
+        Return,
+        r#"SELECT
+               r.id, r.reference_no, r.original_tx_id,
+               t.reference_no                          AS original_ref_no,
+               r.store_id, r.cashier_id,
+               CONCAT(u.first_name, ' ', u.last_name) AS cashier_name,
+               r.customer_id,
+               CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+               r.return_type, r.subtotal, r.tax_amount,
+               r.total_amount, r.refund_method, r.refund_reference,
+               r.status, r.reason, r.notes, r.created_at,
+               r.voided_at, r.voided_by, r.void_reason
+           FROM   returns r
+           JOIN   transactions t ON t.id = r.original_tx_id
+           JOIN   users        u ON u.id = r.cashier_id
+           LEFT JOIN customers c ON c.id = r.customer_id
+           WHERE ($1::int  IS NULL OR r.store_id    = $1)
+             AND ($2::int  IS NULL OR r.cashier_id  = $2)
+             AND ($3::int  IS NULL OR r.customer_id = $3)
+             AND ($4::text IS NULL OR r.status      = $4)
+             AND ($5::text IS NULL OR r.return_type = $5)
+             AND ($6::text IS NULL OR r.created_at >= $6::timestamptz)
+             AND ($7::text IS NULL OR r.created_at <= $7::timestamptz)
+             AND ($8::text IS NULL OR (
+                   r.reference_no                          ILIKE $8
+                OR t.reference_no                          ILIKE $8
+                OR CONCAT(c.first_name, ' ', c.last_name)  ILIKE $8
+                OR CONCAT(u.first_name, ' ', u.last_name)  ILIKE $8
+             ))
            ORDER  BY r.created_at DESC
-           LIMIT $8 OFFSET $9"#,
-        filters.store_id, filters.cashier_id, filters.customer_id,
-        filters.status, filters.return_type, df, dt, limit, offset,
+           LIMIT  $9 OFFSET $10"#,
+        filters.store_id,
+        filters.cashier_id,
+        filters.customer_id,
+        filters.status,
+        filters.return_type,
+        df,
+        dt,
+        search.as_deref(),
+        limit,
+        offset,
     )
     .fetch_all(&pool)
     .await?;
 
     Ok(PagedResult::new(records, total, page, limit))
 }
+
+// ── Get single return ─────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn get_return(
@@ -431,11 +663,8 @@ pub async fn get_return(
     Ok(ReturnDetail { ret, items })
 }
 
-pub(crate) async fn get_transaction_returns_inner(state: &AppState, token: String, tx_id: i32) -> AppResult<Vec<Return>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_transaction_returns(s, token, tx_id).await
-}
+// ── Get all returns for a transaction ─────────────────────────────────────────
 
-/// Get all returns for a specific transaction.
 #[tauri::command]
 pub async fn get_transaction_returns(
     state: State<'_, AppState>,
@@ -447,15 +676,17 @@ pub async fn get_transaction_returns(
 
     sqlx::query_as!(
         Return,
-        r#"SELECT r.id, r.reference_no, r.original_tx_id,
-                  t.reference_no                          AS original_ref_no,
-                  r.store_id, r.cashier_id,
-                  CONCAT(u.first_name, ' ', u.last_name) AS cashier_name,
-                  r.customer_id,
-                  CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
-                  r.return_type, r.subtotal, r.tax_amount,
-                  r.total_amount, r.refund_method, r.refund_reference,
-                  r.status, r.reason, r.notes, r.created_at
+        r#"SELECT
+               r.id, r.reference_no, r.original_tx_id,
+               t.reference_no                          AS original_ref_no,
+               r.store_id, r.cashier_id,
+               CONCAT(u.first_name, ' ', u.last_name) AS cashier_name,
+               r.customer_id,
+               CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+               r.return_type, r.subtotal, r.tax_amount,
+               r.total_amount, r.refund_method, r.refund_reference,
+               r.status, r.reason, r.notes, r.created_at,
+               r.voided_at, r.voided_by, r.void_reason
            FROM   returns r
            JOIN   transactions t ON t.id = r.original_tx_id
            JOIN   users        u ON u.id = r.cashier_id
@@ -467,4 +698,133 @@ pub async fn get_transaction_returns(
     .fetch_all(&pool)
     .await
     .map_err(AppError::from)
+}
+
+// ── Void a return ─────────────────────────────────────────────────────────────
+// Marks the return as voided, reverses any stock restock that was applied,
+// and restores the original transaction's status.
+
+#[tauri::command]
+pub async fn void_return(
+    state:   State<'_, AppState>,
+    token:   String,
+    id:      i32,
+    payload: VoidReturnDto,
+) -> AppResult<ReturnDetail> {
+    let claims = guard_permission(&state, &token, "transactions.refund").await?;
+    let pool   = state.pool().await?;
+
+    // Fetch the return to void
+    let ret = fetch_return(&pool, id).await?;
+
+    if ret.status == "voided" {
+        return Err(AppError::Validation("This return has already been voided".into()));
+    }
+
+    let items = fetch_return_items(&pool, id).await?;
+
+    let mut db_tx = pool.begin().await?;
+
+    // Mark return as voided
+    sqlx::query!(
+        r#"UPDATE returns
+           SET status      = 'voided',
+               voided_at   = NOW(),
+               voided_by   = $1,
+               void_reason = $2
+           WHERE id = $3"#,
+        claims.user_id,
+        payload.reason,
+        id,
+    )
+    .execute(&mut *db_tx)
+    .await?;
+
+    // Reverse any restock operations
+    for item in &items {
+        if item.restocked && item.condition == "good" {
+            sqlx::query!(
+                r#"UPDATE item_stock
+                   SET quantity           = quantity           - $1,
+                       available_quantity = available_quantity - $1,
+                       updated_at         = NOW()
+                   WHERE item_id = $2 AND store_id = $3"#,
+                item.quantity_returned,
+                item.item_id,
+                ret.store_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+
+            let unit_label = item.unit_type.as_deref().unwrap_or("unit(s)");
+            let desc = format!(
+                "Return {} voided: {} {} of {} removed from stock",
+                ret.reference_no, item.quantity_returned, unit_label, item.item_name,
+            );
+
+            sqlx::query!(
+                r#"INSERT INTO item_history
+                       (item_id, store_id, event_type, event_description,
+                        quantity_before, quantity_after, quantity_change,
+                        performed_by, reference_type, reference_id, notes)
+                   VALUES ($1,$2,'RETURN_VOID',$3,
+                       (SELECT quantity + $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                       (SELECT quantity       FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                       -$4, $5, 'return', $6, $7)"#,
+                item.item_id,
+                ret.store_id,
+                desc,
+                item.quantity_returned,
+                claims.user_id,
+                id.to_string(),
+                payload.reason,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+        }
+    }
+
+    // Recalculate and restore the original transaction's status
+    // based on remaining non-voided returns
+    let remaining_returned: Decimal = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(total_amount), 0)
+           FROM   returns
+           WHERE  original_tx_id = $1
+             AND  status        != 'voided'"#,
+        ret.original_tx_id,
+    )
+    .fetch_one(&mut *db_tx)
+    .await?
+    .unwrap_or(Decimal::ZERO);
+
+    let orig_total: Decimal = sqlx::query_scalar!(
+        "SELECT total_amount FROM transactions WHERE id = $1",
+        ret.original_tx_id
+    )
+    .fetch_one(&mut *db_tx)
+    .await
+    .unwrap_or(Decimal::ZERO);
+
+    let restored_status = if remaining_returned <= Decimal::ZERO {
+        "completed"
+    } else if remaining_returned >= orig_total {
+        "refunded"
+    } else {
+        "partially_refunded"
+    };
+
+    sqlx::query!(
+        "UPDATE transactions SET status = $1, payment_status = $1 WHERE id = $2",
+        restored_status,
+        ret.original_tx_id,
+    )
+    .execute(&mut *db_tx)
+    .await?;
+
+    db_tx.commit().await?;
+
+    let updated_ret   = fetch_return(&pool, id).await?;
+    let updated_items = fetch_return_items(&pool, id).await?;
+
+    Ok(ReturnDetail { ret: updated_ret, items: updated_items })
 }

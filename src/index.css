@@ -304,3 +304,147 @@ font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
 [data-tauri-drag-region] input {
   -webkit-app-region: no-drag;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Sonner toast — Quantum POS dark zinc palette
+   ─────────────────────────────────────────────────────────────────────────────
+   Override every Sonner CSS variable so toasts look like native parts of the
+   app instead of the browser's default richColors palette.
+
+   Token map:
+     --normal-*   → neutral info-level (normal type)
+     --success-*  → #16a34a family  (success)
+     --error-*    → #ef4444 family  (error)
+     --warning-*  → #f59e0b family  (warning)
+     --info-*     → #3b82f6 family  (info)
+
+   Background strategy: card colour (#111113) + a very faint semantic tint
+   Border strategy    : semantic colour at ~35 % opacity — visible but not harsh
+   Text               : always --foreground (#fafafa) / --muted-foreground (#a1a1aa)
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── 1. Container-level variable declarations ─────────────────────────────── */
+[data-sonner-toaster] {
+  /* Normal / default */
+  --normal-bg:     #111113;              /* --card              */
+  --normal-border: #27272a;              /* --border            */
+  --normal-text:   #fafafa;              /* --foreground        */
+
+  /* Success — very dark green tint over card */
+  --success-bg:     #0c1c11;             /* card + #16a34a tint */
+  --success-border: rgba(22,163,74,0.38);
+  --success-text:   #fafafa;
+
+  /* Error — very dark red tint over card */
+  --error-bg:     #1c0c0c;              /* card + #ef4444 tint */
+  --error-border: rgba(239,68,68,0.38);
+  --error-text:   #fafafa;
+
+  /* Warning — very dark amber tint over card */
+  --warning-bg:     #1c1608;             /* card + #f59e0b tint */
+  --warning-border: rgba(245,158,11,0.38);
+  --warning-text:   #fafafa;
+
+  /* Info — very dark blue tint over card */
+  --info-bg:     #0c1020;               /* card + #3b82f6 tint */
+  --info-border: rgba(59,130,246,0.38);
+  --info-text:   #fafafa;
+}
+
+/* ── 2. Per-toast base styles ─────────────────────────────────────────────── */
+[data-sonner-toast] {
+  font-family: "DM Sans", system-ui, -apple-system, sans-serif !important;
+  font-size: 13px !important;
+  border-radius: 10px !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.55),
+    0 2px 8px  rgba(0, 0, 0, 0.35),
+    0 0  0 1px rgba(255,255,255,0.03) inset !important;
+  padding: 12px 14px !important;
+}
+
+/* ── 3. Toast title ───────────────────────────────────────────────────────── */
+[data-sonner-toast] [data-title] {
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  color: #fafafa !important;             /* --foreground */
+}
+
+/* ── 4. Toast description ─────────────────────────────────────────────────── */
+[data-sonner-toast] [data-description] {
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  color: #a1a1aa !important;             /* --muted-foreground */
+  margin-top: 2px !important;
+}
+
+/* ── 5. Close button ──────────────────────────────────────────────────────── */
+[data-sonner-toast] [data-close-button] {
+  background: #27272a !important;        /* --muted / --border */
+  border-color: #27272a !important;
+  color: #a1a1aa !important;
+  border-radius: 6px !important;
+}
+[data-sonner-toast] [data-close-button]:hover {
+  background: #3f3f46 !important;
+  color: #fafafa !important;
+}
+
+/* ── 6. Success type ──────────────────────────────────────────────────────── */
+[data-sonner-toast][data-type="success"] {
+  background: #0c1c11 !important;
+  border-color: rgba(22, 163, 74, 0.38) !important;
+}
+[data-sonner-toast][data-type="success"] [data-icon] svg {
+  color: #16a34a !important;             /* --success */
+}
+
+/* ── 7. Error type ────────────────────────────────────────────────────────── */
+[data-sonner-toast][data-type="error"] {
+  background: #1c0c0c !important;
+  border-color: rgba(239, 68, 68, 0.38) !important;
+}
+[data-sonner-toast][data-type="error"] [data-icon] svg {
+  color: #ef4444 !important;             /* --destructive */
+}
+
+/* ── 8. Warning type ──────────────────────────────────────────────────────── */
+[data-sonner-toast][data-type="warning"] {
+  background: #1c1608 !important;
+  border-color: rgba(245, 158, 11, 0.38) !important;
+}
+[data-sonner-toast][data-type="warning"] [data-icon] svg {
+  color: #f59e0b !important;             /* --warning */
+}
+
+/* ── 9. Info type ─────────────────────────────────────────────────────────── */
+[data-sonner-toast][data-type="info"] {
+  background: #0c1020 !important;
+  border-color: rgba(59, 130, 246, 0.38) !important;
+}
+[data-sonner-toast][data-type="info"] [data-icon] svg {
+  color: #3b82f6 !important;             /* --primary */
+}
+
+/* ── 10. Action / cancel buttons inside toasts ────────────────────────────── */
+[data-sonner-toast] [data-button] {
+  background: #27272a !important;
+  color: #fafafa !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+[data-sonner-toast] [data-button]:hover {
+  background: #3f3f46 !important;
+}
+[data-sonner-toast] [data-cancel] {
+  background: transparent !important;
+  color: #a1a1aa !important;
+}
+[data-sonner-toast] [data-cancel]:hover {
+  color: #fafafa !important;
+  background: #27272a !important;
+}

@@ -114,6 +114,18 @@ pub fn run() {
                 http_server::start(http_state, 4000).await;
             });
 
+            // ── Session cleanup (hourly) ──────────────────────────────────────
+            let cleanup_state = app_state.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    let now = chrono::Utc::now();
+                    cleanup_state.sessions.write().await
+                        .retain(|_, s| s.expires_at > now);
+                    tracing::debug!("Session cleanup: pruned expired sessions.");
+                }
+            });
+
             app.manage(app_state);
             tracing::info!("Quantum POS started.");
             Ok(())
@@ -162,6 +174,7 @@ pub fn run() {
             commands::stores::get_my_store,
             commands::stores::create_store,
             commands::stores::update_store,
+            commands::stores::get_store_users,
 
             // ── Departments ───────────────────────────────────────────────────
             commands::departments::get_departments,
@@ -228,6 +241,10 @@ pub fn run() {
             commands::inventory::apply_variances_standalone,
             commands::inventory::get_count_session,
             commands::inventory::get_count_sessions,
+            commands::inventory::get_stock_count_stats,
+            commands::inventory::get_session_count_items,
+            commands::inventory::cancel_count_session,
+            commands::inventory::get_inventory_for_count,
             // Legacy aliases (keep until frontend migrates)
             commands::inventory::get_stock_counts,
 
@@ -235,6 +252,7 @@ pub fn run() {
             commands::transactions::create_transaction,
             commands::transactions::get_transactions,
             commands::transactions::get_transaction,
+            commands::transactions::get_transaction_stats,
             commands::transactions::void_transaction,
             commands::transactions::partial_refund,
             commands::transactions::full_refund,
@@ -247,6 +265,10 @@ pub fn run() {
             commands::returns::get_returns,
             commands::returns::get_return,
             commands::returns::get_transaction_returns,
+            commands::returns::get_return_stats,
+            commands::returns::void_return,
+            commands::returns::search_returns,
+            commands::returns::get_transaction_returned_quantities,
 
             // ── Customers ─────────────────────────────────────────────────────
             commands::customers::get_customers,
@@ -270,10 +292,12 @@ pub fn run() {
             commands::suppliers::activate_supplier,
             commands::suppliers::deactivate_supplier,
             commands::suppliers::get_supplier_stats,
+            commands::suppliers::get_supplier_spend_timeline,
 
             // ── Purchase Orders ───────────────────────────────────────────────
             commands::purchase_orders::get_purchase_orders,
             commands::purchase_orders::get_purchase_order,
+            commands::purchase_orders::get_po_stats,
             commands::purchase_orders::create_purchase_order,
             commands::purchase_orders::receive_purchase_order,
             commands::purchase_orders::cancel_purchase_order,
@@ -348,6 +372,7 @@ pub fn run() {
             commands::analytics::get_supplier_analytics,
             commands::analytics::get_tax_report,
             commands::analytics::get_low_margin_items,
+            commands::analytics::get_business_health_summary,
 
             // ── Receipts ──────────────────────────────────────────────────────
             commands::receipts::get_receipt,
@@ -377,7 +402,9 @@ pub fn run() {
             // ── Excel Import / Export ─────────────────────────────────────────
             commands::excel::import_items,
             commands::excel::import_customers,
+            commands::excel::import_stock_count,
             commands::excel::export_items,
+            commands::excel::export_items_filtered,
             commands::excel::export_customers,
             commands::excel::export_expenses,
             commands::excel::export_transactions,
@@ -449,6 +476,7 @@ pub fn run() {
             commands::bulk_operations::bulk_deactivate_items,
             commands::bulk_operations::bulk_apply_discount,
             commands::bulk_operations::bulk_item_import,
+            commands::bulk_operations::bulk_print_labels,
 
             // ── Price Scheduling ───────────────────────────────────────────
             commands::price_scheduling::get_item_price_history,
@@ -482,6 +510,13 @@ pub fn run() {
             commands::fx_rates::set_exchange_rate,
             commands::fx_rates::get_exchange_rate_history,
             commands::fx_rates::convert_amount,
+
+            // ── Native ESC/POS Printing ──────────────────────────────────
+            commands::printer::list_printers,
+            commands::printer::get_default_printer,
+            commands::printer::print_receipt_escpos,
+            commands::printer::print_labels_escpos,
+            commands::printer::print_test_page,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Quantum POS");

@@ -34,11 +34,11 @@ import {
   ShoppingCart, Receipt, RotateCcw, Clock,
   Package, Boxes, Truck, ClipboardList,
   Users, CreditCard, Wallet, BarChart3,
-  Tag, UserCog, Settings,
+  Tag, UserCog, Settings, Banknote,
   Store, ChevronsUpDown, Check,
   LogOut, KeyRound, ChevronRight,
   MapPin, Timer, AlertTriangle,
-  Bell, FileText, ArrowLeftRight, ShieldCheck,
+  Bell, FileText, ArrowLeftRight, ShieldCheck, LayoutDashboard,
 } from "lucide-react";
 
 import {
@@ -66,9 +66,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { useAuthStore }   from "@/stores/auth.store";
-import { useBranchStore } from "@/stores/branch.store";
-import { useShiftStore }  from "@/stores/shift.store";
+import { useAuthStore }    from "@/stores/auth.store";
+import { useBranchStore }  from "@/stores/branch.store";
+import { useShiftStore }   from "@/stores/shift.store";
+import { useBusinessInfo } from "@/hooks/useBusinessInfo";
 import { isActiveShiftStatus } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
@@ -88,6 +89,13 @@ const NAV_GROUPS = [
   {
     label: "Operations",
     items: [
+      {
+        title: "Dashboard",
+        path: "/analytics",
+        icon: LayoutDashboard,
+        exact: true,
+        // visible to every role — each role gets their own tailored view
+      },
       {
         title: "Point of Sale",
         path: "/pos",
@@ -154,6 +162,12 @@ const NAV_GROUPS = [
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
+        title: "Stock Counts",
+        path: "/stock-counts",
+        icon: ClipboardList,
+        roles: ["super_admin", "admin", "manager", "stock_keeper"],
+      },
+      {
         title: "Suppliers",
         path: "/suppliers",
         icon: Truck,
@@ -164,6 +178,12 @@ const NAV_GROUPS = [
         path: "/purchase-orders",
         icon: ClipboardList,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
+      },
+      {
+        title: "Supplier Payments",
+        path: "/supplier-payments",
+        icon: Banknote,
+        roles: ["super_admin", "admin", "manager"],
       },
       {
         title: "Stock Transfers",
@@ -187,6 +207,12 @@ const NAV_GROUPS = [
         icon: CreditCard,
         roles: ["super_admin", "admin", "manager", "cashier"],
       },
+      {
+        title: "Wallets",
+        path: "/wallet",
+        icon: Wallet,
+        roles: ["super_admin", "admin", "manager", "cashier"],
+      },
     ],
   },
   {
@@ -195,12 +221,12 @@ const NAV_GROUPS = [
       {
         title: "Expenses",
         path: "/expenses",
-        icon: Wallet,
+        icon: Receipt,
         roles: ["super_admin", "admin", "manager"],
       },
       {
-        title: "Analytics",
-        path: "/analytics",
+        title: "Reports & Analytics",
+        path: "/analytics/reports",
         icon: BarChart3,
         roles: ["super_admin", "admin", "manager"],
       },
@@ -219,6 +245,12 @@ const NAV_GROUPS = [
         title: "Users",
         path: "/users",
         icon: UserCog,
+        roles: ["super_admin", "admin"],
+      },
+      {
+        title: "Stores",
+        path: "/stores",
+        icon: Store,
         roles: ["super_admin", "admin"],
       },
       {
@@ -643,7 +675,13 @@ function UserFooter() {
 
 // ─── AppSidebar (root export) ─────────────────────────────────────────────────
 export function AppSidebar({ ...props }) {
-  const roleSlug = useAuthStore((s) => s.user?.role_slug ?? null);
+  const roleSlug   = useAuthStore((s) => s.user?.role_slug ?? null);
+  const { name: businessName, businessType } = useBusinessInfo();
+
+  // Format business type for display: 'retail' → 'Retail'
+  const typeLabel = businessType
+    ? businessType.charAt(0).toUpperCase() + businessType.slice(1)
+    : 'Point of Sale';
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -656,11 +694,11 @@ export function AppSidebar({ ...props }) {
             <span className="select-none text-sm font-black leading-none text-white">Q</span>
           </div>
           <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
-            <p className="text-[13px] font-bold leading-none tracking-tight text-sidebar-foreground">
-              Quantum POS
+            <p className="text-[13px] font-bold leading-none tracking-tight text-sidebar-foreground truncate">
+              {businessName ?? 'Quantum POS'}
             </p>
-            <p className="mt-0.5 text-[10px] leading-none text-sidebar-foreground/40">
-              Point of Sale System
+            <p className="mt-0.5 text-[10px] leading-none text-sidebar-foreground/40 truncate">
+              {businessName ? typeLabel : 'Point of Sale System'}
             </p>
           </div>
         </div>

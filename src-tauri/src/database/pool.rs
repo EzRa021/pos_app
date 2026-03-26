@@ -24,9 +24,8 @@
 //   - DO $$ BEGIN IF NOT EXISTS ... END $$ for constraints
 // ============================================================================
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
+use sha2::{Sha256, Digest};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use crate::{error::{AppError, AppResult}, state::DbConfig};
 
@@ -96,6 +95,14 @@ async fn run_migrations(pool: &PgPool, migrations_dir: &str) -> AppResult<()> {
             // Already applied, same content → skip
             Some(stored_hash) if stored_hash == &hash => {
                 tracing::debug!("Migration {version:04} up to date — skipping.");
+                continue;
+            }
+            // Old DefaultHasher format (16 hex chars) → upgrade hash, don't re-run
+            Some(stored_hash) if stored_hash.len() == 16 => {
+                tracing::info!(
+                    "Migration {version:04}: upgrading hash from DefaultHasher to SHA-256."
+                );
+                upgrade_migration_hash(pool, version, &filename, &hash).await?;
                 continue;
             }
             // Applied before but file changed → re-run (idempotent migration)
@@ -194,6 +201,28 @@ fn collect_migration_files(
     Ok(entries)
 }
 
+/// Update the stored hash for an already-applied migration without re-running it.
+/// Used to migrate from the old DefaultHasher format to SHA-256.
+async fn upgrade_migration_hash(
+    pool:     &PgPool,
+    version:  i64,
+    filename: &str,
+    hash:     &str,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE _app_migrations SET name = $2, content_hash = $3 WHERE version = $1"
+    )
+    .bind(version)
+    .bind(filename)
+    .bind(hash)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Internal(
+        format!("Cannot upgrade hash for migration {filename}: {e}")
+    ))?;
+    Ok(())
+}
+
 async fn apply_migration(
     pool:     &PgPool,
     version:  i64,
@@ -245,12 +274,9 @@ async fn apply_migration(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Compute a stable hex string hash of the migration file content.
-/// Uses Rust's DefaultHasher — fast, no external crate needed.
+/// Compute a stable SHA-256 hex hash of the migration file content.
 fn compute_hash(content: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    format!("{:x}", Sha256::digest(content.as_bytes()))
 }
 
 /// Split a SQL migration file into individual executable statements.
@@ -318,4 +344,118 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
     }
 
     statements
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── compute_hash ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn hash_is_64_hex_chars() {
+        let h = compute_hash("SELECT 1");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_is_stable_across_calls() {
+        let a = compute_hash("CREATE TABLE foo (id SERIAL PRIMARY KEY)");
+        let b = compute_hash("CREATE TABLE foo (id SERIAL PRIMARY KEY)");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_content_produces_different_hash() {
+        let a = compute_hash("SELECT 1");
+        let b = compute_hash("SELECT 2");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn hash_matches_known_sha256() {
+        // echo -n "" | sha256sum → e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        let h = compute_hash("");
+        assert_eq!(h, "e3b0c44298fc1c149afbf4c8996fb924\
+                        27ae41e4649b934ca495991b7852b855");
+    }
+
+    // ── split_sql_statements ──────────────────────────────────────────────────
+
+    #[test]
+    fn splits_two_simple_statements() {
+        let sql = "CREATE TABLE a (id INT); CREATE TABLE b (id INT);";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].starts_with("CREATE TABLE a"));
+        assert!(stmts[1].starts_with("CREATE TABLE b"));
+    }
+
+    #[test]
+    fn trailing_statement_without_semicolon_is_included() {
+        let sql = "SELECT 1";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0], "SELECT 1");
+    }
+
+    #[test]
+    fn empty_input_returns_empty_vec() {
+        assert!(split_sql_statements("").is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_input_returns_empty_vec() {
+        assert!(split_sql_statements("   \n\t  ").is_empty());
+    }
+
+    #[test]
+    fn dollar_quote_block_preserved_as_one_statement() {
+        let sql = r#"
+            CREATE OR REPLACE FUNCTION test_fn() RETURNS void AS $$
+            BEGIN
+                INSERT INTO foo VALUES (1);
+                INSERT INTO foo VALUES (2);
+            END;
+            $$ LANGUAGE plpgsql;
+        "#;
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 1, "Dollar-quoted block must not be split");
+        assert!(stmts[0].contains("INSERT INTO foo VALUES (1)"));
+        assert!(stmts[0].contains("INSERT INTO foo VALUES (2)"));
+    }
+
+    #[test]
+    fn semicolons_inside_dollar_quote_are_not_terminators() {
+        let sql = "DO $$ BEGIN RAISE NOTICE 'a;b;c'; END $$;";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 1);
+    }
+
+    #[test]
+    fn inline_comment_is_stripped_and_does_not_affect_split() {
+        let sql = "-- comment\nSELECT 1;\nSELECT 2;";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn blank_statements_between_semicolons_are_dropped() {
+        let sql = "SELECT 1;;SELECT 2;";
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn multiple_dollar_quote_blocks_each_become_one_statement() {
+        let sql = r#"
+            CREATE FUNCTION f1() RETURNS void AS $$ BEGIN END $$ LANGUAGE plpgsql;
+            CREATE FUNCTION f2() RETURNS void AS $$ BEGIN END $$ LANGUAGE plpgsql;
+        "#;
+        let stmts = split_sql_statements(sql);
+        assert_eq!(stmts.len(), 2);
+    }
 }

@@ -4,7 +4,10 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "checkJs": true,
+    "strict": false,
+    "noUnusedLocals": false
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules"]

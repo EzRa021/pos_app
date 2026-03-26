@@ -2,6 +2,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { depositToWallet, getWalletBalance, getWalletHistory, adjustWallet } from "@/commands/customer_wallet";
 import { useBranchStore } from "@/stores/branch.store";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 
 export function useWalletBalance(customerId) {
   const { data, isLoading, error } = useQuery({
@@ -35,12 +36,20 @@ export function useWalletActions(customerId) {
 
   const deposit = useMutation({
     mutationFn: (p) => depositToWallet({ customer_id: customerId, store_id: storeId, ...p }),
-    onSuccess:  invalidate,
+    onSuccess: (_, vars) => {
+      toastSuccess("Wallet Funded", `₦${Number(vars.amount).toLocaleString()} has been added to the customer's wallet.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Wallet Deposit Failed", e),
   });
 
   const adjust = useMutation({
     mutationFn: (p) => adjustWallet({ customer_id: customerId, store_id: storeId, ...p }),
-    onSuccess:  invalidate,
+    onSuccess: () => {
+      toastSuccess("Wallet Adjusted", "The customer's wallet balance has been updated.");
+      invalidate();
+    },
+    onError: (e) => onMutationError("Wallet Adjustment Failed", e),
   });
 
   return { deposit, adjust };

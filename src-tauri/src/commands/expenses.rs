@@ -13,36 +13,6 @@ use crate::{
 };
 use super::auth::{guard, guard_permission};
 
-// ── Inner wrappers for HTTP dispatcher ───────────────────────────────────────
-
-pub(crate) async fn get_expenses_inner(state: &AppState, token: String, filters: ExpenseFilters) -> AppResult<PagedResult<Expense>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_expenses(s, token, filters).await
-}
-pub(crate) async fn get_expense_inner(state: &AppState, token: String, id: i32) -> AppResult<Expense> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_expense(s, token, id).await
-}
-pub(crate) async fn create_expense_inner(state: &AppState, token: String, payload: CreateExpenseDto) -> AppResult<Expense> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; create_expense(s, token, payload).await
-}
-pub(crate) async fn approve_expense_inner(state: &AppState, token: String, id: i32) -> AppResult<Expense> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; approve_expense(s, token, id).await
-}
-pub(crate) async fn update_expense_inner(state: &AppState, token: String, id: i32, payload: UpdateExpenseDto) -> AppResult<Expense> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; update_expense(s, token, id, payload).await
-}
-pub(crate) async fn delete_expense_inner(state: &AppState, token: String, id: i32) -> AppResult<()> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; delete_expense(s, token, id).await
-}
-pub(crate) async fn reject_expense_inner(state: &AppState, token: String, id: i32) -> AppResult<Expense> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; reject_expense(s, token, id).await
-}
-pub(crate) async fn get_expense_summary_inner(state: &AppState, token: String, store_id: i32, date_from: Option<String>, date_to: Option<String>) -> AppResult<ExpenseSummary> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_expense_summary(s, token, store_id, date_from, date_to).await
-}
-pub(crate) async fn get_expense_breakdown_inner(state: &AppState, token: String, store_id: i32, date_from: Option<String>, date_to: Option<String>) -> AppResult<Vec<ExpenseBreakdown>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_expense_breakdown(s, token, store_id, date_from, date_to).await
-}
-
 // ── Shared fetch ─────────────────────────────────────────────────────────────
 
 async fn fetch_expense(pool: &sqlx::PgPool, id: i32) -> AppResult<Expense> {
@@ -77,6 +47,11 @@ pub async fn get_expenses(
     let df     = filters.date_from.as_deref();
     let dt     = filters.date_to.as_deref();
 
+    let search = filters.search.as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
+
     let total: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM expenses
            WHERE deleted_at IS NULL
@@ -85,13 +60,19 @@ pub async fn get_expenses(
              AND ($3::text IS NULL OR approval_status = $3)
              AND ($4::text IS NULL OR payment_status  = $4)
              AND ($5::text IS NULL OR expense_date >= $5::timestamptz)
-             AND ($6::text IS NULL OR expense_date <= $6::timestamptz)"#,
+             AND ($6::text IS NULL OR expense_date <= $6::timestamptz)
+             AND ($7::text IS NULL OR (
+                   description ILIKE $7
+                OR paid_to     ILIKE $7
+                OR category    ILIKE $7
+             ))"#,
         filters.store_id,
         filters.expense_type,
         filters.approval_status,
         filters.payment_status,
         df,
         dt,
+        search.as_deref(),
     )
     .fetch_one(&pool)
     .await?
@@ -112,14 +93,20 @@ pub async fn get_expenses(
              AND ($4::text IS NULL OR payment_status  = $4)
              AND ($5::text IS NULL OR expense_date >= $5::timestamptz)
              AND ($6::text IS NULL OR expense_date <= $6::timestamptz)
+             AND ($7::text IS NULL OR (
+                   description ILIKE $7
+                OR paid_to     ILIKE $7
+                OR category    ILIKE $7
+             ))
            ORDER  BY expense_date DESC, created_at DESC
-           LIMIT $7 OFFSET $8"#,
+           LIMIT $8 OFFSET $9"#,
         filters.store_id,
         filters.expense_type,
         filters.approval_status,
         filters.payment_status,
         df,
         dt,
+        search.as_deref(),
         limit,
         offset,
     )

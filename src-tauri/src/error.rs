@@ -48,6 +48,7 @@ pub enum AppError {
     #[error("File error: {0}")]
     File(String),
 
+    #[allow(dead_code)]
     #[error("Excel error: {0}")]
     Excel(String),
 

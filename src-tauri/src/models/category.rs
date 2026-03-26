@@ -1,6 +1,7 @@
 // ============================================================================
 // CATEGORY MODELS  (aligned with quantum-pos-app category.service.js)
 // ============================================================================
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};

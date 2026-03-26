@@ -1,7 +1,7 @@
 // ============================================================================
 // features/suppliers/SuppliersPanel.jsx
 // ============================================================================
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Truck, Edit3, Power, PowerOff, Trash2, Plus, Search, X,
@@ -378,28 +378,31 @@ export function SuppliersPanel() {
   const navigate   = useNavigate();
   const canManage  = usePermission("suppliers.create");
 
-  const [search,    setSearch]    = useState("");
-  const [statusTab, setStatusTab] = useState("all");
-  const [formOpen,  setFormOpen]  = useState(false);
-  const [editing,   setEditing]   = useState(null);
-  const [toggleTarget,  setToggleTarget]  = useState(null);
-  const [deleteTarget,  setDeleteTarget]  = useState(null);
+  const [search,          setSearch]          = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [statusTab,       setStatusTab]       = useState("all");
+  const [page,            setPage]            = useState(1);
+  const [formOpen,        setFormOpen]        = useState(false);
+  const [editing,         setEditing]         = useState(null);
+  const [toggleTarget,    setToggleTarget]    = useState(null);
+  const [deleteTarget,    setDeleteTarget]    = useState(null);
 
-  const { items, isLoading, create, update, activate, deactivate, remove } = useSuppliers({ search });
+  useEffect(() => {
+    const id = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
+    return () => clearTimeout(id);
+  }, [search]);
 
-  const { activeList, inactiveList, filtered, counts } = useMemo(() => {
-    const activeList   = items.filter((i) =>  i.is_active);
-    const inactiveList = items.filter((i) => !i.is_active);
-    const byStatus =
-      statusTab === "active"   ? activeList   :
-      statusTab === "inactive" ? inactiveList :
-      items;
-    const filtered = byStatus;
-    return {
-      activeList, inactiveList, filtered,
-      counts: { all: items.length, active: activeList.length, inactive: inactiveList.length },
-    };
-  }, [items, statusTab]);
+  const isActive = statusTab === "active" ? true : statusTab === "inactive" ? false : undefined;
+
+  const { items, total, totalPages, isLoading, create, update, activate, deactivate, remove } =
+    useSuppliers({ search: debouncedSearch || undefined, isActive, page });
+
+  // Counts for the status tab badges — derived from server totals or current page
+  const counts = useMemo(() => ({
+    all:      statusTab === "all"      ? total : items.length,
+    active:   statusTab === "active"   ? total : items.filter((i) =>  i.is_active).length,
+    inactive: statusTab === "inactive" ? total : items.filter((i) => !i.is_active).length,
+  }), [items, total, statusTab]);
 
   // Derived stats
   const totalBalance = useMemo(() =>
@@ -540,8 +543,8 @@ export function SuppliersPanel() {
 
           {/* Stats */}
           <div className="grid grid-cols-4 gap-3">
-            <StatCard label="Total Suppliers" value={items.length}         sub="in this store"     accent="primary" />
-            <StatCard label="Active"           value={counts.active}        sub="available for POs" accent="success" />
+            <StatCard label="Total Suppliers" value={total}            sub="in this store"     accent="primary" />
+            <StatCard label="Active"           value={counts.active}   sub="available for POs" accent="success" />
             <StatCard label="Inactive"         value={counts.inactive}
               sub="not available for POs"
               accent={counts.inactive > 0 ? "warning" : "muted"}
@@ -564,7 +567,7 @@ export function SuppliersPanel() {
                   <Input
                     placeholder="Search suppliers…"
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(e) => { setSearch(e.target.value); }}
                     className="pl-8 h-7 w-48 text-[11px]"
                   />
                   {search && (
@@ -574,21 +577,22 @@ export function SuppliersPanel() {
                     </button>
                   )}
                 </div>
-                <StatusTabs active={statusTab} onChange={setStatusTab} counts={counts} />
+                <StatusTabs active={statusTab} onChange={(v) => { setStatusTab(v); setPage(1); }} counts={counts} />
               </div>
             }
           >
             <DataTable
               columns={columns}
-              data={filtered}
+              data={items}
               isLoading={isLoading}
               onRowClick={(row) => navigate(`/suppliers/${row.id}`)}
+              pagination={total > 50 ? { page, pageSize: 50, total, onPageChange: setPage } : undefined}
               emptyState={
                 <EmptyState
                   icon={Truck}
                   title="No suppliers found"
-                  description={search ? "Try a different search term." : "Add your first supplier to get started."}
-                  action={!search && canManage && (
+                  description={debouncedSearch ? "Try a different search term." : "Add your first supplier to get started."}
+                  action={!debouncedSearch && canManage && (
                     <Button size="sm" onClick={openCreate}>
                       <Plus className="h-3.5 w-3.5 mr-1.5" />
                       New Supplier

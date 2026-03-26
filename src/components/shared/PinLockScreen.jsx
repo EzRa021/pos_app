@@ -8,7 +8,7 @@ import { useAuthStore }  from "@/stores/auth.store";
 
 const DIGITS = [[1,2,3],[4,5,6],[7,8,9],[null,0,"del"]];
 
-export function PinLockScreen({ onUnlock }) {
+export function PinLockScreen({ onUnlock, userName }) {
   const userId       = useAuthStore((s) => s.user?.id);
   const [pin,     setPin]     = useState("");
   const [busy,    setBusy]    = useState(false);
@@ -65,7 +65,14 @@ export function PinLockScreen({ onUnlock }) {
         {/* Title */}
         <div className="text-center">
           <h2 className="text-lg font-bold text-foreground">POS Locked</h2>
-          <p className="text-sm text-muted-foreground mt-1">Enter your 4-digit PIN to continue</p>
+          {userName ? (
+            <p className="text-sm text-muted-foreground mt-1">
+              Welcome back, <span className="font-semibold text-foreground">{userName}</span>
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground mt-1">Enter your 4-digit PIN to continue</p>
+          )}
+          <p className="text-[11px] text-muted-foreground/60 mt-0.5">Enter your 4-digit PIN to continue</p>
         </div>
 
         {/* PIN dots */}

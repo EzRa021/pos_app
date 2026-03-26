@@ -2,17 +2,20 @@
 // APP.JSX — Root component
 //
 // Startup flow:
-//   1. isChecking                   => Splash (reading config / testing connection)
-//   2. config === false             => SetupWizard (first run or reset)
-//   3. connectFailed                => ConnectionError (re-enter server address)
-//   4. apiReady, !isInitialized     => Splash (restoring session)
-//   5. apiReady, !user              => Login screen
-//   6. user ok, !isBranchReady      => Splash (loading store data)
-//   7. user ok, needsPicker         => StorePicker
-//   8. All clear                    => RouterProvider (main POS)
+//   1. isChecking                        => Splash
+//        (DB connect → API ready → onboarding check + session restore in parallel)
+//   2. config === false                  => SetupWizard (DB never configured)
+//   3. connectFailed                     => ConnectionError (re-enter server address)
+//   4. apiReady, !isInitialized          => Splash (auth store still initialising)
+//   5. !onboardingComplete               => OnboardingFlow (no business in DB yet)
+//   6. onboarding done, !user            => LoginScreen (no valid session)
+//   7. user ok, !isBranchInitialized     => Splash (loading store data)
+//   8. user ok, needsPicker              => StorePicker
+//   9. All clear                         => RouterProvider (main POS)
 // ============================================================================
 
 import { useState, useEffect, useRef } from 'react';
+import { useQueryClient }               from '@tanstack/react-query';
 import { invoke }              from '@tauri-apps/api/core';
 import { getCurrentWindow }    from '@tauri-apps/api/window';
 import { RouterProvider }      from 'react-router-dom';
@@ -21,9 +24,10 @@ import { AlertCircle, Loader2, LogIn, Eye, EyeOff, RefreshCw, Settings } from 'l
 import SetupWizard, { CONFIG_KEY } from './screens/setup/SetupWizard';
 import StorePicker                 from './components/store-picker';
 import router                      from './router';
+import { OnboardingFlow }          from './features/onboarding/OnboardingFlow';
 import { useAuthStore }  from './stores/auth.store';
 import { useBranchStore } from './stores/branch.store';
-import { setApiBaseUrl }           from './lib/apiClient';
+import { apiClient, setApiBaseUrl } from './lib/apiClient';
 import { TitleBar }                from './components/layout/TitleBar';
 import { Button }                  from './components/ui/button';
 import { Input }                   from './components/ui/input';
@@ -210,10 +214,12 @@ function LoginScreen({ config }) {
           </Button>
         </form>
 
-        <p className="text-center text-[11px] text-muted-foreground">
-          Default: <span className="font-mono text-foreground">admin</span> /{' '}
-          <span className="font-mono text-foreground">Admin@123</span>
-        </p>
+        {import.meta.env.DEV && (
+          <p className="text-center text-[11px] text-muted-foreground">
+            Default: <span className="font-mono text-foreground">admin</span> /{' '}
+            <span className="font-mono text-foreground">Admin@123</span>
+          </p>
+        )}
       </div>
     </ScreenShell>
   );
@@ -221,10 +227,11 @@ function LoginScreen({ config }) {
 
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [config,        setConfig]        = useState(null);
-  const [apiReady,      setApiReady]      = useState(false);
-  const [connectFailed, setConnectFailed] = useState(false);
-  const [isChecking,    setIsChecking]    = useState(true);
+  const [config,             setConfig]             = useState(null);
+  const [apiReady,           setApiReady]           = useState(false);
+  const [connectFailed,      setConnectFailed]      = useState(false);
+  const [isChecking,         setIsChecking]         = useState(true);
+  const [onboardingComplete, setOnboardingComplete] = useState(null); // null = not yet checked
   // Prevents React Strict Mode’s double-invoke of useEffect from starting two
   // concurrent initConnection calls, which would race and could leave the app
   // on the login screen even with a valid refresh token.
@@ -232,6 +239,7 @@ export default function App() {
 
   // Read only primitive/stable values from stores — never objects or functions
   // as selector return values (new object refs cause infinite re-render loops).
+  const queryClient         = useQueryClient();
   const user                = useAuthStore(s => s.user);
   const isInitialized       = useAuthStore(s => s.isInitialized);
   const restoreSession      = useAuthStore(s => s.restoreSession);
@@ -295,8 +303,40 @@ export default function App() {
       }
 
       setApiReady(true);
+
+      // ── Wait for HTTP server to be truly ready ──────────────────────────────
+      // get_api_port() returns as soon as the port number is assigned, but the
+      // Axum server is started in a separate async task and may not be accepting
+      // TCP connections yet. Poll /health until it responds (up to 5 s) before
+      // making any RPC calls.
+      const baseUrl = apiClient.defaults.baseURL;
+      let serverReady = false;
+      for (let attempt = 0; attempt < 25 && !serverReady; attempt++) {
+        try {
+          const res = await fetch(`${baseUrl}/health`, {
+            signal: AbortSignal.timeout(300),
+          });
+          if (res.ok) serverReady = true;
+        } catch { /* not ready yet */ }
+        if (!serverReady) await new Promise(r => setTimeout(r, 200));
+      }
+
+      // ── Run onboarding check + session restore in parallel ──────────────────
+      // Both resolve before we clear isChecking so the user sees one clean
+      // transition: splash → onboarding | login | dashboard.
+      const [onboardingResult] = await Promise.all([
+        // 1. Onboarding status — MUST return false on error (safe default).
+        //    Returning true on error would silently skip onboarding every time
+        //    the HTTP server has a hiccup, which is exactly the bug we're fixing.
+        apiClient.post('/api/rpc', { method: 'check_onboarding_status', params: {} })
+          .then(({ data }) => data?.complete === true)
+          .catch(() => false),
+        // 2. Session restore (sets user in auth store if token is valid)
+        restoreSession().catch(() => {}),
+      ]);
+
+      setOnboardingComplete(onboardingResult);
       setIsChecking(false);
-      await restoreSession();
     } catch {
       setConnectFailed(true);
       setIsChecking(false);
@@ -355,6 +395,16 @@ export default function App() {
     />
   );
   else if (!apiReady || !isInitialized) content = <Splash message="Connecting…" />;
+  else if (onboardingComplete === false)  content = (
+    <OnboardingFlow
+      onComplete={() => {
+        setOnboardingComplete(true);
+        // Immediately refresh the business info query so the sidebar
+        // and SyncStatusBadge show the new business name without waiting.
+        queryClient.invalidateQueries({ queryKey: ['business-info'] });
+      }}
+    />
+  );
   else if (!user)                       content = <LoginScreen config={config} />;
   else if (!isBranchInitialized)        content = <Splash message="Loading branch data…" />;
   else if (needsPicker)                 content = <StorePicker />;

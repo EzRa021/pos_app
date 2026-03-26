@@ -4,7 +4,7 @@
 
 use tauri::State;
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use crate::{
     error::{AppError, AppResult},
     models::customer::{Customer, CreateCustomerDto, UpdateCustomerDto, CustomerFilters},
@@ -15,47 +15,6 @@ use super::auth::guard_permission;
 
 fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
-}
-
-// ── Inner fns for HTTP dispatcher ────────────────────────────────────────────
-pub(crate) async fn get_customers_inner(state: &AppState, token: String, filters: CustomerFilters) -> AppResult<PagedResult<Customer>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_customers(s, token, filters).await
-}
-pub(crate) async fn get_customer_inner(state: &AppState, token: String, id: i32) -> AppResult<Customer> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_customer(s, token, id).await
-}
-pub(crate) async fn create_customer_inner(state: &AppState, token: String, payload: CreateCustomerDto) -> AppResult<Customer> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; create_customer(s, token, payload).await
-}
-pub(crate) async fn update_customer_inner(state: &AppState, token: String, id: i32, payload: UpdateCustomerDto) -> AppResult<Customer> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; update_customer(s, token, id, payload).await
-}
-pub(crate) async fn delete_customer_inner(state: &AppState, token: String, id: i32) -> AppResult<()> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; delete_customer(s, token, id).await
-}
-pub(crate) async fn activate_customer_inner(state: &AppState, token: String, id: i32) -> AppResult<Customer> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; activate_customer(s, token, id).await
-}
-pub(crate) async fn deactivate_customer_inner(state: &AppState, token: String, id: i32) -> AppResult<Customer> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; deactivate_customer(s, token, id).await
-}
-pub(crate) async fn get_customer_stats_inner(state: &AppState, token: String, id: i32) -> AppResult<CustomerStats> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_customer_stats(s, token, id).await
-}
-pub(crate) async fn get_customer_transactions_inner(
-    state: &AppState, token: String, id: i32,
-    page: Option<i64>, limit: Option<i64>,
-    date_from: Option<String>, date_to: Option<String>,
-) -> AppResult<PagedResult<CustomerTransaction>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    get_customer_transactions(s, token, id, page, limit, date_from, date_to).await
-}
-pub(crate) async fn search_customers_inner(
-    state: &AppState, token: String,
-    query: String, store_id: Option<i32>, limit: Option<i64>,
-) -> AppResult<Vec<Customer>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    search_customers(s, token, query, store_id, limit).await
 }
 
 // ── Shared fetch ─────────────────────────────────────────────────────────────

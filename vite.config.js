@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
@@ -11,6 +11,18 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+    },
+  },
+
+  // ── Vitest ────────────────────────────────────────────────────────────────
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.js"],
+    coverage: {
+      provider: "v8",
+      include: ["src/lib/**", "src/stores/**", "src/hooks/**"],
+      reporter: ["text", "html"],
     },
   },
 

@@ -9,6 +9,10 @@ export const getPurchaseOrder = (id) =>
   rpc("get_purchase_order", { id });
 // returns PurchaseOrderDetail { order: PurchaseOrder, items: PurchaseOrderItem[] }
 
+export const getPoStats = (storeId) =>
+  rpc("get_po_stats", { store_id: storeId ?? null });
+// returns { total, draft, pending, approved, received, cancelled, rejected }
+
 export const createPurchaseOrder = (payload) =>
   rpc("create_purchase_order", payload);
 // payload: { store_id, supplier_id, notes?, items: [{ item_id, quantity, unit_cost }] }
@@ -31,3 +35,6 @@ export const rejectPurchaseOrder = (id, reason) =>
 
 export const deletePurchaseOrder = (id) =>
   rpc("delete_purchase_order", { id });
+
+export const searchPurchaseOrders = (query, storeId, limit = 8) =>
+  rpc("search_purchase_orders", { query, store_id: storeId ?? null, limit });

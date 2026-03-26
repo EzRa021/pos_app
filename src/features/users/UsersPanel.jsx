@@ -1,6 +1,6 @@
 // features/users/UsersPanel.jsx
 // Main users management panel — follows the standard management page pattern.
-// Layout: PageHeader → StatCards → Users section → Roles & Permissions section
+// Layout: PageHeader → StatCards → Users section → Roles & Permissions section → Active Sessions section
 import { useState, useMemo } from "react";
 import {
   Users, UserCheck, UserX, Shield, Search, Plus,
@@ -31,6 +31,7 @@ import { UserFormDialog }        from "./UserFormDialog";
 import { UserDetailPanel }       from "./UserDetailPanel";
 import { RolePermissionsDialog } from "./RolePermissionsDialog";
 import { getRoleConfig, getInitials } from "./roleConfig";
+import { ActiveSessionsSection } from "./ActiveSessionsSection";
 
 const PAGE_SIZE = 15;
 
@@ -140,7 +141,7 @@ export function UsersPanel() {
                 User Management
               </h1>
               <p className="text-[12px] text-muted-foreground mt-1">
-                Create and manage user accounts and role permissions
+                Create and manage user accounts, role permissions, and active sessions
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -370,6 +371,9 @@ export function UsersPanel() {
                 )}
               </div>
             </Section>
+
+            {/* ══ ACTIVE SESSIONS SECTION ════════════════════════════════ */}
+            <ActiveSessionsSection />
 
           </div>
         </div>

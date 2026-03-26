@@ -1,6 +1,7 @@
 // ============================================================================
 // DEPARTMENT MODELS  (aligned with quantum-pos-app department.service.js)
 // ============================================================================
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};

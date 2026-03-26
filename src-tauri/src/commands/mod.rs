@@ -36,3 +36,5 @@ pub mod customer_wallet;
 pub mod labels;
 pub mod security;
 pub mod fx_rates;
+pub mod onboarding;
+pub mod printer;

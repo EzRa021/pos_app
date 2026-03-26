@@ -7,16 +7,17 @@ import {
   getCreditSummary, getOutstandingBalances, getOverdueSales,
   recordCreditPayment, cancelCreditSale,
 } from "@/commands/credit_sales";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 
 // ── Credit sales list hook ────────────────────────────────────────────────────
 export function useCreditSales({
-  storeIdOverride, customerId, status, dateFrom, dateTo, page = 1, limit = 25,
+  storeIdOverride, customerId, status, dateFrom, dateTo, search, page = 1, limit = 25,
 } = {}) {
   const qc            = useQueryClient();
   const branchStoreId = useBranchStore((s) => s.activeStore?.id);
   const storeId       = storeIdOverride ?? branchStoreId;
 
-  const queryKey = ["credit-sales", storeId, { customerId, status, dateFrom, dateTo, page, limit }];
+  const queryKey = ["credit-sales", storeId, { customerId, status, dateFrom, dateTo, search, page, limit }];
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey,
@@ -26,6 +27,7 @@ export function useCreditSales({
       status:      status      || undefined,
       date_from:   dateFrom    || undefined,
       date_to:     dateTo      || undefined,
+      search:      search      || undefined,
       page,
       limit,
     }),
@@ -44,21 +46,24 @@ export function useCreditSales({
   const recordPayment = useMutation({
     mutationFn: ({ creditSaleId, amount, paymentMethod, notes, reference }) =>
       recordCreditPayment(creditSaleId, amount, paymentMethod, notes, reference),
-    onSuccess: () => {
+    onSuccess: (_, vars) => {
+      toastSuccess("Payment Recorded", `₦${Number(vars.amount).toLocaleString()} credit payment has been logged.`);
       invalidateAll();
-      // Also refresh customer cache since outstanding balance changes
       qc.invalidateQueries({ queryKey: ["customers"] });
       qc.invalidateQueries({ queryKey: ["credit-summary", storeId] });
     },
+    onError: (e) => onMutationError("Couldn't Record Payment", e),
   });
 
   const cancel = useMutation({
     mutationFn: ({ id, reason }) => cancelCreditSale(id, reason),
     onSuccess: () => {
+      toastSuccess("Credit Sale Cancelled", "The credit sale has been voided and removed.");
       invalidateAll();
       qc.invalidateQueries({ queryKey: ["customers"] });
       qc.invalidateQueries({ queryKey: ["credit-summary", storeId] });
     },
+    onError: (e) => onMutationError("Couldn't Cancel Credit Sale", e),
   });
 
   return {
@@ -97,12 +102,20 @@ export function useCreditSale(id) {
   const recordPayment = useMutation({
     mutationFn: ({ amount, paymentMethod, notes, reference }) =>
       recordCreditPayment(id, amount, paymentMethod, notes, reference),
-    onSuccess: invalidate,
+    onSuccess: (_, vars) => {
+      toastSuccess("Payment Recorded", `₦${Number(vars.amount).toLocaleString()} credit payment has been logged.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Record Payment", e),
   });
 
   const cancel = useMutation({
     mutationFn: (reason) => cancelCreditSale(id, reason),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      toastSuccess("Credit Sale Cancelled", "The credit sale has been voided and removed.");
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Cancel Credit Sale", e),
   });
 
   return {

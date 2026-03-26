@@ -21,6 +21,7 @@ import { cn }        from "@/lib/utils";
 import { ReceiptPreview } from "./ReceiptPreview";
 import { getReceiptSettings, updateReceiptSettings } from "@/commands/receipts";
 import { useBranchStore } from "@/stores/branch.store";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 
 // ── Sub-tab list ──────────────────────────────────────────────────────────────
 const TABS = [
@@ -305,12 +306,14 @@ export function ReceiptSettingsPanel() {
   // ── Save mutation ─────────────────────────────────────────────────────────
   const saveMutation = useMutation({
     mutationFn: () => updateReceiptSettings({ ...form, store_id: storeId }),
-    onSuccess:  (data) => {         // onSuccess IS still supported on useMutation in v5
+    onSuccess: (data) => {
       setForm({ ...DEFAULTS, ...data });
       queryClient.setQueryData(["receipt-settings", storeId], data);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
+      toastSuccess("Receipt Settings Saved", "Your receipt layout and branding are now live.");
     },
+    onError: (e) => onMutationError("Couldn't Save Receipt Settings", e),
   });
 
   // ── Field helper ──────────────────────────────────────────────────────────

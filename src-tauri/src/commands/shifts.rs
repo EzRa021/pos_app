@@ -303,6 +303,7 @@ pub(crate) async fn suspend_shift_inner(
     fetch_shift(&pool, id).await
 }
 
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn suspend_shift(
     state:   State<'_, AppState>,
@@ -355,6 +356,7 @@ pub(crate) async fn resume_shift_inner(
     fetch_shift(&pool, id).await
 }
 
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn resume_shift(
     state: State<'_, AppState>,
@@ -430,24 +432,32 @@ pub(crate) async fn get_shifts_inner(
         filters.cashier_id
     };
 
-    let page   = filters.page.unwrap_or(1).max(1);
-    let limit  = filters.limit.unwrap_or(20).clamp(1, 200);
-    let offset = (page - 1) * limit;
-    let df     = filters.date_from.as_deref();
-    let dt     = filters.date_to.as_deref();
+    let page           = filters.page.unwrap_or(1).max(1);
+    let limit          = filters.limit.unwrap_or(20).clamp(1, 200);
+    let offset         = (page - 1) * limit;
+    let df             = filters.date_from.as_deref();
+    let dt             = filters.date_to.as_deref();
+    let sp             = filters.search.as_deref();
+    let active_only    = filters.is_active_only;
 
     let total: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM shifts
-           WHERE ($1::int  IS NULL OR store_id   = $1)
-             AND ($2::int  IS NULL OR opened_by  = $2)
-             AND ($3::text IS NULL OR status     = $3)
-             AND ($4::text IS NULL OR opened_at >= $4::timestamptz)
-             AND ($5::text IS NULL OR opened_at <= $5::timestamptz)"#,
+        r#"SELECT COUNT(*) FROM shifts s
+           JOIN users u ON u.id = s.opened_by
+           WHERE ($1::int  IS NULL OR s.store_id   = $1)
+             AND ($2::int  IS NULL OR s.opened_by  = $2)
+             AND ($3::text IS NULL OR s.status     = $3)
+             AND (NOT $4::bool   OR s.status NOT IN ('closed', 'cancelled'))
+             AND ($5::text IS NULL OR s.opened_at >= $5::timestamptz)
+             AND ($6::text IS NULL OR s.opened_at <= $6::timestamptz)
+             AND ($7::text IS NULL OR s.shift_number ILIKE '%' || $7 || '%'
+                  OR CONCAT(u.first_name, ' ', u.last_name) ILIKE '%' || $7 || '%')"#,
         filters.store_id,
         effective_cashier,
         filters.status,
+        active_only,
         df,
         dt,
+        sp,
     )
     .fetch_one(&pool)
     .await?
@@ -472,15 +482,20 @@ pub(crate) async fn get_shifts_inner(
            WHERE ($1::int  IS NULL OR s.store_id   = $1)
              AND ($2::int  IS NULL OR s.opened_by  = $2)
              AND ($3::text IS NULL OR s.status     = $3)
-             AND ($4::text IS NULL OR s.opened_at >= $4::timestamptz)
-             AND ($5::text IS NULL OR s.opened_at <= $5::timestamptz)
+             AND (NOT $4::bool   OR s.status NOT IN ('closed', 'cancelled'))
+             AND ($5::text IS NULL OR s.opened_at >= $5::timestamptz)
+             AND ($6::text IS NULL OR s.opened_at <= $6::timestamptz)
+             AND ($7::text IS NULL OR s.shift_number ILIKE '%' || $7 || '%'
+                  OR CONCAT(u.first_name, ' ', u.last_name) ILIKE '%' || $7 || '%')
            ORDER BY s.opened_at DESC
-           LIMIT $6 OFFSET $7"#,
+           LIMIT $8 OFFSET $9"#,
         filters.store_id,
         effective_cashier,
         filters.status,
+        active_only,
         df,
         dt,
+        sp,
         limit,
         offset,
     )
@@ -819,6 +834,7 @@ pub(crate) async fn get_store_active_shifts_inner(
     }
 }
 
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn get_store_active_shifts(
     state:    State<'_, AppState>,
@@ -947,6 +963,7 @@ pub(crate) async fn reconcile_shift_inner(
     fetch_shift(&pool, id).await
 }
 
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn reconcile_shift(
     state: State<'_, AppState>,

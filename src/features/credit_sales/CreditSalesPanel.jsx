@@ -1,7 +1,7 @@
 // ============================================================================
 // features/credit_sales/CreditSalesPanel.jsx
 // ============================================================================
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   CreditCard, Search, X, Calendar, AlertTriangle, CheckCircle2,
@@ -520,6 +520,8 @@ export function CreditSalesPanel({ preFilterCustomerId } = {}) {
   const navigate   = useNavigate();
   const canManage  = usePermission("credit_sales.update");
 
+  const [search,      setSearch]      = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status,      setStatus]      = useState("");
   const [dateFrom,    setDateFrom]    = useState("");
   const [dateTo,      setDateTo]      = useState("");
@@ -528,18 +530,24 @@ export function CreditSalesPanel({ preFilterCustomerId } = {}) {
   const [payTarget,   setPayTarget]   = useState(null);
   const [cancelTarget,setCancelTarget]= useState(null);
 
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
   const { sales, total, totalPages, isLoading, isFetching, recordPayment, cancel } = useCreditSales({
     customerId: preFilterCustomerId,
-    status:     status   || undefined,
-    dateFrom:   dateFrom || undefined,
-    dateTo:     dateTo   || undefined,
+    search:     debouncedSearch || undefined,
+    status:     status          || undefined,
+    dateFrom:   dateFrom        || undefined,
+    dateTo:     dateTo          || undefined,
     page,
   });
 
   const { summary, outstanding, overdue } = useCreditSummary();
 
-  const hasFilters = status || dateFrom || dateTo;
-  const clearFilters = useCallback(() => { setStatus(""); setDateFrom(""); setDateTo(""); setPage(1); }, []);
+  const hasFilters = search || status || dateFrom || dateTo;
+  const clearFilters = useCallback(() => { setSearch(""); setStatus(""); setDateFrom(""); setDateTo(""); setPage(1); }, []);
 
   const handleRecordPayment = useCallback((p) => recordPayment.mutateAsync(p), [recordPayment]);
   const handleCancel        = useCallback((p) => cancel.mutateAsync(p),        [cancel]);
@@ -695,6 +703,21 @@ export function CreditSalesPanel({ preFilterCustomerId } = {}) {
               >
                 {/* Filters */}
                 <div className="space-y-3 mb-4">
+                  {/* Search */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                    <Input
+                      value={search}
+                      onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                      placeholder="Search reference, customer…"
+                      className="pl-9 h-8 text-xs"
+                    />
+                    {search && (
+                      <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex items-center gap-1.5">
                       <Calendar className="h-3.5 w-3.5 text-muted-foreground" />

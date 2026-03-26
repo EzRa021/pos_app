@@ -8,17 +8,18 @@ import {
   createExpense, updateExpense,
   approveExpense, rejectExpense, deleteExpense,
 } from "@/commands/expenses";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 
 // ── Expenses list hook ────────────────────────────────────────────────────────
 export function useExpenses({
   storeIdOverride, expenseType, approvalStatus, paymentStatus,
-  dateFrom, dateTo, page = 1, limit = 25,
+  dateFrom, dateTo, search, page = 1, limit = 25,
 } = {}) {
   const qc            = useQueryClient();
   const branchStoreId = useBranchStore((s) => s.activeStore?.id);
   const storeId       = storeIdOverride ?? branchStoreId;
 
-  const queryKey = ["expenses", storeId, { expenseType, approvalStatus, paymentStatus, dateFrom, dateTo, page, limit }];
+  const queryKey = ["expenses", storeId, { expenseType, approvalStatus, paymentStatus, dateFrom, dateTo, search, page, limit }];
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey,
@@ -29,6 +30,7 @@ export function useExpenses({
       payment_status:  paymentStatus  || undefined,
       date_from:       dateFrom       || undefined,
       date_to:         dateTo         || undefined,
+      search:          search         || undefined,
       page,
       limit,
     }),
@@ -44,25 +46,52 @@ export function useExpenses({
   const invalidate    = useCallback(() => qc.invalidateQueries({ queryKey: ["expenses", storeId] }), [qc, storeId]);
   const invalidateAll = useCallback(() => qc.invalidateQueries({ queryKey: ["expenses"] }),          [qc]);
 
+  const invalidateSummary = () => qc.invalidateQueries({ queryKey: ["expense-summary"] });
+
   const create  = useMutation({
     mutationFn: (p) => createExpense({ store_id: storeId, ...p }),
-    onSuccess: () => { invalidate(); qc.invalidateQueries({ queryKey: ["expense-summary"] }); },
+    onSuccess: (exp) => {
+      toastSuccess("Expense Logged", `${exp?.expense_type ?? "Expense"} has been recorded.`);
+      invalidate();
+      invalidateSummary();
+    },
+    onError: (e) => onMutationError("Couldn't Log Expense", e),
   });
   const update  = useMutation({
     mutationFn: ({ id, ...p }) => updateExpense(id, p),
-    onSuccess: () => { invalidateAll(); qc.invalidateQueries({ queryKey: ["expense-summary"] }); },
+    onSuccess: () => {
+      toastSuccess("Expense Updated", "Your changes have been saved.");
+      invalidateAll();
+      invalidateSummary();
+    },
+    onError: (e) => onMutationError("Couldn't Update Expense", e),
   });
   const approve = useMutation({
     mutationFn: (id) => approveExpense(id),
-    onSuccess: () => { invalidateAll(); qc.invalidateQueries({ queryKey: ["expense-summary"] }); },
+    onSuccess: () => {
+      toastSuccess("Expense Approved", "The expense has been approved and recorded.");
+      invalidateAll();
+      invalidateSummary();
+    },
+    onError: (e) => onMutationError("Couldn't Approve Expense", e),
   });
   const reject  = useMutation({
     mutationFn: (id) => rejectExpense(id),
-    onSuccess: () => { invalidateAll(); qc.invalidateQueries({ queryKey: ["expense-summary"] }); },
+    onSuccess: () => {
+      toastSuccess("Expense Rejected", "The expense has been marked as rejected.");
+      invalidateAll();
+      invalidateSummary();
+    },
+    onError: (e) => onMutationError("Couldn't Reject Expense", e),
   });
   const remove  = useMutation({
     mutationFn: (id) => deleteExpense(id),
-    onSuccess: () => { invalidateAll(); qc.invalidateQueries({ queryKey: ["expense-summary"] }); },
+    onSuccess: () => {
+      toastSuccess("Expense Deleted", "The record has been permanently removed.");
+      invalidateAll();
+      invalidateSummary();
+    },
+    onError: (e) => onMutationError("Couldn't Delete Expense", e),
   });
 
   return {

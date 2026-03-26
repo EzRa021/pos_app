@@ -4,24 +4,43 @@
 import { useState } from "react";
 import {
   Receipt, Store, Tag, Shield, ChevronRight,
-  SlidersHorizontal, Star, Download, Printer, KeyRound,
+  SlidersHorizontal, Star, Download, KeyRound, Barcode, FileSpreadsheet,
+  Building2, Printer,
 } from "lucide-react";
 
-import { PageHeader }            from "@/components/shared/PageHeader";
-import { ReceiptSettingsPanel }  from "@/features/settings/ReceiptSettingsPanel";
-import { StoreSettingsPanel }    from "@/features/settings/StoreSettingsPanel";
-import { LoyaltySettingsPanel }  from "@/features/settings/LoyaltySettingsPanel";
-import { SecuritySettingsPanel } from "@/features/settings/SecuritySettingsPanel";
-import { BackupPanel }           from "@/features/settings/BackupPanel";
+import { PageHeader }                    from "@/components/shared/PageHeader";
+import { ReceiptSettingsPanel }          from "@/features/settings/ReceiptSettingsPanel";
+import { StoreSettingsPanel }            from "@/features/settings/StoreSettingsPanel";
+import { LoyaltySettingsPanel }          from "@/features/settings/LoyaltySettingsPanel";
+import { SecuritySettingsPanel }         from "@/features/settings/SecuritySettingsPanel";
+import { BackupPanel }                   from "@/features/settings/BackupPanel";
+import { ImportExportSettingsPanel }     from "@/features/settings/ImportExportSettingsPanel";
+import { LabelSettingsPanel }            from "@/features/labels/LabelSettingsPanel";
+import { BusinessProfilePanel }         from "@/features/settings/BusinessProfilePanel";
+import { PrinterSettingsPanel }         from "@/features/settings/PrinterSettingsPanel";
 import { useBranchStore }        from "@/stores/branch.store";
 import { cn }                    from "@/lib/utils";
 
 const SETTINGS_TABS = [
   {
+    id:          "business",
+    label:       "Business Profile",
+    icon:        Building2,
+    description: "Business name, ID, currency, and contact details",
+    available:   true,
+  },
+  {
     id:          "receipt",
     label:       "Receipt",
     icon:        Receipt,
     description: "Branding, layout, QR code and print options",
+    available:   true,
+  },
+  {
+    id:          "labels",
+    label:       "Labels",
+    icon:        Barcode,
+    description: "Barcode label format, content and template",
     available:   true,
   },
   {
@@ -50,6 +69,20 @@ const SETTINGS_TABS = [
     label:       "Backup & Export",
     icon:        Download,
     description: "Database backup, restore, and data export",
+    available:   true,
+  },
+  {
+    id:          "import-export",
+    label:       "Import / Export",
+    icon:        FileSpreadsheet,
+    description: "Excel export folder and import settings",
+    available:   true,
+  },
+  {
+    id:          "printer",
+    label:       "Printer",
+    icon:        Printer,
+    description: "ESC/POS receipt and label printer selection",
     available:   true,
   },
   {
@@ -91,7 +124,10 @@ function SettingsNavItem({ tab, isActive, onClick }) {
           ? "border-border bg-muted/30"
           : "border-border/40 bg-transparent",
       )}>
-        <Icon className={cn("h-4 w-4", isActive ? "text-primary" : tab.available ? "text-muted-foreground" : "text-muted-foreground/30")} />
+        <Icon className={cn(
+          "h-4 w-4",
+          isActive ? "text-primary" : tab.available ? "text-muted-foreground" : "text-muted-foreground/30",
+        )} />
       </div>
 
       <div className="min-w-0 flex-1">
@@ -123,16 +159,20 @@ function SettingsNavItem({ tab, isActive, onClick }) {
 }
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState("receipt");
+  const [activeTab, setActiveTab] = useState("business");
   const activeStore = useBranchStore((s) => s.activeStore);
 
   const renderContent = () => {
     switch (activeTab) {
+      case "business":       return <BusinessProfilePanel />;
       case "receipt":        return <ReceiptSettingsPanel />;
+      case "labels":         return <LabelSettingsPanel />;
       case "business-rules": return <StoreSettingsPanel />;
       case "loyalty":        return <LoyaltySettingsPanel />;
       case "security":       return <SecuritySettingsPanel />;
       case "backup":         return <BackupPanel />;
+      case "import-export":   return <ImportExportSettingsPanel />;
+      case "printer":          return <PrinterSettingsPanel />;
       default: {
         const tab  = SETTINGS_TABS.find((t) => t.id === activeTab);
         const Icon = tab?.icon;

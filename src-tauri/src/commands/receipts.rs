@@ -411,13 +411,20 @@ async fn generate_and_save_receipt(
     let date_str = tx.created_at.format("%d %b %Y  %H:%M").to_string();
 
     // ── 6. Assemble HTML ──────────────────────────────────────────────────────
+    // paper_width_mm drives both the @page size and the screen-preview pixel width.
+    let paper_width_mm = cfg.map(|s| s.paper_width_mm).unwrap_or(80);
+
     let html = format!(
         r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
+  /* ── Reset ─────────────────────────────────────────────────── */
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+  /* ── Screen preview: fixed-width centred card ──────────────── */
   body {{
     font-family: 'Courier New', Courier, monospace;
     font-size: {font_size}px;
@@ -428,6 +435,36 @@ async fn generate_and_save_receipt(
     color: #000;
     line-height: 1.45;
   }}
+
+  /* ── Thermal print overrides ────────────────────────────────── */
+  @page {{
+    /* Exact paper width; height 'auto' lets the roll feed freely */
+    size: {paper_width_mm}mm auto;
+    margin: 4mm 3mm;
+  }}
+  @media print {{
+    html, body {{
+      width: 100% !important;
+      max-width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: transparent !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }}
+    /* Kill any coloured backgrounds so the thermal head only fires for text */
+    * {{
+      background: transparent !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+    }}
+    /* Prevent orphaned rows or mid-table page cuts */
+    table     {{ page-break-inside: avoid; }}
+    tr        {{ page-break-inside: avoid; }}
+    .footer-text {{ page-break-before: avoid; }}
+  }}
+
+  /* ── Common styles (shared screen + print) ──────────────────── */
   .center {{ text-align: center; }}
   .italic {{ font-style: italic; }}
   .bold   {{ font-weight: bold; }}
@@ -451,12 +488,17 @@ async fn generate_and_save_receipt(
     margin-bottom: 1px;
   }}
   table {{ width: 100%; border-collapse: collapse; }}
-  .item-cell  {{ padding: 3px 0; width: 75%; }}
+  .item-cell   {{ padding: 3px 0; width: 75%; }}
   .amount-cell {{ text-align: right; width: 25%; padding: 3px 0; vertical-align: top; }}
-  .sku {{ font-size: 9px; color: #666; }}
+  .sku {{ font-size: 9px; color: #555; }}
   .total-label {{ padding: 2px 0; }}
   .total-value {{ text-align: right; padding: 2px 0; }}
-  .grand-total td {{ font-weight: bold; border-top: 1px solid #000; padding-top: 5px; font-size: {grand_size}px; }}
+  .grand-total td {{
+    font-weight: bold;
+    border-top: 1px solid #000;
+    padding-top: 5px;
+    font-size: {grand_size}px;
+  }}
   .footer-text {{
     text-align: center;
     font-size: 10px;
@@ -518,6 +560,7 @@ async fn generate_and_save_receipt(
         title_size       = font_size + 3,
         grand_size       = font_size + 1,
         paper_width_px   = paper_width_px,
+        paper_width_mm   = paper_width_mm,
         logo_html        = logo_html,
         store_display_name = store_display_name,
         address_html     = if !address_display.is_empty() {

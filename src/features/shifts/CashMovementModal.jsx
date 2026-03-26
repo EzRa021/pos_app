@@ -10,6 +10,7 @@
 
 import { useState }    from "react";
 import { useMutation } from "@tanstack/react-query";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 import { ArrowDownLeft, ArrowUpRight, Loader2, DollarSign } from "lucide-react";
 
 import {
@@ -71,13 +72,19 @@ export function CashMovementModal({ open, onOpenChange }) {
         amount:        parseFloat(amount),
         reason:        reason.trim() || activeType.label,
       }),
-    onSuccess: () => {
+    onSuccess: (_, __, ctx) => {
+      const verb = type === "deposit" ? "added to" : "removed from";
+      toastSuccess(
+        `${activeType.label} Recorded`,
+        `₦${Number(amount).toLocaleString()} ${verb} the drawer.`,
+      );
       queryClient.invalidateQueries({ queryKey: ["cash-movements", shiftId] });
       queryClient.invalidateQueries({ queryKey: ["shift-summary", shiftId] });
       setAmount("");
       setReason("");
       onOpenChange(false);
     },
+    onError: (e) => onMutationError("Cash Movement Failed", e),
   });
 
   function handleSubmit(e) {

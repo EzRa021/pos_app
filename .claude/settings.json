@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Get-FileHash ''0059_stock_count_enhancements.sql'',''0059_stock_count_fixes.sql'',''0059_stock_count_improvements.sql'' -Algorithm SHA384 | Select-Object Hash,Path\")",
+      "Bash(pnpm test:*)",
+      "Bash(cargo test:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(grep -v \"^$\")",
+      "Bash(grep -n \"<\\\\\\\\/\" src/features/labels/labelHtml.js)",
+      "Bash(npx eslint:*)",
+      "Bash(ls c:UsersuserDesktoppos-app.claudeworktreesagent-a351c959srccomponentsuichart*)",
+      "Bash(git -C c:/Users/user/Desktop/pos-app/.claude/worktrees/agent-a351c959 diff --name-only HEAD)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.shadcn.io)",
+      "Bash(npx shadcn@latest add chart --yes)",
+      "Bash(npx shadcn@latest add chart)",
+      "Bash(printf 'N\\\\nY\\\\n')",
+      "Bash(npx shadcn@latest add chart --overwrite)",
+      "Bash(pnpm dlx:*)",
+      "Bash(npm run:*)",
+      "Read(//c/Users/user/Desktop/**)",
+      "Bash(find /c/Users/user/Desktop -name *.xlsx)"
+    ]
+  }
+}

@@ -3,12 +3,16 @@
 // ============================================================================
 
 use tauri::State;
+use serde::Serialize;
 use crate::{
     error::{AppError, AppResult},
     models::store::{Store, CreateStoreDto, UpdateStoreDto},
     state::AppState,
 };
 use super::auth::guard_permission;
+
+// ── Shared SELECT fragment ────────────────────────────────────────────────────
+// All queries include logo_data so the frontend always gets the full object.
 
 // ── GET STORES ────────────────────────────────────────────────────────────────
 
@@ -24,7 +28,7 @@ pub(crate) async fn get_stores_inner(
         Store,
         r#"SELECT id, store_name, address, city, state, country,
                   phone, email, currency, timezone, tax_rate, receipt_footer,
-                  is_active, created_at, updated_at
+                  logo_data, is_active, created_at, updated_at
            FROM stores
            WHERE ($1::bool IS NULL OR is_active = $1)
            ORDER BY store_name ASC"#,
@@ -45,23 +49,14 @@ pub async fn get_stores(
 }
 
 // ── GET STORE ─────────────────────────────────────────────────────────────────
-// Permission rules:
-//   • Any authenticated user may fetch their OWN store (store_id in their JWT).
-//   • Fetching any other store requires the `stores.read` permission.
-//   • Global users (is_global = true) bypass permission checks via guard_permission.
 
 pub(crate) async fn get_store_inner(
     state: &AppState,
     token: String,
     id:    i32,
 ) -> AppResult<Store> {
-    // Step 1: require a valid, unexpired session (any role).
     let claims = super::auth::guard(state, &token).await?;
 
-    // Step 2: permission gate.
-    //   - Global users → guard_permission will pass (is_global bypasses checks).
-    //   - Non-global user requesting their OWN store → allow unconditionally.
-    //   - Non-global user requesting a DIFFERENT store → require stores.read.
     let is_own_store = !claims.is_global && claims.store_id == Some(id);
     if !is_own_store {
         guard_permission(state, &token, "stores.read").await?;
@@ -72,7 +67,7 @@ pub(crate) async fn get_store_inner(
         Store,
         r#"SELECT id, store_name, address, city, state, country,
                   phone, email, currency, timezone, tax_rate, receipt_footer,
-                  is_active, created_at, updated_at
+                  logo_data, is_active, created_at, updated_at
            FROM stores WHERE id = $1"#,
         id
     )
@@ -91,10 +86,6 @@ pub async fn get_store(
 }
 
 // ── GET MY STORE ──────────────────────────────────────────────────────────────
-// Fetches the store assigned to the calling user from their JWT.
-// Works for every role — no extra permission needed.
-// Returns null (None serialised as JSON null) if the user has no assigned store
-// (i.e. they are a global user who hasn't picked a store).
 
 pub(crate) async fn get_my_store_inner(
     state: &AppState,
@@ -104,7 +95,7 @@ pub(crate) async fn get_my_store_inner(
 
     let store_id = match claims.store_id {
         Some(id) => id,
-        None     => return Ok(None),   // global user — no fixed store
+        None     => return Ok(None),
     };
 
     let pool = state.pool().await?;
@@ -112,7 +103,7 @@ pub(crate) async fn get_my_store_inner(
         Store,
         r#"SELECT id, store_name, address, city, state, country,
                   phone, email, currency, timezone, tax_rate, receipt_footer,
-                  is_active, created_at, updated_at
+                  logo_data, is_active, created_at, updated_at
            FROM stores WHERE id = $1"#,
         store_id
     )
@@ -147,8 +138,9 @@ pub async fn create_store(
 
     let id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO stores (store_name, address, city, state, country,
-                               phone, email, currency, timezone, tax_rate, receipt_footer)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id"#,
+                               phone, email, currency, timezone, tax_rate,
+                               receipt_footer, logo_data)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id"#,
         payload.store_name,
         payload.address,
         payload.city,
@@ -160,6 +152,7 @@ pub async fn create_store(
         payload.timezone.unwrap_or("Africa/Lagos".into()),
         tax,
         payload.receipt_footer,
+        payload.logo_data,
     )
     .fetch_one(&pool)
     .await?;
@@ -196,15 +189,65 @@ pub async fn update_store(
            tax_rate       = COALESCE($10, tax_rate),
            receipt_footer = COALESCE($11, receipt_footer),
            is_active      = COALESCE($12, is_active),
+           logo_data      = COALESCE($13, logo_data),
            updated_at     = NOW()
-           WHERE id = $13"#,
+           WHERE id = $14"#,
         payload.store_name, payload.address, payload.city, payload.state,
         payload.country, payload.phone, payload.email,
         payload.currency, payload.timezone, tax, payload.receipt_footer,
-        payload.is_active, id
+        payload.is_active, payload.logo_data, id
     )
     .execute(&pool)
     .await?;
 
     get_store(state, token, id).await
+}
+
+// ── GET STORE USERS ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct StoreUser {
+    pub id:         i32,
+    pub username:   String,
+    pub first_name: String,
+    pub last_name:  String,
+    pub email:      String,
+    pub phone:      Option<String>,
+    pub role_name:  String,
+    pub role_slug:  String,
+    pub is_active:  bool,
+    pub last_login: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub(crate) async fn get_store_users_inner(
+    state:    &AppState,
+    token:    String,
+    store_id: i32,
+) -> AppResult<Vec<StoreUser>> {
+    guard_permission(state, &token, "stores.read").await?;
+    let pool = state.pool().await?;
+
+    sqlx::query_as!(
+        StoreUser,
+        r#"SELECT u.id, u.username, u.first_name, u.last_name,
+                  u.email, u.phone, r.role_name, r.role_slug,
+                  u.is_active, u.last_login
+           FROM users u
+           JOIN roles r ON r.id = u.role_id
+           WHERE u.store_id = $1
+           ORDER BY r.hierarchy_level ASC, u.first_name ASC"#,
+        store_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
+}
+
+#[tauri::command]
+pub async fn get_store_users(
+    state:    State<'_, AppState>,
+    token:    String,
+    store_id: i32,
+) -> AppResult<Vec<StoreUser>> {
+    get_store_users_inner(&state, token, store_id).await
 }

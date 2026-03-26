@@ -25,7 +25,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
+use axum::http::HeaderValue;
 
 use crate::{
     commands::{
@@ -36,7 +37,8 @@ use crate::{
         reorder_alerts, stock_transfers, eod, store_settings,
         loyalty, notifications, supplier_payments,
         backup, bulk_operations, price_scheduling,
-        customer_wallet, labels, security, fx_rates,
+        customer_wallet, labels, security, fx_rates, excel,
+        onboarding,
     },
     error::AppError,
     models::{
@@ -49,7 +51,7 @@ use crate::{
                      StartCountSessionDto, RecordCountDto, CountSessionFilters},
         transaction::{TransactionFilters, CreateTransactionDto, HoldTransactionDto,
                      VoidTransactionDto, PartialRefundDto, FullRefundDto},
-        returns::{CreateReturnDto, ReturnFilters},
+        returns::{CreateReturnDto, VoidReturnDto, ReturnFilters},
         customer::{CustomerFilters, CreateCustomerDto, UpdateCustomerDto},
         supplier::{SupplierFilters, CreateSupplierDto, UpdateSupplierDto},
         purchase_order::{PurchaseOrderFilters, CreatePurchaseOrderDto, ReceivePurchaseOrderDto},
@@ -125,9 +127,15 @@ pub async fn start(state: AppState, preferred_port: u16) {
     tracing::info!("HTTP API server listening on port {actual_port}");
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin: &HeaderValue, _| {
+            let s = origin.as_bytes();
+            s.starts_with(b"http://localhost")
+                || s.starts_with(b"http://127.")
+                || s.starts_with(b"http://192.168.")
+                || s.starts_with(b"http://10.")
+        }))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
 
     let app = Router::new()
         .route("/health", get(health_handler))
@@ -162,6 +170,7 @@ async fn rpc_handler(
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|s| s.to_string());
 
+    let method = body.method.clone();
     match dispatch(&state, &body.method, token, body.params).await {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(e) => {
@@ -173,6 +182,16 @@ async fn rpc_handler(
                 AppError::NotConnected                                => StatusCode::SERVICE_UNAVAILABLE,
                 _                                                     => StatusCode::INTERNAL_SERVER_ERROR,
             };
+            // Log to backend terminal — errors were silently swallowed before
+            match &e {
+                AppError::Unauthorized(_) | AppError::Forbidden | AppError::SessionExpired
+                | AppError::NotFound(_)   | AppError::Validation(_) => {
+                    tracing::warn!("[{}] {} — {}", status.as_u16(), method, e);
+                }
+                _ => {
+                    tracing::error!("[{}] {} — {}", status.as_u16(), method, e);
+                }
+            }
             (status, Json(json!({ "error": e.to_string() }))).into_response()
         }
     }
@@ -402,6 +421,12 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "get_store_users" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = stores::get_store_users_inner(state, require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // DEPARTMENTS
         // ════════════════════════════════════════════════════════════════════
@@ -610,13 +635,13 @@ async fn dispatch(
 
         "get_items" => {
             let filters: ItemFilters = parse(params)?;
-            let result = items::get_items_inner(state, require_token()?, filters).await?;
+            let result = items::get_items(as_state(state), require_token()?, filters).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_item" => {
             let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
-            let result = items::get_item_inner(state, require_token()?, id).await?;
+            let result = items::get_item(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -624,7 +649,7 @@ async fn dispatch(
             let barcode = opt_str(&params, "barcode")
                 .ok_or_else(|| AppError::Validation("Missing 'barcode'".into()))?;
             let store_id = opt_i32(&params, "store_id");
-            let result = items::get_item_by_barcode_inner(state, require_token()?, barcode, store_id).await?;
+            let result = items::get_item_by_barcode(as_state(state), require_token()?, barcode, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -632,7 +657,7 @@ async fn dispatch(
             let sku = opt_str(&params, "sku")
                 .ok_or_else(|| AppError::Validation("Missing 'sku'".into()))?;
             let store_id = opt_i32(&params, "store_id");
-            let result = items::get_item_by_sku_inner(state, require_token()?, sku, store_id).await?;
+            let result = items::get_item_by_sku(as_state(state), require_token()?, sku, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -651,13 +676,13 @@ async fn dispatch(
 
         "delete_item" => {
             let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
-            items::delete_item_inner(state, require_token()?, id).await?;
+            items::delete_item(as_state(state), require_token()?, id).await?;
             Ok(Value::Null)
         }
 
         "adjust_stock" => {
             let payload: AdjustStockDto = parse(params)?;
-            let result = items::adjust_stock_inner(state, require_token()?, payload).await?;
+            let result = items::adjust_stock(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -668,7 +693,7 @@ async fn dispatch(
             let date_from  = opt_str(&params, "date_from");
             let date_to    = opt_str(&params, "date_to");
             let event_type = opt_str(&params, "event_type");
-            let result = items::get_item_history_inner(state, require_token()?, item_id, page, limit, date_from, date_to, event_type).await?;
+            let result = items::get_item_history(as_state(state), require_token()?, item_id, page, limit, date_from, date_to, event_type).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -677,25 +702,25 @@ async fn dispatch(
                 .ok_or_else(|| AppError::Validation("Missing 'query'".into()))?;
             let store_id = opt_i32(&params, "store_id");
             let limit    = opt_i64(&params, "limit");
-            let result = items::search_items_inner(state, require_token()?, query, store_id, limit).await?;
+            let result = items::search_items(as_state(state), require_token()?, query, store_id, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "activate_item" => {
             let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
-            let result = items::activate_item_inner(state, require_token()?, id).await?;
+            let result = items::activate_item(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "deactivate_item" => {
             let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
-            let result = items::deactivate_item_inner(state, require_token()?, id).await?;
+            let result = items::deactivate_item(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "remove_item_image" => {
             let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
-            let result = items::remove_item_image_inner(state, require_token()?, id).await?;
+            let result = items::remove_item_image(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -703,7 +728,7 @@ async fn dispatch(
             let store_id    = opt_i32(&params, "store_id");
             let category_id = opt_i32(&params, "category_id");
             let is_active   = opt_bool(&params, "is_active");
-            let result = items::count_items_inner(state, require_token()?, store_id, category_id, is_active).await?;
+            let result = items::count_items(as_state(state), require_token()?, store_id, category_id, is_active).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -804,6 +829,29 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "get_stock_count_stats" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = inventory::get_stock_count_stats_inner(state, require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_session_count_items" => {
+            let session_id = i32_param(&params, "session_id")?;
+            let store_id   = i32_param(&params, "store_id")?;
+            let result = inventory::get_session_count_items_inner(state, require_token()?, session_id, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "cancel_count_session" => {
+            let session_id = i32_param(&params, "session_id")?;
+            let store_id   = i32_param(&params, "store_id")?;
+            let payload    = inventory::CancelCountSessionDto {
+                reason: opt_str(&params, "reason"),
+            };
+            let result = inventory::cancel_count_session_inner(state, require_token()?, session_id, store_id, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         "get_count_sessions" | "get_stock_counts" => {
             let filters = CountSessionFilters {
                 page:       opt_i64(&params, "page"),
@@ -811,8 +859,15 @@ async fn dispatch(
                 store_id:   opt_i32(&params, "store_id"),
                 status:     opt_str(&params, "status"),
                 count_type: opt_str(&params, "count_type"),
+                search:     opt_str(&params, "search"),
             };
             let result = inventory::get_count_sessions_inner(state, require_token()?, filters).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_inventory_for_count" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = inventory::get_inventory_for_count_inner(state, require_token()?, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -835,6 +890,12 @@ async fn dispatch(
         "get_transaction" => {
             let id = i32_param(&params, "id")?;
             let result = transactions::get_transaction_inner(state, require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_transaction_stats" => {
+            let store_id = opt_i32(&params, "store_id");
+            let result = transactions::get_transaction_stats_inner(state, require_token()?, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -877,31 +938,66 @@ async fn dispatch(
             Ok(Value::Null)
         }
 
+        "search_transactions" => {
+            let query    = opt_str(&params, "query").unwrap_or_default();
+            let store_id = opt_i32(&params, "store_id");
+            let limit    = opt_i64(&params, "limit");
+            let result = transactions::search_transactions_inner(state, require_token()?, query, store_id, limit).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // RETURNS
         // ════════════════════════════════════════════════════════════════════
 
         "create_return" => {
             let payload: CreateReturnDto = parse(params)?;
-            let result = ret_cmd::create_return_inner(state, require_token()?, payload).await?;
+            let result = ret_cmd::create_return(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_returns" => {
             let filters: ReturnFilters = parse(params)?;
-            let result = ret_cmd::get_returns_inner(state, require_token()?, filters).await?;
+            let result = ret_cmd::get_returns(as_state(state), require_token()?, filters).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_return" => {
             let id = i32_param(&params, "id")?;
-            let result = ret_cmd::get_return_inner(state, require_token()?, id).await?;
+            let result = ret_cmd::get_return(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_return_stats" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = ret_cmd::get_return_stats(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "void_return" => {
+            let id = i32_param(&params, "id")?;
+            let payload: VoidReturnDto = parse(params)?;
+            let result = ret_cmd::void_return(as_state(state), require_token()?, id, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_transaction_returns" => {
             let tx_id = i32_param(&params, "tx_id")?;
-            let result = ret_cmd::get_transaction_returns_inner(state, require_token()?, tx_id).await?;
+            let result = ret_cmd::get_transaction_returns(as_state(state), require_token()?, tx_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_transaction_returned_quantities" => {
+            let tx_id = i32_param(&params, "tx_id")?;
+            let result = ret_cmd::get_transaction_returned_quantities(as_state(state), require_token()?, tx_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "search_returns" => {
+            let query    = opt_str(&params, "query").unwrap_or_default();
+            let store_id = opt_i32(&params, "store_id");
+            let limit    = opt_i64(&params, "limit");
+            let result   = ret_cmd::search_returns(as_state(state), require_token()?, query, store_id, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -911,50 +1007,50 @@ async fn dispatch(
 
         "get_customers" => {
             let filters: CustomerFilters = parse(params)?;
-            let result = customers::get_customers_inner(state, require_token()?, filters).await?;
+            let result = customers::get_customers(as_state(state), require_token()?, filters).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_customer" => {
             let id = i32_param(&params, "id")?;
-            let result = customers::get_customer_inner(state, require_token()?, id).await?;
+            let result = customers::get_customer(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "create_customer" => {
             let payload: CreateCustomerDto = parse(params)?;
-            let result = customers::create_customer_inner(state, require_token()?, payload).await?;
+            let result = customers::create_customer(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "update_customer" => {
             let id = i32_param(&params, "id")?;
             let payload: UpdateCustomerDto = parse(params)?;
-            let result = customers::update_customer_inner(state, require_token()?, id, payload).await?;
+            let result = customers::update_customer(as_state(state), require_token()?, id, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "delete_customer" => {
             let id = i32_param(&params, "id")?;
-            customers::delete_customer_inner(state, require_token()?, id).await?;
+            customers::delete_customer(as_state(state), require_token()?, id).await?;
             Ok(Value::Null)
         }
 
         "activate_customer" => {
             let id = i32_param(&params, "id")?;
-            let result = customers::activate_customer_inner(state, require_token()?, id).await?;
+            let result = customers::activate_customer(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "deactivate_customer" => {
             let id = i32_param(&params, "id")?;
-            let result = customers::deactivate_customer_inner(state, require_token()?, id).await?;
+            let result = customers::deactivate_customer(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_customer_stats" => {
             let id = i32_param(&params, "id")?;
-            let result = customers::get_customer_stats_inner(state, require_token()?, id).await?;
+            let result = customers::get_customer_stats(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -964,8 +1060,8 @@ async fn dispatch(
             let limit     = params.get("limit").and_then(|v| v.as_i64());
             let date_from = params.get("date_from").and_then(|v| v.as_str()).map(|s| s.to_string());
             let date_to   = params.get("date_to").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let result = customers::get_customer_transactions_inner(
-                state, require_token()?, id, page, limit, date_from, date_to
+            let result = customers::get_customer_transactions(
+                as_state(state), require_token()?, id, page, limit, date_from, date_to
             ).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
@@ -974,7 +1070,7 @@ async fn dispatch(
             let query    = params.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let store_id = params.get("store_id").and_then(|v| v.as_i64()).map(|v| v as i32);
             let limit    = params.get("limit").and_then(|v| v.as_i64());
-            let result = customers::search_customers_inner(state, require_token()?, query, store_id, limit).await?;
+            let result = customers::search_customers(as_state(state), require_token()?, query, store_id, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -984,57 +1080,63 @@ async fn dispatch(
 
         "get_suppliers" => {
             let filters: SupplierFilters = parse(params)?;
-            let result = suppliers::get_suppliers_inner(state, require_token()?, filters).await?;
+            let result = suppliers::get_suppliers(as_state(state), require_token()?, filters).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_supplier" => {
             let id = i32_param(&params, "id")?;
-            let result = suppliers::get_supplier_inner(state, require_token()?, id).await?;
+            let result = suppliers::get_supplier(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "create_supplier" => {
             let payload: CreateSupplierDto = parse(params)?;
-            let result = suppliers::create_supplier_inner(state, require_token()?, payload).await?;
+            let result = suppliers::create_supplier(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "update_supplier" => {
             let id = i32_param(&params, "id")?;
             let payload: UpdateSupplierDto = parse(params)?;
-            let result = suppliers::update_supplier_inner(state, require_token()?, id, payload).await?;
+            let result = suppliers::update_supplier(as_state(state), require_token()?, id, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "delete_supplier" => {
             let id = i32_param(&params, "id")?;
-            suppliers::delete_supplier_inner(state, require_token()?, id).await?;
+            suppliers::delete_supplier(as_state(state), require_token()?, id).await?;
             Ok(Value::Null)
         }
 
         "activate_supplier" => {
             let id = i32_param(&params, "id")?;
-            let result = suppliers::activate_supplier_inner(state, require_token()?, id).await?;
+            let result = suppliers::activate_supplier(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "deactivate_supplier" => {
             let id = i32_param(&params, "id")?;
-            let result = suppliers::deactivate_supplier_inner(state, require_token()?, id).await?;
+            let result = suppliers::deactivate_supplier(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_supplier_stats" => {
             let id = i32_param(&params, "id")?;
-            let result = suppliers::get_supplier_stats_inner(state, require_token()?, id).await?;
+            let result = suppliers::get_supplier_stats(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_supplier_spend_timeline" => {
+            let id = i32_param(&params, "id")?;
+            let result = suppliers::get_supplier_spend_timeline(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "search_suppliers" => {
             let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let limit = params.get("limit").and_then(|v| v.as_i64());
-            let result = suppliers::search_suppliers_inner(state, require_token()?, query, limit).await?;
+            let result = suppliers::search_suppliers(as_state(state), require_token()?, query, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1045,6 +1147,12 @@ async fn dispatch(
         "get_purchase_orders" => {
             let filters: PurchaseOrderFilters = parse(params)?;
             let result = purchase_orders::get_purchase_orders_inner(state, require_token()?, filters).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_po_stats" => {
+            let store_id = opt_i32(&params, "store_id");
+            let result = purchase_orders::get_po_stats_inner(state, require_token()?, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1096,6 +1204,14 @@ async fn dispatch(
             let id = i32_param(&params, "id")?;
             purchase_orders::delete_purchase_order_inner(state, require_token()?, id).await?;
             Ok(serde_json::json!(null))
+        }
+
+        "search_purchase_orders" => {
+            let query    = opt_str(&params, "query").unwrap_or_default();
+            let store_id = opt_i32(&params, "store_id");
+            let limit    = opt_i64(&params, "limit");
+            let result   = purchase_orders::search_purchase_orders_inner(state, require_token()?, query, store_id, limit).await?;
+            Ok(serde_json::to_value(result).unwrap())
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -1218,50 +1334,50 @@ async fn dispatch(
 
         "get_credit_sales" => {
             let filters: CreditSaleFilters = parse(params)?;
-            let result = credit_sales::get_credit_sales_inner(state, require_token()?, filters).await?;
+            let result = credit_sales::get_credit_sales(as_state(state), require_token()?, filters).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_credit_sale" => {
             let id = i32_param(&params, "id")?;
-            let result = credit_sales::get_credit_sale_inner(state, require_token()?, id).await?;
+            let result = credit_sales::get_credit_sale(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "record_credit_payment" => {
             let payload: RecordCreditPaymentDto = parse(params)?;
-            let result = credit_sales::record_credit_payment_inner(state, require_token()?, payload).await?;
+            let result = credit_sales::record_credit_payment(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_credit_payments" => {
             let credit_sale_id = i32_param(&params, "credit_sale_id")?;
-            let result = credit_sales::get_credit_payments_inner(state, require_token()?, credit_sale_id).await?;
+            let result = credit_sales::get_credit_payments(as_state(state), require_token()?, credit_sale_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "cancel_credit_sale" => {
             let id     = i32_param(&params, "id")?;
             let reason = params.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let result = credit_sales::cancel_credit_sale_inner(state, require_token()?, id, reason).await?;
+            let result = credit_sales::cancel_credit_sale(as_state(state), require_token()?, id, reason).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_credit_summary" => {
             let store_id = params.get("store_id").and_then(|v| v.as_i64()).map(|v| v as i32);
-            let result = credit_sales::get_credit_summary_inner(state, require_token()?, store_id).await?;
+            let result = credit_sales::get_credit_summary(as_state(state), require_token()?, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_outstanding_balances" => {
             let store_id = params.get("store_id").and_then(|v| v.as_i64()).map(|v| v as i32);
-            let result = credit_sales::get_outstanding_balances_inner(state, require_token()?, store_id).await?;
+            let result = credit_sales::get_outstanding_balances(as_state(state), require_token()?, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_overdue_sales" => {
             let store_id = params.get("store_id").and_then(|v| v.as_i64()).map(|v| v as i32);
-            let result = credit_sales::get_overdue_sales_inner(state, require_token()?, store_id).await?;
+            let result = credit_sales::get_overdue_sales(as_state(state), require_token()?, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1271,44 +1387,44 @@ async fn dispatch(
 
         "get_expenses" => {
             let filters: ExpenseFilters = parse(params)?;
-            let result = expenses::get_expenses_inner(state, require_token()?, filters).await?;
+            let result = expenses::get_expenses(as_state(state), require_token()?, filters).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_expense" => {
             let id = i32_param(&params, "id")?;
-            let result = expenses::get_expense_inner(state, require_token()?, id).await?;
+            let result = expenses::get_expense(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "create_expense" => {
             let payload: CreateExpenseDto = parse(params)?;
-            let result = expenses::create_expense_inner(state, require_token()?, payload).await?;
+            let result = expenses::create_expense(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "approve_expense" => {
             let id = i32_param(&params, "id")?;
-            let result = expenses::approve_expense_inner(state, require_token()?, id).await?;
+            let result = expenses::approve_expense(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "reject_expense" => {
             let id = i32_param(&params, "id")?;
-            let result = expenses::reject_expense_inner(state, require_token()?, id).await?;
+            let result = expenses::reject_expense(as_state(state), require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "update_expense" => {
             let id = i32_param(&params, "id")?;
             let payload: UpdateExpenseDto = parse(params)?;
-            let result = expenses::update_expense_inner(state, require_token()?, id, payload).await?;
+            let result = expenses::update_expense(as_state(state), require_token()?, id, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
         "delete_expense" => {
             let id = i32_param(&params, "id")?;
-            expenses::delete_expense_inner(state, require_token()?, id).await?;
+            expenses::delete_expense(as_state(state), require_token()?, id).await?;
             Ok(serde_json::json!(null))
         }
 
@@ -1316,7 +1432,7 @@ async fn dispatch(
             let store_id  = i32_param(&params, "store_id")?;
             let date_from = params.get("date_from").and_then(|v| v.as_str()).map(|s| s.to_string());
             let date_to   = params.get("date_to").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let result = expenses::get_expense_summary_inner(state, require_token()?, store_id, date_from, date_to).await?;
+            let result = expenses::get_expense_summary(as_state(state), require_token()?, store_id, date_from, date_to).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1324,7 +1440,7 @@ async fn dispatch(
             let store_id  = i32_param(&params, "store_id")?;
             let date_from = params.get("date_from").and_then(|v| v.as_str()).map(|s| s.to_string());
             let date_to   = params.get("date_to").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let result = expenses::get_expense_breakdown_inner(state, require_token()?, store_id, date_from, date_to).await?;
+            let result = expenses::get_expense_breakdown(as_state(state), require_token()?, store_id, date_from, date_to).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1477,6 +1593,12 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "get_business_health_summary" => {
+            let store_id = opt_i32(&params, "store_id");
+            let result = analytics::get_business_health_summary(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // RECEIPTS
         // ════════════════════════════════════════════════════════════════════
@@ -1582,8 +1704,29 @@ async fn dispatch(
             let status   = opt_str(&params, "status");
             let page     = opt_i64(&params, "page");
             let limit    = opt_i64(&params, "limit");
-            let result = price_management::get_price_changes(as_state(state), require_token()?, store_id, status, page, limit).await?;
+            let search   = opt_str(&params, "search");
+            let result = price_management::get_price_changes(as_state(state), require_token()?, store_id, status, search, page, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "reject_price_change" => {
+            let id = i32_param(&params, "id")?;
+            let result = price_management::reject_price_change(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "update_price_list" => {
+            use crate::models::price::UpdatePriceListDto;
+            let id: i32  = i32_param(&params, "id")?;
+            let payload: UpdatePriceListDto = parse(params)?;
+            let result = price_management::update_price_list(as_state(state), require_token()?, id, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "delete_price_list" => {
+            let id = i32_param(&params, "id")?;
+            price_management::delete_price_list(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::json!({ "success": true }))
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -1674,6 +1817,14 @@ async fn dispatch(
         "get_transfer" => {
             let id = i32_param(&params, "id")?;
             let result = stock_transfers::get_transfer(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "search_transfers" => {
+            let query    = opt_str(&params, "query").unwrap_or_default();
+            let store_id = opt_i32(&params, "store_id");
+            let limit    = opt_i64(&params, "limit");
+            let result   = stock_transfers::search_transfers_inner(state, require_token()?, query, store_id, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -2057,6 +2208,138 @@ async fn dispatch(
         "convert_amount" => {
             let payload: ConvertDto = parse(params)?;
             let result = fx_rates::convert_amount(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // EXCEL IMPORT / EXPORT
+        // ════════════════════════════════════════════════════════════════════
+
+        "export_items" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = excel::export_items(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "export_items_filtered" => {
+            let store_id      = i32_param(&params, "store_id")?;
+            let department_id = opt_i32(&params, "department_id");
+            let category_id   = opt_i32(&params, "category_id");
+            let is_active     = opt_bool(&params, "is_active");
+            let low_stock     = opt_bool(&params, "low_stock");
+            let result = excel::export_items_filtered(
+                as_state(state), require_token()?,
+                store_id, department_id, category_id, is_active, low_stock,
+            ).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "import_items" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let dry_run  = opt_bool(&params, "dry_run");
+            let rows: Vec<excel::ImportItemRow> = params
+                .get("rows")
+                .cloned()
+                .ok_or_else(|| AppError::Validation("Missing 'rows' parameter".into()))
+                .and_then(|v| serde_json::from_value(v)
+                    .map_err(|e| AppError::Validation(e.to_string())))?;
+            let result = excel::import_items(as_state(state), require_token()?, store_id, rows, dry_run).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "import_stock_count" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let dry_run  = opt_bool(&params, "dry_run");
+            let rows: Vec<excel::StockCountRow> = params
+                .get("rows")
+                .cloned()
+                .ok_or_else(|| AppError::Validation("Missing 'rows' parameter".into()))
+                .and_then(|v| serde_json::from_value(v)
+                    .map_err(|e| AppError::Validation(e.to_string())))?;
+            let result = excel::import_stock_count(as_state(state), require_token()?, store_id, rows, dry_run).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "import_customers" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let rows: Vec<excel::ImportCustomerRow> = params
+                .get("rows")
+                .cloned()
+                .ok_or_else(|| AppError::Validation("Missing 'rows' parameter".into()))
+                .and_then(|v| serde_json::from_value(v)
+                    .map_err(|e| AppError::Validation(e.to_string())))?;
+            let result = excel::import_customers(as_state(state), require_token()?, store_id, rows).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "export_customers" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = excel::export_customers(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "export_transactions" => {
+            let store_id  = i32_param(&params, "store_id")?;
+            let date_from = opt_str(&params, "date_from");
+            let date_to   = opt_str(&params, "date_to");
+            let result = excel::export_transactions(as_state(state), require_token()?, store_id, date_from, date_to).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "export_expenses" => {
+            let store_id  = i32_param(&params, "store_id")?;
+            let date_from = opt_str(&params, "date_from");
+            let date_to   = opt_str(&params, "date_to");
+            let result = excel::export_expenses(as_state(state), require_token()?, store_id, date_from, date_to).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // ONBOARDING  (unauthenticated — run before any user session exists)
+        // ════════════════════════════════════════════════════════════════════
+
+        "check_onboarding_status" => {
+            let pool = state.pool().await?;
+            let result = onboarding::check_onboarding_status(&pool)
+                .await
+                .map_err(AppError::Internal)?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "create_business" => {
+            let payload: onboarding::CreateBusinessPayload = parse(params)?;
+            let pool = state.pool().await?;
+            let result = onboarding::create_business(&pool, payload)
+                .await
+                .map_err(AppError::Internal)?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "link_existing_business" => {
+            let business_id = opt_str(&params, "business_id")
+                .ok_or_else(|| AppError::Validation("Missing 'business_id'".into()))?;
+            let pool = state.pool().await?;
+            let result = onboarding::link_existing_business(&pool, &business_id)
+                .await
+                .map_err(AppError::Internal)?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_business_info" => {
+            let pool = state.pool().await?;
+            let result = onboarding::get_business_info(&pool)
+                .await
+                .map_err(AppError::Internal)?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "update_business_info" => {
+            require_token()?; // requires login
+            let payload: onboarding::UpdateBusinessPayload = parse(params)?;
+            let pool = state.pool().await?;
+            let result = onboarding::update_business_info(&pool, payload)
+                .await
+                .map_err(AppError::Internal)?;
             Ok(serde_json::to_value(result).unwrap())
         }
 

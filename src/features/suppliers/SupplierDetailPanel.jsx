@@ -1,5 +1,5 @@
 // ============================================================================
-// features/suppliers/SupplierDetailPanel.jsx — Supplier detail + PO history
+// features/suppliers/SupplierDetailPanel.jsx — Supplier detail + analytics
 // ============================================================================
 import { useState, useMemo } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
@@ -7,10 +7,19 @@ import {
   Truck, Phone, Mail, MapPin, Building2, FileText,
   Edit3, Power, PowerOff, AlertTriangle, ChevronLeft,
   Package, ShoppingCart, CheckCircle2, Clock, ArrowUpRight,
+  Banknote, Plus, Loader2, TrendingUp, BarChart3, Timer,
+  XCircle, Activity,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Cell,
+} from "recharts";
 
-import { useSupplier, useSupplierPurchaseOrders } from "./useSuppliers";
+import {
+  useSupplier, useSupplierPurchaseOrders,
+  useSupplierPayments, useSupplierSpendTimeline,
+} from "./useSuppliers";
 import { PageHeader }    from "@/components/shared/PageHeader";
 import { StatusBadge }   from "@/components/shared/StatusBadge";
 import { Spinner }       from "@/components/shared/Spinner";
@@ -61,6 +70,7 @@ function StatCard({ label, value, sub, accent = "default" }) {
     success: "border-success/25  bg-success/[0.06]",
     warning: "border-warning/25  bg-warning/[0.06]",
     muted:   "border-border/60   bg-muted/30",
+    amber:   "border-amber-500/25 bg-amber-500/[0.06]",
   }[accent];
   const val = {
     default: "text-foreground",
@@ -68,6 +78,7 @@ function StatCard({ label, value, sub, accent = "default" }) {
     success: "text-success",
     warning: "text-warning",
     muted:   "text-muted-foreground",
+    amber:   "text-amber-400",
   }[accent];
   return (
     <div className={cn("flex flex-col gap-1.5 rounded-xl border px-4 py-3.5", ring)}>
@@ -96,6 +107,183 @@ function POStatusBadge({ status }) {
     )}>
       {status ?? "—"}
     </span>
+  );
+}
+
+// ── Analytics section ─────────────────────────────────────────────────────────
+
+function formatMonth(yyyyMM) {
+  const [y, m] = yyyyMM.split("-");
+  const d = new Date(parseInt(y), parseInt(m) - 1, 1);
+  return d.toLocaleString("default", { month: "short", year: "2-digit" });
+}
+
+// Custom tooltip for the spend bar chart
+function SpendTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div className="rounded-lg border border-border bg-card/95 backdrop-blur-sm px-3 py-2.5 shadow-xl text-[11px]">
+      <p className="font-bold text-foreground mb-1">{formatMonth(label)}</p>
+      <p className="text-primary font-mono">{formatCurrency(d.total)}</p>
+      <p className="text-muted-foreground mt-0.5">{d.order_count} order{d.order_count !== 1 ? "s" : ""}</p>
+    </div>
+  );
+}
+
+function AnalyticsSection({ supplierId, stats }) {
+  const { timeline, isLoading } = useSupplierSpendTimeline(supplierId);
+
+  const leadTime = stats?.avg_lead_time_days;
+  const leadTimeDisplay = leadTime != null
+    ? `${parseFloat(leadTime).toFixed(1)} days`
+    : "—";
+
+  const leadTimeAccent =
+    leadTime == null ? "muted" :
+    parseFloat(leadTime) <= 3  ? "success" :
+    parseFloat(leadTime) <= 7  ? "primary" :
+    parseFloat(leadTime) <= 14 ? "warning"  : "amber";
+
+  // Color the bars: highlight the highest month
+  const maxTotal = Math.max(...timeline.map((r) => parseFloat(r.total)), 0);
+
+  return (
+    <Section title="Analytics" icon={Activity}>
+      <div className="space-y-5">
+
+        {/* KPI row */}
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard
+            label="Avg Lead Time"
+            value={leadTimeDisplay}
+            sub="ordered → received"
+            accent={leadTimeAccent}
+          />
+          <StatCard
+            label="Completed POs"
+            value={stats?.completed_orders ?? 0}
+            sub="received in full"
+            accent="success"
+          />
+          <StatCard
+            label="Cancelled POs"
+            value={stats?.cancelled_orders ?? 0}
+            sub="across all time"
+            accent={stats?.cancelled_orders > 0 ? "warning" : "muted"}
+          />
+        </div>
+
+        {/* PO status breakdown bar */}
+        {stats && (
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              PO breakdown
+            </p>
+            {(() => {
+              const total = stats.total_orders || 1;
+              const segments = [
+                { label: "Received",  count: stats.completed_orders, color: "bg-success"   },
+                { label: "Pending",   count: stats.pending_orders,   color: "bg-primary"   },
+                { label: "Cancelled", count: stats.cancelled_orders, color: "bg-warning"   },
+              ].filter((s) => s.count > 0);
+
+              return (
+                <div className="space-y-2">
+                  <div className="flex h-2.5 w-full overflow-hidden rounded-full gap-0.5">
+                    {segments.map((s) => (
+                      <div
+                        key={s.label}
+                        className={cn("h-full rounded-full transition-all", s.color)}
+                        style={{ width: `${(s.count / total) * 100}%` }}
+                        title={`${s.label}: ${s.count}`}
+                      />
+                    ))}
+                    {stats.total_orders === 0 && (
+                      <div className="h-full w-full rounded-full bg-muted/40" />
+                    )}
+                  </div>
+                  <div className="flex gap-4">
+                    {segments.map((s) => (
+                      <div key={s.label} className="flex items-center gap-1.5">
+                        <span className={cn("h-2 w-2 rounded-full shrink-0", s.color)} />
+                        <span className="text-[10px] text-muted-foreground">
+                          {s.label} <span className="font-semibold text-foreground">{s.count}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Spend over time chart */}
+        <div className="space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Spend over time — last 13 months
+          </p>
+          {isLoading ? (
+            <div className="h-44 flex items-center justify-center">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            </div>
+          ) : timeline.length === 0 ? (
+            <div className="h-32 flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border/60">
+              <BarChart3 className="h-6 w-6 text-muted-foreground/30" />
+              <p className="text-xs text-muted-foreground">No purchase orders in the last 13 months</p>
+            </div>
+          ) : (
+            <div className="h-44">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={timeline}
+                  margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
+                  barCategoryGap="30%"
+                >
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    vertical={false}
+                    stroke="hsl(var(--border))"
+                    opacity={0.5}
+                  />
+                  <XAxis
+                    dataKey="month"
+                    tickFormatter={formatMonth}
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    axisLine={false}
+                    tickLine={false}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tickFormatter={(v) =>
+                      v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` :
+                      v >= 1_000     ? `${(v / 1_000).toFixed(0)}k` : String(v)
+                    }
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={40}
+                  />
+                  <Tooltip content={<SpendTooltip />} cursor={{ fill: "hsl(var(--muted)/0.3)" }} />
+                  <Bar dataKey="total" radius={[3, 3, 0, 0]}>
+                    {timeline.map((entry) => {
+                      const isMax = parseFloat(entry.total) === maxTotal && maxTotal > 0;
+                      return (
+                        <Cell
+                          key={entry.month}
+                          fill={isMax ? "hsl(var(--primary))" : "hsl(var(--primary)/0.35)"}
+                        />
+                      );
+                    })}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      </div>
+    </Section>
   );
 }
 
@@ -312,6 +500,220 @@ function EditSupplierDialog({ open, onOpenChange, supplier, onUpdate }) {
   );
 }
 
+// ── Record Payment Dialog ─────────────────────────────────────────────────────
+
+const PAYMENT_METHOD_OPTIONS = ["bank_transfer", "cash", "cheque", "card", "mobile_money"];
+const PAYMENT_METHOD_LABELS  = {
+  bank_transfer: "Bank Transfer", cash: "Cash",
+  cheque: "Cheque", card: "Card", mobile_money: "Mobile Money",
+};
+
+function RecordPaymentDialog({ open, onOpenChange, supplierName, onRecord }) {
+  const [amount,  setAmount]  = useState("");
+  const [method,  setMethod]  = useState("bank_transfer");
+  const [ref,     setRef]     = useState("");
+  const [notes,   setNotes]   = useState("");
+  const [busy,    setBusy]    = useState(false);
+
+  const reset = () => { setAmount(""); setMethod("bank_transfer"); setRef(""); setNotes(""); };
+
+  const handleSave = async () => {
+    const amt = parseFloat(amount);
+    if (!(amt > 0)) { toast.error("Enter a valid payment amount."); return; }
+    setBusy(true);
+    try {
+      await onRecord({
+        amount:         amt,
+        payment_method: method,
+        reference:      ref   || undefined,
+        notes:          notes || undefined,
+      });
+      toast.success(`${formatCurrency(amt)} payment recorded.`);
+      reset();
+      onOpenChange(false);
+    } catch (err) {
+      toast.error(err?.message ?? "Failed to record payment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleOpenChange = (val) => { if (!val) reset(); onOpenChange(val); };
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="max-w-sm p-0 gap-0 overflow-hidden">
+        <div className="h-[3px] w-full bg-success" />
+        <div className="p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-success/25 bg-success/10">
+              <Banknote className="h-5 w-5 text-success" />
+            </div>
+            <div>
+              <DialogTitle className="text-base font-semibold">Record Payment</DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground mt-0.5">
+                {supplierName}
+              </DialogDescription>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+              Amount (₦) <span className="text-destructive">*</span>
+            </label>
+            <Input type="number" min="0" step="100" value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.00" className="h-8 text-sm" autoFocus />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Payment Method</label>
+            <select value={method} onChange={(e) => setMethod(e.target.value)}
+              className="h-8 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring">
+              {PAYMENT_METHOD_OPTIONS.map((m) => (
+                <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Reference / Receipt #</label>
+            <Input value={ref} onChange={(e) => setRef(e.target.value)}
+              placeholder="Bank teller, cheque number…" className="h-8 text-sm" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Notes</label>
+            <Input value={notes} onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional notes" className="h-8 text-sm" />
+          </div>
+        </div>
+        <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
+          <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)} disabled={busy}>Cancel</Button>
+          <Button size="sm" onClick={handleSave} disabled={busy}
+            className="bg-success hover:bg-success/90 text-white gap-1.5">
+            {busy
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</>
+              : <><Banknote className="h-3.5 w-3.5" />Record Payment</>}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Payments sub-panel ────────────────────────────────────────────────────────
+
+function SupplierPaymentsSection({ supplierId, supplierName, canManage }) {
+  const [payOpen, setPayOpen] = useState(false);
+  const { balance, payments, isLoading, record } = useSupplierPayments(supplierId);
+
+  const totalPaid    = parseFloat(balance?.total_paid      ?? 0);
+  const totalPoValue = parseFloat(balance?.total_po_value  ?? 0);
+  const outstanding  = parseFloat(balance?.current_balance ?? 0);
+
+  const columns = useMemo(() => [
+    {
+      key:    "payment_method",
+      header: "Method",
+      render: (row) => (
+        <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+          {PAYMENT_METHOD_LABELS[row.payment_method] ?? row.payment_method ?? "—"}
+        </span>
+      ),
+    },
+    {
+      key:    "amount",
+      header: "Amount",
+      align:  "right",
+      render: (row) => (
+        <span className="text-xs font-mono tabular-nums font-bold text-success">
+          {formatCurrency(parseFloat(row.amount ?? 0))}
+        </span>
+      ),
+    },
+    {
+      key:    "reference",
+      header: "Reference",
+      render: (row) => (
+        <span className="text-xs font-mono text-muted-foreground">{row.reference ?? "—"}</span>
+      ),
+    },
+    {
+      key:    "notes",
+      header: "Notes",
+      render: (row) => (
+        <span className="text-xs text-muted-foreground">{row.notes ?? "—"}</span>
+      ),
+    },
+    {
+      key:    "created_at",
+      header: "Date",
+      render: (row) => (
+        <span className="text-xs text-muted-foreground">{formatDateTime(row.created_at)}</span>
+      ),
+    },
+  ], []);
+
+  return (
+    <>
+      <Section
+        title="Payments"
+        icon={Banknote}
+        action={canManage && (
+          <Button size="sm" onClick={() => setPayOpen(true)}
+            className="h-7 gap-1 bg-success hover:bg-success/90 text-white text-xs px-2.5">
+            <Plus className="h-3 w-3" />Record Payment
+          </Button>
+        )}
+      >
+        {/* Balance hero */}
+        <div className={cn(
+          "rounded-xl border-2 px-5 py-4 mb-4",
+          outstanding > 0 ? "border-warning/30 bg-warning/5" : "border-border bg-muted/10",
+        )}>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Outstanding</p>
+              <p className={cn("text-xl font-bold tabular-nums mt-1",
+                outstanding > 0 ? "text-warning" : "text-muted-foreground")}>
+                {formatCurrency(outstanding)}
+              </p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Total Paid</p>
+              <p className="text-xl font-bold tabular-nums mt-1 text-success">{formatCurrency(totalPaid)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Total PO Value</p>
+              <p className="text-xl font-bold tabular-nums mt-1 text-foreground">{formatCurrency(totalPoValue)}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Payment history */}
+        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Payment History</p>
+        <DataTable
+          columns={columns}
+          data={payments}
+          isLoading={isLoading}
+          emptyState={
+            <EmptyState
+              icon={Banknote}
+              title="No payments recorded"
+              description="Payments made to this supplier will appear here."
+              compact
+            />
+          }
+        />
+      </Section>
+
+      <RecordPaymentDialog
+        open={payOpen}
+        onOpenChange={setPayOpen}
+        supplierName={supplierName}
+        onRecord={(p) => record.mutateAsync(p)}
+      />
+    </>
+  );
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────────────
 
 export function SupplierDetailPanel() {
@@ -412,7 +814,7 @@ export function SupplierDetailPanel() {
           </div>
 
           <div className="grid grid-cols-3 gap-5">
-            {/* Left — Supplier Info */}
+            {/* Left — Supplier Info + Payment & Credit */}
             <div className="space-y-5">
               <Section title="Supplier Info" icon={Truck}>
                 <Row label="Supplier Code" value={supplier.supplier_code} mono />
@@ -482,7 +884,7 @@ export function SupplierDetailPanel() {
               </Section>
             </div>
 
-            {/* Right — Purchase Order History */}
+            {/* Right col — PO History */}
             <div className="col-span-2">
               <Section
                 title="Purchase Order History"
@@ -497,6 +899,16 @@ export function SupplierDetailPanel() {
               </Section>
             </div>
           </div>
+
+          {/* Analytics — full width */}
+          <AnalyticsSection supplierId={supplierId} stats={stats} />
+
+          {/* Payments — full width */}
+          <SupplierPaymentsSection
+            supplierId={supplierId}
+            supplierName={supplier.supplier_name}
+            canManage={canManage}
+          />
 
         </div>
       </div>

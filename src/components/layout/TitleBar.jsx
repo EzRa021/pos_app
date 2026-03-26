@@ -15,8 +15,10 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { getCurrentWindow }                 from "@tauri-apps/api/window";
-import { Minus, Square, X, Maximize2, Minimize2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Minus, X, Maximize2, Minimize2, Search } from "lucide-react";
+import { useUiStore }        from "@/stores/ui.store";
+import { cn }                from "@/lib/utils";
+import { SyncStatusBadge }  from "@/components/shared/SyncStatusBadge";
 
 // ── Live clock ────────────────────────────────────────────────────────────────
 function Clock() {
@@ -66,6 +68,34 @@ function WinBtn({ onClick, label, className, children }) {
       )}
     >
       {children}
+    </button>
+  );
+}
+
+// ── SearchTrigger ────────────────────────────────────────────────────────────
+// Clickable badge in the title bar that opens the command palette.
+// Hidden in icon-only / narrow layouts via `hidden sm:flex`.
+function SearchTrigger() {
+  const setOpen = useUiStore((s) => s.setCommandPaletteOpen);
+  const isMac   = typeof navigator !== "undefined"
+    && navigator.platform.toUpperCase().includes("MAC");
+
+  return (
+    <button
+      onClick={() => setOpen(true)}
+      className={cn(
+        "hidden sm:flex items-center gap-1.5 shrink-0",
+        "rounded-md border border-border/50 bg-muted/30 px-2 py-1",
+        "text-[11px] text-muted-foreground/60 hover:text-muted-foreground",
+        "hover:bg-muted/60 hover:border-border/80 transition-colors duration-100",
+      )}
+      tabIndex={-1}
+    >
+      <Search className="h-3 w-3" />
+      <span>Search</span>
+      <kbd className="ml-1 rounded border border-border/50 bg-muted px-1 py-px font-mono text-[9px] leading-none">
+        {isMac ? "⌘K" : "Ctrl K"}
+      </kbd>
     </button>
   );
 }
@@ -130,17 +160,16 @@ export function TitleBar() {
           Quantum POS
         </span>
 
-        {/* Version pill */}
-        <span className="hidden sm:inline-flex shrink-0 items-center rounded-full border border-border/70 bg-muted/40 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground/60 leading-none">
-          v0.1.0
-        </span>
+        {/* Search trigger badge */}
+        <SearchTrigger />
       </div>
 
-      {/* ── CENTRE: Clock (drag region) ──────────────────────────────────── */}
+      {/* ── CENTRE: Sync badge + Clock (drag region) ─────────────────────── */}
       <div
-        className="flex items-center justify-center flex-shrink-0"
+        className="flex items-center justify-center gap-3 flex-shrink-0"
         data-tauri-drag-region
       >
+        <SyncStatusBadge />
         <Clock />
       </div>
 

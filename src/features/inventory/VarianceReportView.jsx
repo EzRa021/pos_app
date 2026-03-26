@@ -130,7 +130,12 @@ export function VarianceReportView({ sessionId }) {
 
   const { session, summary, items } = report;
 
-  const hasUnadjusted = items.some((i) => !i.is_adjusted && parseFloat(i.variance_quantity ?? 0) !== 0);
+  // Guard: only show "Apply" if the session is completed AND there are unadjusted variances.
+  // Prevents re-applying to an already-fully-adjusted session or an in-progress one.
+  const isCompleted   = session.status === "completed";
+  const hasUnadjusted = isCompleted && items.some(
+    (i) => !i.is_adjusted && parseFloat(i.variance_quantity ?? 0) !== 0,
+  );
 
   const filteredItems = items.filter((item) => {
     const v = parseFloat(item.variance_quantity ?? 0);

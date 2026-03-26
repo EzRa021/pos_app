@@ -122,6 +122,7 @@ pub async fn adjust_wallet(
 
 // ── internal: debit_wallet ────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub(crate) async fn debit_wallet(
     pool:           &sqlx::PgPool,
     customer_id:    i32,

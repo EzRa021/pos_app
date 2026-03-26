@@ -1,6 +1,7 @@
 // ============================================================================
 // ITEM MODELS  (aligned with quantum-pos-app item.service.js)
 // ============================================================================
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};

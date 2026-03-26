@@ -6,7 +6,6 @@
 
 use tauri::State;
 use chrono::Utc;
-use serde::Serialize;
 use crate::{
     error::{AppError, AppResult},
     models::auth::{LoginRequest, RefreshRequest, ChangePasswordRequest, TokenPair, AuthUser, UserAuthRow},
@@ -458,23 +457,36 @@ pub async fn guard_permission(
         return Ok(claims);
     }
 
+    // ── Cache lookup (avoids DB round-trip per RPC call) ──────────────────────
+    {
+        let cache = state.permissions_cache.read().await;
+        if let Some(perms) = cache.get(&claims.role_id) {
+            return if perms.iter().any(|p| p == permission) {
+                Ok(claims)
+            } else {
+                Err(AppError::Forbidden)
+            };
+        }
+    }
+
+    // ── Cache miss: load all slugs for this role, then cache ──────────────────
     let pool = state.pool().await?;
-    let has = sqlx::query_scalar!(
+    let slugs: Vec<String> = sqlx::query_scalar!(
         r#"
-        SELECT TRUE
+        SELECT p.permission_slug
         FROM   role_permissions rp
         JOIN   permissions p ON p.id = rp.permission_id
-        WHERE  rp.role_id    = $1
-          AND  p.permission_slug = $2
-        LIMIT  1
+        WHERE  rp.role_id = $1
         "#,
-        claims.role_id,
-        permission
+        claims.role_id
     )
-    .fetch_optional(&pool)
+    .fetch_all(&pool)
     .await?;
 
-    if has.flatten().unwrap_or(false) {
+    let has = slugs.iter().any(|p| p == permission);
+    state.permissions_cache.write().await.insert(claims.role_id, slugs);
+
+    if has {
         Ok(claims)
     } else {
         Err(AppError::Forbidden)

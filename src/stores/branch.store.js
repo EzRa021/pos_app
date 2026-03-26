@@ -21,7 +21,7 @@ import { useShiftStore } from "@/stores/shift.store";
 const ACTIVE_STORE_KEY = "qpos_active_store";
 
 function saveActiveStore(store) {
-  try { localStorage.setItem(ACTIVE_STORE_KEY, JSON.stringify(store)); } catch { }
+  try { localStorage.setItem(ACTIVE_STORE_KEY, JSON.stringify(store)); } catch { /* storage unavailable */ }
 }
 function loadSavedStore() {
   try {
@@ -114,9 +114,12 @@ export const useBranchStore = create((set, get) => ({
 
     // ── GLOBAL: super_admin / admin — pick from list ───────────────────────
     const saved = loadSavedStore();
-    let stores      = [];
-    let activeStore = null;
-    let needsPicker = true;
+    // eslint-disable-next-line no-useless-assignment
+    let stores      = [];   // fallback for catch block
+    // eslint-disable-next-line no-useless-assignment
+    let activeStore = null; // fallback for catch block
+    // eslint-disable-next-line no-useless-assignment
+    let needsPicker = true; // fallback for catch block
 
     try {
       const result = await rpc("get_stores", { is_active: true });

@@ -1,6 +1,7 @@
 // ============================================================================
 // BULK OPERATIONS MODELS
 // ============================================================================
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
@@ -80,4 +81,22 @@ pub struct BulkImportResult {
     pub updated:  u64,
     pub failed:   u64,
     pub errors:   Vec<String>,
+}
+
+// ── Bulk label printing ───────────────────────────────────────────────────────
+// Unified scope: explicit item_ids OR category/department scope.
+// When item_ids is supplied the other two fields are ignored.
+
+#[derive(Debug, Deserialize)]
+pub struct BulkPrintLabelsDto {
+    pub store_id:      i32,
+    /// Explicit item UUIDs (multi-select flow). When present, category_id /
+    /// department_id are ignored and the active-status filter is NOT applied
+    /// (the user already chose these items deliberately).
+    pub item_ids:      Option<Vec<String>>,
+    /// Scope: every active item in this category.
+    pub category_id:   Option<i32>,
+    /// Scope: every active item in this department.
+    pub department_id: Option<i32>,
+    pub copies:        Option<i32>,
 }

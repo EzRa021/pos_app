@@ -3,16 +3,16 @@ import { useState, useRef, useEffect } from "react";
 import { Bell, Check, CheckCheck, AlertTriangle, Info, Package, TrendingDown, X, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { useNotifications, useUnreadCount } from "./useNotifications";
+import { useNotifications, useUnreadCount, useReorderAlertCount } from "./useNotifications";
 import { formatDateTime } from "@/lib/format";
 import { toast } from "sonner";
 
 const TYPE_ICONS = {
-  low_stock:     TrendingDown,
-  reorder:       Package,
-  info:          Info,
-  warning:       AlertTriangle,
-  alert:         AlertTriangle,
+  low_stock: TrendingDown,
+  reorder:   Package,
+  info:      Info,
+  warning:   AlertTriangle,
+  alert:     AlertTriangle,
 };
 
 const TYPE_STYLES = {
@@ -24,7 +24,7 @@ const TYPE_STYLES = {
 };
 
 function NotificationItem({ n, onRead }) {
-  const Icon = TYPE_ICONS[n.type] ?? Bell;
+  const Icon  = TYPE_ICONS[n.type] ?? Bell;
   const style = TYPE_STYLES[n.type] ?? "text-muted-foreground bg-muted/30";
 
   return (
@@ -40,7 +40,8 @@ function NotificationItem({ n, onRead }) {
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-xs font-semibold text-foreground leading-tight">{n.title}</p>
-        <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{n.body}</p>
+        {/* Backend field is `message`, not `body` */}
+        <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{n.message}</p>
         <p className="text-[10px] text-muted-foreground/60 mt-1">{formatDateTime(n.created_at)}</p>
       </div>
       {!n.is_read && (
@@ -55,11 +56,15 @@ export function NotificationBell() {
   const ref             = useRef(null);
   const navigate        = useNavigate();
   const unread          = useUnreadCount();
+  const reorderCount    = useReorderAlertCount();
+  const totalBadge      = unread + reorderCount;
   const { notifications, markRead, markAll } = useNotifications({ limit: 10 });
 
   // Close on outside click
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
@@ -80,14 +85,16 @@ export function NotificationBell() {
         onClick={() => setOpen((o) => !o)}
         className={cn(
           "relative flex h-8 w-8 items-center justify-center rounded-lg border transition-colors",
-          open ? "border-primary/40 bg-primary/10" : "border-border bg-muted/30 hover:bg-muted/60",
+          open
+            ? "border-primary/40 bg-primary/10"
+            : "border-border bg-muted/30 hover:bg-muted/60",
         )}
         title="Notifications"
       >
         <Bell className="h-4 w-4 text-muted-foreground" />
-        {unread > 0 && (
+        {totalBadge > 0 && (
           <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-white">
-            {unread > 99 ? "99+" : unread}
+            {totalBadge > 99 ? "99+" : totalBadge}
           </span>
         )}
       </button>
@@ -99,31 +106,62 @@ export function NotificationBell() {
           <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/20">
             <div className="flex items-center gap-2">
               <Bell className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Notifications</span>
-              {unread > 0 && (
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                Notifications
+              </span>
+              {totalBadge > 0 && (
                 <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive/15 px-1 text-[9px] font-bold text-destructive">
-                  {unread}
+                  {totalBadge}
                 </span>
               )}
             </div>
             <div className="flex items-center gap-1">
               {unread > 0 && (
-                <button onClick={handleMarkAll}
-                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-2 py-1 rounded-md hover:bg-muted/50">
+                <button
+                  onClick={handleMarkAll}
+                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-2 py-1 rounded-md hover:bg-muted/50"
+                >
                   <CheckCheck className="h-3 w-3" />All read
                 </button>
               )}
-              <button onClick={() => setOpen(false)}
-                className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted/50">
+              <button
+                onClick={() => setOpen(false)}
+                className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted/50"
+              >
                 <X className="h-3 w-3 text-muted-foreground" />
               </button>
             </div>
           </div>
 
+          {/* Reorder alert summary row (only when pending alerts exist) */}
+          {reorderCount > 0 && (
+            <button
+              onClick={() => { setOpen(false); navigate("/inventory"); }}
+              className="flex w-full items-center gap-3 px-4 py-2.5 border-b border-border/40 bg-warning/5 hover:bg-warning/10 transition-colors"
+            >
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-warning/15">
+                <Package className="h-3.5 w-3.5 text-warning" />
+              </div>
+              <div className="flex-1 min-w-0 text-left">
+                <p className="text-xs font-semibold text-warning leading-tight">
+                  {reorderCount} item{reorderCount !== 1 ? "s" : ""} below reorder point
+                </p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Tap to view inventory</p>
+              </div>
+              <ChevronRight className="h-3.5 w-3.5 text-warning/60 shrink-0" />
+            </button>
+          )}
+
           {/* List */}
           <div className="max-h-80 overflow-y-auto">
-            {notifications.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">All caught up!</div>
+            {notifications.length === 0 && reorderCount === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                All caught up!
+              </div>
+            ) : notifications.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                No new notifications.
+              </div>
             ) : (
               notifications.map((n) => (
                 <NotificationItem key={n.id} n={n} onRead={handleRead} />
@@ -131,7 +169,7 @@ export function NotificationBell() {
             )}
           </div>
 
-          {/* Footer — see all */}
+          {/* Footer */}
           <div className="border-t border-border bg-muted/10 px-4 py-2.5">
             <button
               onClick={() => { setOpen(false); navigate("/notifications"); }}

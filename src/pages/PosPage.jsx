@@ -20,7 +20,8 @@
 import {
   useState, useRef, useMemo, useEffect, useCallback,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery }    from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   ShoppingCart, Package, Search, Filter,
@@ -60,7 +61,8 @@ import { deleteHeldTransaction } from "@/commands/transactions";
 import { getWalletBalance }     from "@/commands/customer_wallet";
 import { getLoyaltyBalance }    from "@/commands/loyalty";
 
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatName }  from "@/lib/format";
+import { getAutoLockMinutes }          from "@/features/settings/SecuritySettingsPanel";
 import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS, isActiveShiftStatus } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
@@ -134,6 +136,7 @@ function avatarCls(name = "") {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function PosPage() {
+  const navigate    = useNavigate();
   const storeId     = useBranchStore((s) => s.activeStore?.id);
   const storeName   = useBranchStore((s) => s.activeStore?.store_name);
   const user        = useAuthStore((s) => s.user);
@@ -215,6 +218,31 @@ export default function PosPage() {
     if (storeId) loadHeld(storeId);
   }, [storeId, loadHeld]);
 
+  // ── Auto-lock on inactivity ───────────────────────────────────────────────
+  // Reads timeout (minutes) from localStorage key "qpos_lock_timeout_min".
+  // 0 or missing = disabled. Cleans up all listeners when the screen locks
+  // so the timer doesn't keep firing behind the PIN overlay.
+  useEffect(() => {
+    if (isPosLocked) return; // already locked — don't arm a second timer
+    const minutes = getAutoLockMinutes();
+    if (!minutes || minutes <= 0) return; // 0 = disabled
+
+    let timer;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => lockPos(), minutes * 60_000);
+    };
+
+    const EVENTS = ["mousemove", "mousedown", "keydown", "touchstart"];
+    EVENTS.forEach((ev) => window.addEventListener(ev, reset, { passive: true }));
+    reset(); // arm immediately
+
+    return () => {
+      clearTimeout(timer);
+      EVENTS.forEach((ev) => window.removeEventListener(ev, reset));
+    };
+  }, [lockPos, isPosLocked]);
+
   // ── POS data hook ─────────────────────────────────────────────────────────
   const { items, itemsTotal, totalPages, itemsLoading, categories, charge, lookupBarcode } = usePos({
     search: debSearch,
@@ -223,10 +251,37 @@ export default function PosPage() {
     limit:  ITEMS_PER_PAGE,
   });
 
-  // ── Debounce search → reset page ─────────────────────────────────────────
+  // ── Debounce search → barcode detection → reset page ────────────────────
+  // Barcode scanners fire the full code in ~50ms then implicitly "submit".
+  // Pattern: 6-30 chars, only digits/letters/hyphens, no spaces — distinct
+  // from freeform text which is shorter and typed slowly.
+  const BARCODE_RE = /^[A-Za-z0-9-]{6,30}$/;
+
   useEffect(() => {
-    const t = setTimeout(() => { setDebSearch(searchTerm); setCurrentPage(1); }, 280);
+    if (!searchTerm) { setDebSearch(""); return; }
+
+    // Short delay — barcode scanners finish in <100ms; humans type slower.
+    const t = setTimeout(async () => {
+      if (BARCODE_RE.test(searchTerm.trim())) {
+        // Looks like a barcode: exact lookup, then add and clear search.
+        try {
+          const item = await lookupBarcode(searchTerm.trim());
+          if (item) {
+            handleAddToCart(item);
+            setSearchTerm("");
+            setDebSearch("");
+            return;
+          }
+        } catch {
+          // Fall through to normal text search if barcode lookup fails.
+        }
+      }
+      setDebSearch(searchTerm);
+      setCurrentPage(1);
+    }, 120); // tighter than typing debounce — scanner fires all chars at once
+
     return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm]);
 
   useEffect(() => { setCurrentPage(1); }, [catId]);
@@ -524,13 +579,14 @@ export default function PosPage() {
             You need to open a shift before you can process sales. Go to the Shifts page and click "Open Shift".
           </p>
         </div>
-        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => window.history.back()}>
+        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => navigate("/shifts")}>
           <Clock className="h-3.5 w-3.5" />Go to Shifts
         </Button>
       </div>
     );
   }
 
+  // grossSubtotal = line totals BEFORE cart discount (subtotal is already pre-discount)
   const grossSubtotal = subtotal + discountAmt;
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -866,9 +922,9 @@ export default function PosPage() {
       {/* ── POS Lock overlay ────────────────────────────────────────────── */}
       {isPosLocked && (
         <PinLockScreen
-          onUnlock={unlockPos}
-          userName={user?.full_name ?? user?.username}
-        />
+        onUnlock={unlockPos}
+        userName={formatName(user)}
+      />
       )}
 
       {/* ── Modals / sheets ──────────────────────────────────────────────── */}
@@ -1094,6 +1150,15 @@ function CartItemRow({ item, onRemove, onSetQty }) {
   const step = isWeighted ? 0.001 : 1;
   const hasTax = (item.taxRate ?? 0) > 0;
 
+  // Parse a raw input value into a valid quantity for this item type.
+  // Quantity items must be whole numbers — a cashier should never sell 2.5 pcs.
+  // Weight/volume/length items accept up to 3 decimal places.
+  function parseQty(raw) {
+    const n = parseFloat(raw);
+    if (isNaN(n) || n < 0) return 0;
+    return isWeighted ? n : Math.round(n);
+  }
+
   return (
     <div className="group flex items-center gap-2 rounded-xl border border-border/70 bg-card px-3 py-2 hover:border-primary/20 hover:bg-card/80 transition-all duration-150">
       <div className="flex-1 min-w-0">
@@ -1123,7 +1188,7 @@ function CartItemRow({ item, onRemove, onSetQty }) {
       {/* Qty controls */}
       <div className="flex items-center gap-0.5 shrink-0">
         <button
-          onClick={() => onSetQty(item.itemId, Math.max(0, item.quantity - step))}
+          onClick={() => onSetQty(item.itemId, Math.max(0, parseQty(item.quantity - step)))}
           className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
         >
           <Minus className="h-2.5 w-2.5" />
@@ -1131,14 +1196,14 @@ function CartItemRow({ item, onRemove, onSetQty }) {
         <Input
           type="number"
           value={item.quantity}
-          onChange={(e) => onSetQty(item.itemId, parseFloat(e.target.value) || 0)}
+          onChange={(e) => onSetQty(item.itemId, parseQty(e.target.value))}
           onFocus={(e) => e.target.select()}
           className="h-6 w-14 text-center text-[12px] px-1 tabular-nums font-mono border-border bg-background/50"
           min="0"
           step={step}
         />
         <button
-          onClick={() => onSetQty(item.itemId, item.quantity + step)}
+          onClick={() => onSetQty(item.itemId, parseQty(item.quantity + step))}
           className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
         >
           <Plus className="h-2.5 w-2.5" />
@@ -1151,8 +1216,8 @@ function CartItemRow({ item, onRemove, onSetQty }) {
           {formatCurrency(lineTotal)}
         </p>
         {hasTax && (
-          <p className="text-[9px] text-muted-foreground/50 tabular-nums font-mono">
-            +{formatCurrency(lineTotal * (item.taxRate / 100))} tax
+          <p className="text-[9px] text-muted-foreground/50 tabular-nums font-mono italic">
+            incl. {formatCurrency(lineTotal * item.taxRate / (100 + item.taxRate))} VAT
           </p>
         )}
       </div>
@@ -1558,8 +1623,8 @@ function BottomBar({
 
             {tax > 0.001 && (
               <div className="flex items-center justify-between py-0.5">
-                <span className="text-muted-foreground">VAT</span>
-                <span className="font-semibold tabular-nums font-mono text-muted-foreground">+{formatCurrency(tax)}</span>
+                <span className="text-muted-foreground/60 text-[10px] italic">Incl. VAT</span>
+                <span className="tabular-nums font-mono text-muted-foreground/60 text-[10px] italic">{formatCurrency(tax)}</span>
               </div>
             )}
 

@@ -8,42 +8,129 @@
 //   The Rust backend returns Decimal as strings ("1500.0000").
 //   Always call parseFloat() before passing to these functions.
 //   Never do arithmetic on raw strings.
+//
+// CURRENCY CONFIGURATION:
+//   formatCurrency() reads from a module-level config set at startup.
+//   Call setCurrencyConfig({ currency, locale }) once after the business
+//   profile is loaded (done by useCurrencySetup in AppShell).
+//   All existing call sites automatically pick up the configured currency —
+//   no per-call changes needed.
 // ============================================================================
 
+// ── Currency config (module-level, set once at startup) ───────────────────────
+
+/** Maps ISO currency codes to the best Intl locale for displaying them. */
+const CURRENCY_LOCALE_MAP = {
+  NGN: "en-NG",    // ₦ Nigerian Naira
+  USD: "en-US",    // $ US Dollar
+  GBP: "en-GB",    // £ British Pound
+  EUR: "de-DE",    // € Euro
+  GHS: "en-GH",    // ₵ Ghanaian Cedi
+  KES: "en-KE",    // KSh Kenyan Shilling
+  ZAR: "en-ZA",    // R South African Rand
+};
+
+let _currency = "NGN";
+let _locale   = "en-NG";
+
+/**
+ * Configure the display currency for the entire app.
+ * Called once from useCurrencySetup (AppShell) after the business profile loads.
+ *
+ * @param {{ currency?: string, locale?: string }} config
+ */
+export function setCurrencyConfig({ currency, locale } = {}) {
+  if (currency) {
+    _currency = currency.toUpperCase();
+    // Auto-derive locale from the currency if none is explicitly provided
+    _locale   = locale ?? CURRENCY_LOCALE_MAP[_currency] ?? "en-NG";
+  } else if (locale) {
+    _locale = locale;
+  }
+}
+
+/** Returns the currently configured ISO currency code (e.g. "NGN"). */
+export function getCurrencyCode() {
+  return _currency;
+}
+
 // ── Currency ──────────────────────────────────────────────────────────────────
-// Formats a number as Nigerian Naira.
-// Usage: formatCurrency(parseFloat(item.price))  → "₦1,500.00"
+
+/**
+ * Formats a number in the currently configured business currency.
+ *
+ * Usage:
+ *   formatCurrency(parseFloat(item.price))                      → "₦1,500.00"
+ *   formatCurrency(parseFloat(item.price), { decimals: 0 })     → "₦1,500"
+ *   formatCurrency(price, { currency: "USD" })                  → "$price"
+ *   formatCurrency(price, { minimumFractionDigits: 0,
+ *                            maximumFractionDigits: 2 })         → fractional override
+ *
+ * Custom options (handled explicitly):
+ *   currency  — ISO code, overrides the module-level _currency
+ *   locale    — BCP 47 locale, overrides the auto-derived locale
+ *   decimals  — shorthand: sets both min and max fraction digits
+ *
+ * All other keys are spread directly into Intl.NumberFormat options,
+ * letting callers use any valid Intl option (notation, signDisplay, etc.)
+ * and override minimumFractionDigits / maximumFractionDigits directly.
+ */
 export function formatCurrency(value, options = {}) {
   const num = typeof value === "string" ? parseFloat(value) : (value ?? 0);
-  if (isNaN(num)) return "₦0.00";
+  if (isNaN(num)) return `${_currency} 0.00`;
 
-  return new Intl.NumberFormat("en-NG", {
-    style: "currency",
-    currency: "NGN",
-    minimumFractionDigits: options.decimals ?? 2,
-    maximumFractionDigits: options.decimals ?? 2,
-    ...options,
+  // Destructure our custom keys; everything else goes straight to Intl
+  const { currency: currencyOpt, locale: localeOpt, decimals, ...intlOptions } = options;
+
+  const currency      = currencyOpt ?? _currency;
+  const locale        = localeOpt  ?? (currencyOpt
+    ? (CURRENCY_LOCALE_MAP[currencyOpt.toUpperCase()] ?? _locale)
+    : _locale);
+  const fractionDigits = decimals ?? 2;
+
+  return new Intl.NumberFormat(locale, {
+    style:                 "currency",
+    currency,
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+    // Caller can override fractionDigits or add any other Intl option here
+    ...intlOptions,
   }).format(num);
 }
 
-// Compact version for tight spaces: "₦1.5K", "₦2.3M"
+/**
+ * Compact version for tight spaces: "₦1.5K", "₦2.3M"
+ * Uses the same currency symbol as formatCurrency.
+ */
 export function formatCurrencyCompact(value) {
   const num = typeof value === "string" ? parseFloat(value) : (value ?? 0);
-  if (isNaN(num)) return "₦0";
+  if (isNaN(num)) return formatCurrency(0, { decimals: 0 });
+
+  // Get just the symbol by formatting 0 and stripping the digits
+  const symbolSample = new Intl.NumberFormat(_locale, {
+    style: "currency", currency: _currency,
+    minimumFractionDigits: 0, maximumFractionDigits: 0,
+  }).format(0);
+  // Extract leading/trailing non-digit, non-space chars as the symbol
+  const symbol = symbolSample.replace(/[\d,.\s]/g, "").trim() || _currency;
+
   if (Math.abs(num) >= 1_000_000)
-    return "₦" + (num / 1_000_000).toFixed(1) + "M";
+    return symbol + (num / 1_000_000).toFixed(1) + "M";
   if (Math.abs(num) >= 1_000)
-    return "₦" + (num / 1_000).toFixed(1) + "K";
-  return "₦" + num.toFixed(0);
+    return symbol + (num / 1_000).toFixed(1) + "K";
+  return symbol + num.toFixed(0);
 }
 
 // ── Numbers ───────────────────────────────────────────────────────────────────
-// Formats a decimal/quantity string from Rust to a display number.
-// "1500.0000" → "1,500" or "1,500.50" (trims trailing zeros)
+
+/**
+ * Formats a decimal/quantity string from Rust to a display number.
+ * "1500.0000" → "1,500" or "1,500.50" (trims trailing zeros)
+ */
 export function formatDecimal(value, maxDecimals = 2) {
   const num = typeof value === "string" ? parseFloat(value) : (value ?? 0);
   if (isNaN(num)) return "0";
-  return new Intl.NumberFormat("en-NG", {
+  return new Intl.NumberFormat(_locale, {
     minimumFractionDigits: 0,
     maximumFractionDigits: maxDecimals,
   }).format(num);
@@ -53,14 +140,6 @@ export function formatDecimal(value, maxDecimals = 2) {
 
 /**
  * Returns the canonical singular unit label for an item.
- *
- * Priority: explicit unit_type from DB → sensible default from measurement_type.
- *
- * Examples:
- *   unitLabel("weight", "kg")       → "kg"
- *   unitLabel("quantity", "piece")  → "piece"
- *   unitLabel("quantity", null)     → "pcs"
- *   unitLabel("weight", null)       → "kg"
  */
 export function unitLabel(measurementType, unitType) {
   if (unitType && String(unitType).trim()) return String(unitType).trim();
@@ -75,9 +154,6 @@ export function unitLabel(measurementType, unitType) {
 
 /**
  * Human-readable label for a measurement type enum value.
- *
- * measurementTypeLabel("weight")   → "Weight"
- * measurementTypeLabel("quantity") → "Quantity"
  */
 export function measurementTypeLabel(measurementType) {
   switch (measurementType) {
@@ -90,16 +166,7 @@ export function measurementTypeLabel(measurementType) {
 }
 
 /**
- * Formats a raw numeric quantity with the appropriate precision and unit suffix.
- *
- * * quantity items  → whole number, "pcs" suffix (or unit_type)
- * * weight/volume/length → up to 3 decimal places, unit suffix
- *
- * Examples:
- *   formatQuantity(5,     "quantity", "piece") → "5 piece"
- *   formatQuantity(2.5,   "weight",  "kg")    → "2.500 kg"
- *   formatQuantity(1.2,   "volume",  "litre") → "1.200 litre"
- *   formatQuantity(0,     "quantity", null)   → "0 pcs"
+ * Formats a raw numeric quantity with appropriate precision and unit suffix.
  */
 export function formatQuantity(value, measurementType, unitType) {
   const num = typeof value === "string" ? parseFloat(value) : (value ?? 0);
@@ -114,17 +181,12 @@ export function formatQuantity(value, measurementType, unitType) {
       return `${num.toFixed(3).replace(/\.?0+$/, "")} ${unit}`;
     case "quantity":
     default:
-      return `${Math.round(num).toLocaleString("en-NG")} ${unit}`;
+      return `${Math.round(num).toLocaleString(_locale)} ${unit}`;
   }
 }
 
 /**
  * Formats "price per unit" for display on product tiles, cart rows, and receipts.
- *
- * Examples:
- *   formatPricePerUnit(500, "quantity", "piece") → "₦500.00 / piece"
- *   formatPricePerUnit(2500, "weight",  "kg")   → "₦2,500.00 / kg"
- *   formatPricePerUnit(150, "volume",  "litre") → "₦150.00 / litre"
  */
 export function formatPricePerUnit(price, measurementType, unitType) {
   const unit = unitLabel(measurementType, unitType);
@@ -133,19 +195,8 @@ export function formatPricePerUnit(price, measurementType, unitType) {
 
 /**
  * Returns the appropriate stepper increment for a given measurement type.
- * Used in cart qty inputs, restock dialogs, stock count dialogs.
- *
- *   stepForType("quantity") → 1
- *   stepForType("weight")   → 0.001
- *   stepForType("volume")   → 0.001
- *   stepForType("length")   → 0.001
- *
- * If the item has a `min_increment` setting, pass it as `override`.
  */
 export function stepForType(measurementType, override = null) {
-  // Always parse to a number — min_increment from the Rust backend is a
-  // Decimal that serialises as a string (e.g. "5.0000"). Returning the raw
-  // string causes `qty + step` to become string concatenation in JS.
   if (override != null) {
     const n = parseFloat(override);
     if (n > 0) return n;
@@ -161,9 +212,6 @@ export function stepForType(measurementType, override = null) {
 
 /**
  * Determines the number of decimal places to display for a given measurement type.
- *
- *   decimalsForType("quantity") → 0
- *   decimalsForType("weight")   → 3
  */
 export function decimalsForType(measurementType) {
   switch (measurementType) {
@@ -176,38 +224,29 @@ export function decimalsForType(measurementType) {
 }
 
 // ── Dates & times ─────────────────────────────────────────────────────────────
-// ISO timestamp → "Mar 2, 2026"
+
 export function formatDate(iso) {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-NG", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
+  return new Date(iso).toLocaleDateString(_locale, {
+    year: "numeric", month: "short", day: "numeric",
   });
 }
 
-// ISO timestamp → "Mar 2, 2026, 10:45 AM"
 export function formatDateTime(iso) {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-NG", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+  return new Date(iso).toLocaleDateString(_locale, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
   });
 }
 
-// ISO timestamp → "10:45 AM"
 export function formatTime(iso) {
   if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("en-NG", {
-    hour: "2-digit",
-    minute: "2-digit",
+  return new Date(iso).toLocaleTimeString(_locale, {
+    hour: "2-digit", minute: "2-digit",
   });
 }
 
-// Duration between two ISO timestamps → "2h 15m"
 export function formatDuration(startIso, endIso) {
   if (!startIso) return "—";
   const start = new Date(startIso).getTime();
@@ -220,21 +259,19 @@ export function formatDuration(startIso, endIso) {
 }
 
 // ── Reference numbers ─────────────────────────────────────────────────────────
-// Formats backend reference strings for display.
-// "TXN-000042" → "TXN-000042" (pass-through, backend already formats)
-// Null-safe fallback.
+
 export function formatRef(ref) {
   return ref ?? "—";
 }
 
 // ── Phone numbers ─────────────────────────────────────────────────────────────
-// Displays a phone number or "—" if empty.
+
 export function formatPhone(phone) {
   return phone?.trim() || "—";
 }
 
 // ── Names ─────────────────────────────────────────────────────────────────────
-// Builds a full name from first + last, falls back to username.
+
 export function formatName(user) {
   if (!user) return "—";
   const full = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
@@ -242,8 +279,7 @@ export function formatName(user) {
 }
 
 // ── Status strings ────────────────────────────────────────────────────────────
-// Converts snake_case status values to Title Case for display.
-// "partially_paid" → "Partially Paid"
+
 export function formatStatus(status) {
   if (!status) return "—";
   return status

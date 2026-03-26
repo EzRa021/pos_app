@@ -29,3 +29,11 @@ export const bulkDeactivateItems = (payload) =>
 // percent=0 clears existing discounts
 export const bulkApplyDiscount = (payload) =>
   rpc("bulk_apply_discount", payload);
+
+// BulkPrintLabelsDto: { store_id, item_ids?: UUID[], category_id?, department_id?, copies? }
+// Returns: ItemLabel[]  (same shape as generate_item_labels / print_price_tags)
+// • item_ids supplied  → explicit selection; active-status filter NOT applied
+// • category_id only   → every active item in that category
+// • department_id only → every active item in that department
+export const bulkPrintLabels = (payload) =>
+  rpc("bulk_print_labels", payload);

@@ -57,6 +57,7 @@ pub(crate) async fn fetch_item(pool: &sqlx::PgPool, id: Uuid) -> AppResult<Item>
 
 // ── pub(crate) inner wrappers for ALL commands (used by http_server) ────────────
 
+#[allow(dead_code)]
 pub(crate) async fn search_items_inner(
     state:    &AppState,
     token:    String,
@@ -94,6 +95,7 @@ pub(crate) async fn search_items_inner(
     .map_err(AppError::from)
 }
 
+#[allow(dead_code)]
 pub(crate) async fn activate_item_inner(
     state: &AppState,
     token: String,
@@ -114,6 +116,7 @@ pub(crate) async fn activate_item_inner(
     Ok(item)
 }
 
+#[allow(dead_code)]
 pub(crate) async fn deactivate_item_inner(
     state: &AppState,
     token: String,
@@ -134,6 +137,7 @@ pub(crate) async fn deactivate_item_inner(
     Ok(item)
 }
 
+#[allow(dead_code)]
 pub(crate) async fn count_items_inner(
     state:       &AppState,
     token:       String,
@@ -579,14 +583,14 @@ pub async fn create_item(
 
     if let Some(ref bc) = payload.barcode {
         let bc_taken: bool = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM items WHERE barcode = $1)",
-            bc
+            "SELECT EXISTS(SELECT 1 FROM items WHERE barcode = $1 AND store_id = $2)",
+            bc, payload.store_id
         )
         .fetch_one(&pool)
         .await?
         .unwrap_or(false);
         if bc_taken {
-            return Err(AppError::Validation(format!("Barcode '{}' already exists", bc)));
+            return Err(AppError::Validation(format!("Barcode '{}' is already used by another item in this store", bc)));
         }
     }
 
@@ -712,14 +716,14 @@ pub async fn update_item(
         let existing_bc = existing.barcode.as_deref().unwrap_or("");
         if new_bc != existing_bc {
             let taken: bool = sqlx::query_scalar!(
-                "SELECT EXISTS(SELECT 1 FROM items WHERE barcode = $1 AND id != $2)",
-                new_bc, id
+                "SELECT EXISTS(SELECT 1 FROM items WHERE barcode = $1 AND id != $2 AND store_id = $3)",
+                new_bc, id, existing.store_id
             )
             .fetch_one(&pool)
             .await?
             .unwrap_or(false);
             if taken {
-                return Err(AppError::Validation(format!("Barcode '{new_bc}' already exists")));
+                return Err(AppError::Validation(format!("Barcode '{new_bc}' is already used by another item in this store")));
             }
         }
     }
@@ -1034,14 +1038,6 @@ pub async fn remove_item_image(
     Ok(item)
 }
 
-pub(crate) async fn remove_item_image_inner(
-    state: &AppState,
-    token: String,
-    id:    Uuid,
-) -> AppResult<Item> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    remove_item_image(s, token, id).await
-}
 
 /// Count items matching optional filters.
 /// Matches quantum-pos-app `itemService.count(filters)`.

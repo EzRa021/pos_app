@@ -14,6 +14,18 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use serde::Serialize;
+
+/// Slim read model for the command palette.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct TransferSearchResult {
+    pub id:              i32,
+    pub transfer_number: String,
+    pub from_store_name: Option<String>,
+    pub to_store_name:   Option<String>,
+    pub status:          String,
+    pub requested_at:    chrono::DateTime<chrono::Utc>,
+}
 
 // ── create_transfer ───────────────────────────────────────────────────────────
 
@@ -325,6 +337,8 @@ pub async fn get_transfers(
     let page  = filters.page.unwrap_or(1).max(1);
     let off   = (page - 1) * limit;
 
+    let sp = filters.search.as_deref();
+
     let rows = sqlx::query!(
         r#"SELECT st.id, st.transfer_number, st.from_store_id, st.to_store_id,
                sf.store_name AS from_store_name, st2.store_name AS to_store_name,
@@ -334,8 +348,12 @@ pub async fn get_transfers(
            JOIN stores st2 ON st2.id = st.to_store_id
            WHERE ($1::int  IS NULL OR st.from_store_id=$1 OR st.to_store_id=$1)
              AND ($2::text IS NULL OR st.status=$2)
-           ORDER BY st.requested_at DESC LIMIT $3 OFFSET $4"#,
-        filters.store_id, filters.status, limit, off,
+             AND ($3::text IS NULL OR st.transfer_number ILIKE '%' || $3 || '%'
+                  OR sf.store_name  ILIKE '%' || $3 || '%'
+                  OR st2.store_name ILIKE '%' || $3 || '%'
+                  OR st.notes       ILIKE '%' || $3 || '%')
+           ORDER BY st.requested_at DESC LIMIT $4 OFFSET $5"#,
+        filters.store_id, filters.status, sp, limit, off,
     )
     .fetch_all(&pool)
     .await?;
@@ -353,6 +371,48 @@ pub async fn get_transfers(
         });
     }
     Ok(result)
+}
+
+// ── search_transfers_inner ───────────────────────────────────────────────────
+
+/// Fast text search for the command palette.
+pub(crate) async fn search_transfers_inner(
+    state:    &AppState,
+    token:    String,
+    query:    String,
+    store_id: Option<i32>,
+    limit:    Option<i64>,
+) -> AppResult<Vec<TransferSearchResult>> {
+    guard_permission(state, &token, "inventory.read").await?;
+    let pool   = state.pool().await?;
+    let limit  = limit.unwrap_or(8).clamp(1, 20);
+    let search = format!("%{}%", query.trim());
+
+    sqlx::query_as!(
+        TransferSearchResult,
+        r#"SELECT st.id, st.transfer_number,
+                  sf.store_name  AS "from_store_name",
+                  st2.store_name AS "to_store_name",
+                  st.status, st.requested_at
+           FROM   stock_transfers st
+           JOIN   stores sf  ON sf.id  = st.from_store_id
+           JOIN   stores st2 ON st2.id = st.to_store_id
+           WHERE  ($1::int IS NULL OR st.from_store_id = $1 OR st.to_store_id = $1)
+             AND  (
+                   st.transfer_number ILIKE $2
+                OR sf.store_name      ILIKE $2
+                OR st2.store_name     ILIKE $2
+                OR st.notes           ILIKE $2
+             )
+           ORDER  BY st.requested_at DESC
+           LIMIT  $3"#,
+        store_id,
+        search,
+        limit,
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
 }
 
 // ── get_transfer ──────────────────────────────────────────────────────────────

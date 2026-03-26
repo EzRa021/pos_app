@@ -6,10 +6,14 @@ use tauri::State;
 use rust_decimal::Decimal;
 use crate::{
     error::{AppError, AppResult},
-    models::bulk_operations::{
-        BulkPriceUpdateDto, BulkStockAdjustmentDto, BulkToggleItemsDto,
-        BulkApplyDiscountDto, BulkOperationResult,
-        BulkItemImportDto, BulkImportResult,
+    models::{
+        bulk_operations::{
+            BulkPriceUpdateDto, BulkStockAdjustmentDto, BulkToggleItemsDto,
+            BulkApplyDiscountDto, BulkOperationResult,
+            BulkItemImportDto, BulkImportResult,
+            BulkPrintLabelsDto,
+        },
+        label::ItemLabel,
     },
     state::AppState,
 };
@@ -290,4 +294,114 @@ pub async fn bulk_item_import(
     }
 
     Ok(BulkImportResult { created, updated, failed, errors })
+}
+
+// ── bulk_print_labels ───────────────────────────────────────────────────────────────
+// Unified label-data resolver for all bulk print flows:
+//   • item_ids supplied  → explicit multi-select (no active filter, user chose these)
+//   • category_id only   → every active item in that category
+//   • department_id only → every active item in that department
+//
+// Returns Vec<ItemLabel> — the frontend generates the HTML and fires the iframe print.
+
+#[tauri::command]
+pub async fn bulk_print_labels(
+    state:   State<'_, AppState>,
+    token:   String,
+    payload: BulkPrintLabelsDto,
+) -> AppResult<Vec<ItemLabel>> {
+    guard_permission(&state, &token, "items.read").await?;
+    let pool = state.pool().await?;
+
+    if payload.item_ids.is_none()
+        && payload.category_id.is_none()
+        && payload.department_id.is_none()
+    {
+        return Err(AppError::Validation(
+            "Provide item_ids, category_id, or department_id".into(),
+        ));
+    }
+
+    let copies = payload.copies.unwrap_or(1).max(1) as usize;
+    let mut labels: Vec<ItemLabel> = Vec::new();
+
+    // ── Branch A: explicit item UUIDs (multi-select) ────────────────────────────────
+    if let Some(ids) = &payload.item_ids {
+        let uuids: Vec<uuid::Uuid> = ids.iter()
+            .filter_map(|s| uuid::Uuid::parse_str(s).ok())
+            .collect();
+        if uuids.is_empty() { return Ok(Vec::new()); }
+
+        let rows = sqlx::query!(
+            r#"SELECT i.id::text AS item_id, i.item_name, i.sku, i.barcode,
+                   i.selling_price, i.cost_price, s.store_name, c.category_name,
+                   istock.quantity::int AS quantity
+               FROM items i
+               JOIN stores s ON s.id = i.store_id
+               LEFT JOIN categories c ON c.id = i.category_id
+               LEFT JOIN item_stock istock
+                   ON istock.item_id = i.id AND istock.store_id = i.store_id
+               WHERE i.id = ANY($1) AND i.store_id = $2
+               ORDER BY i.item_name"#,
+            &uuids, payload.store_id,
+        )
+        .fetch_all(&pool)
+        .await?;
+
+        for row in &rows {
+            for _ in 0..copies {
+                labels.push(ItemLabel {
+                    item_id:       row.item_id.clone().unwrap_or_default(),
+                    item_name:     row.item_name.clone(),
+                    sku:           row.sku.clone(),
+                    barcode:       row.barcode.clone(),
+                    selling_price: row.selling_price,
+                    cost_price:    row.cost_price,
+                    store_name:    row.store_name.clone(),
+                    category_name: Some(row.category_name.clone()),
+                    quantity:      row.quantity,
+                });
+            }
+        }
+
+    // ── Branch B: category / department scope (active items only) ────────────────
+    } else {
+        let rows = sqlx::query!(
+            r#"SELECT i.id::text AS item_id, i.item_name, i.sku, i.barcode,
+                   i.selling_price, i.cost_price, s.store_name, c.category_name,
+                   istock.quantity::int AS quantity
+               FROM items i
+               JOIN stores s ON s.id = i.store_id
+               LEFT JOIN categories c ON c.id = i.category_id
+               LEFT JOIN item_stock istock
+                   ON istock.item_id = i.id AND istock.store_id = i.store_id
+               LEFT JOIN item_settings ist ON ist.item_id = i.id
+               WHERE i.store_id = $1
+                 AND ($2::int IS NULL OR i.category_id   = $2)
+                 AND ($3::int IS NULL OR i.department_id = $3)
+                 AND (ist.is_active IS NULL OR ist.is_active = TRUE)
+               ORDER BY i.item_name"#,
+            payload.store_id, payload.category_id, payload.department_id,
+        )
+        .fetch_all(&pool)
+        .await?;
+
+        for row in &rows {
+            for _ in 0..copies {
+                labels.push(ItemLabel {
+                    item_id:       row.item_id.clone().unwrap_or_default(),
+                    item_name:     row.item_name.clone(),
+                    sku:           row.sku.clone(),
+                    barcode:       row.barcode.clone(),
+                    selling_price: row.selling_price,
+                    cost_price:    row.cost_price,
+                    store_name:    row.store_name.clone(),
+                    category_name: Some(row.category_name.clone()),
+                    quantity:      row.quantity,
+                });
+            }
+        }
+    }
+
+    Ok(labels)
 }

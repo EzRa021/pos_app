@@ -2,7 +2,7 @@
 // CLIENT SETUP — Connect to a remote Quantum POS server
 // ============================================================================
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -29,6 +29,12 @@ export default function ClientSetup({ onConnected, onBack }) {
   const [form,   setForm]   = useState(DEFAULT);
   const [status, setStatus] = useState("idle");
   const [error,  setError]  = useState("");
+  const advanceTimer = useRef(null);
+  const connectedPayload = useRef(null);
+
+  useEffect(() => {
+    return () => { if (advanceTimer.current) clearTimeout(advanceTimer.current); };
+  }, []);
 
   function set(field, value) { setForm(f => ({ ...f, [field]: value })); }
 
@@ -43,19 +49,20 @@ export default function ClientSetup({ onConnected, onBack }) {
         signal: AbortSignal.timeout(6000),
       });
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      const payload = { mode: "client", host, apiPort };
+      connectedPayload.current = payload;
       setStatus("success");
+      // Auto-advance after 2 s — user can skip immediately
+      advanceTimer.current = setTimeout(() => onConnected(payload), 2000);
     } catch (err) {
       setError(err?.message ?? "Could not reach the server. Check the IP and port.");
       setStatus("error");
     }
   }
 
-  function handleContinue() {
-    onConnected({
-      mode:    "client",
-      host:    form.host.trim(),
-      apiPort: parseInt(form.apiPort, 10) || 4000,
-    });
+  function handleContinueNow() {
+    if (advanceTimer.current) clearTimeout(advanceTimer.current);
+    if (connectedPayload.current) onConnected(connectedPayload.current);
   }
 
   // ── Success ──────────────────────────────────────────────────────────────
@@ -112,10 +119,15 @@ export default function ClientSetup({ onConnected, onBack }) {
           </div>
         </div>
 
-        <Button onClick={handleContinue} className="w-full h-11" size="lg">
-          Continue to Login
-          <ArrowLeft className="h-4 w-4 rotate-180" />
-        </Button>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground flex-1">
+            <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+            Continuing in a moment…
+          </div>
+          <Button size="sm" variant="outline" onClick={handleContinueNow} className="gap-1.5 shrink-0">
+            Continue now
+          </Button>
+        </div>
       </div>
     );
   }

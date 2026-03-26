@@ -123,3 +123,101 @@ pub fn validate_qty_signed_opt(
 ) -> AppResult<Decimal> {
     validate_qty_signed(qty, measurement_type.unwrap_or(""), item_name)
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    // ── validate_qty ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn qty_rejects_zero() {
+        assert!(validate_qty(dec!(0), "quantity", "Widget").is_err());
+    }
+
+    #[test]
+    fn qty_rejects_negative() {
+        assert!(validate_qty(dec!(-1), "quantity", "Widget").is_err());
+    }
+
+    #[test]
+    fn qty_allows_whole_number_for_piece_type() {
+        let result = validate_qty(dec!(5), "quantity", "Widget");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), dec!(5));
+    }
+
+    #[test]
+    fn qty_rejects_fractional_for_piece_type() {
+        assert!(validate_qty(dec!(1.5), "quantity", "Widget").is_err());
+    }
+
+    #[test]
+    fn qty_allows_decimal_for_weight() {
+        let result = validate_qty(dec!(2.5), "weight", "Rice");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn qty_rounds_weight_to_3dp() {
+        let result = validate_qty(dec!(1.23456), "weight", "Rice").unwrap();
+        assert_eq!(result, dec!(1.235));
+    }
+
+    #[test]
+    fn qty_allows_decimal_for_volume() {
+        assert!(validate_qty(dec!(0.5), "volume", "Oil").is_ok());
+    }
+
+    #[test]
+    fn qty_allows_decimal_for_length() {
+        assert!(validate_qty(dec!(3.14), "length", "Wire").is_ok());
+    }
+
+    #[test]
+    fn qty_unknown_type_passes_through() {
+        let result = validate_qty(dec!(7.89), "other", "Mystery");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), dec!(7.89));
+    }
+
+    // ── validate_qty_signed ───────────────────────────────────────────────────
+
+    #[test]
+    fn signed_rejects_zero() {
+        assert!(validate_qty_signed(dec!(0), "quantity", "Widget").is_err());
+    }
+
+    #[test]
+    fn signed_allows_negative_whole_number_for_piece_type() {
+        let result = validate_qty_signed(dec!(-3), "quantity", "Widget");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), dec!(-3));
+    }
+
+    #[test]
+    fn signed_rejects_fractional_negative_for_piece_type() {
+        assert!(validate_qty_signed(dec!(-1.5), "quantity", "Widget").is_err());
+    }
+
+    #[test]
+    fn signed_rounds_negative_weight_and_preserves_sign() {
+        let result = validate_qty_signed(dec!(-2.5678), "weight", "Grain").unwrap();
+        assert_eq!(result, dec!(-2.568));
+    }
+
+    #[test]
+    fn signed_rounds_positive_weight() {
+        let result = validate_qty_signed(dec!(1.0004), "weight", "Grain").unwrap();
+        assert_eq!(result, dec!(1.000));
+    }
+
+    #[test]
+    fn signed_rejects_weight_that_rounds_to_zero() {
+        // 0.0001 rounds to 0.000 at 3dp — must be rejected
+        assert!(validate_qty_signed(dec!(0.0001), "weight", "Grain").is_err());
+    }
+}

@@ -7,6 +7,7 @@ import { useBranchStore } from "@/stores/branch.store";
 import {
   getTransactions,
   getTransaction,
+  getTransactionStats,
   voidTransaction,
   partialRefund,
   fullRefund,
@@ -19,24 +20,25 @@ export const txStatsKey = (storeId) => ["transactions", "stats",  storeId];
 
 // ── useTransactions ───────────────────────────────────────────────────────────
 export function useTransactions({
-  page = 1, limit = 25, search, status, paymentMethod,
+  page = 1, limit = 25, search, status, paymentMethod, paymentStatus,
   cashierId, customerId, dateFrom, dateTo,
 } = {}) {
   const qc      = useQueryClient();
   const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const filters = useMemo(() => ({
-    store_id:       storeId       ?? null,
+    store_id:       storeId        ?? null,
     page,
     limit,
-    search:         search        || null,
-    status:         status        || null,
-    payment_method: paymentMethod || null,
-    cashier_id:     cashierId     ?? null,
-    customer_id:    customerId    ?? null,
-    date_from:      dateFrom      || null,
-    date_to:        dateTo        || null,
-  }), [storeId, page, limit, search, status, paymentMethod, cashierId, customerId, dateFrom, dateTo]);
+    search:         search         || null,
+    status:         status         || null,
+    payment_method: paymentMethod  || null,
+    payment_status: paymentStatus  || null,
+    cashier_id:     cashierId      ?? null,
+    customer_id:    customerId     ?? null,
+    date_from:      dateFrom       || null,
+    date_to:        dateTo         || null,
+  }), [storeId, page, limit, search, status, paymentMethod, paymentStatus, cashierId, customerId, dateFrom, dateTo]);
 
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey:        txListKey(filters),
@@ -64,46 +66,25 @@ export function useTransactions({
 }
 
 // ── useTransactionStats ───────────────────────────────────────────────────────
-// Uses four focused COUNT queries (limit:1 each) instead of fetching rows.
-// Today's revenue is fetched separately with a small daily window query.
+// Single SQL aggregate query — replaces the previous 5 round-trips.
+// Backend computes all counts + today's revenue in one pass.
 export function useTransactionStats() {
   const storeId = useBranchStore((s) => s.activeStore?.id);
-  const base    = { store_id: storeId, page: 1, limit: 1 };
-  const today   = new Date().toISOString().split("T")[0];
 
-  // Four cheap COUNT-only queries (returns total:N, data:[] each)
-  const { data: all }       = useQuery({ queryKey: [...txStatsKey(storeId), "all"],       queryFn: () => getTransactions({ ...base }),                     enabled: !!storeId, staleTime: 60000 });
-  const { data: completed } = useQuery({ queryKey: [...txStatsKey(storeId), "completed"], queryFn: () => getTransactions({ ...base, status: "completed" }), enabled: !!storeId, staleTime: 60000 });
-  const { data: voided }    = useQuery({ queryKey: [...txStatsKey(storeId), "voided"],    queryFn: () => getTransactions({ ...base, status: "voided" }),    enabled: !!storeId, staleTime: 60000 });
-  const { data: refunded }  = useQuery({ queryKey: [...txStatsKey(storeId), "refunded"],  queryFn: () => getTransactions({ ...base, status: "refunded" }),  enabled: !!storeId, staleTime: 60000 });
-
-  // Today's revenue: fetch only today's completed rows (bounded window, small set)
-  const { data: todayData } = useQuery({
-    queryKey: [...txStatsKey(storeId), "today", today],
-    queryFn:  () => getTransactions({
-      store_id:  storeId,
-      status:    "completed",
-      date_from: today,
-      date_to:   today,
-      page:      1,
-      limit:     500,   // cap: at most 500 completed sales per day before pagination kicks in
-    }),
-    enabled:   !!storeId,
-    staleTime: 60000,
+  const { data } = useQuery({
+    queryKey: txStatsKey(storeId),
+    queryFn:  () => getTransactionStats(storeId),
+    enabled:  !!storeId,
+    staleTime: 60 * 1000,
   });
 
-  const todayRevenue = useMemo(() => {
-    const rows = todayData?.data ?? [];
-    return rows.reduce((sum, tx) => sum + parseFloat(tx.total_amount ?? 0), 0);
-  }, [todayData]);
-
   return {
-    total:       all?.total       ?? 0,
-    completed:   completed?.total ?? 0,
-    voided:      voided?.total    ?? 0,
-    refunded:    refunded?.total  ?? 0,
-    todayCount:  todayData?.total ?? 0,
-    todayRevenue,
+    total:        data?.total         ?? 0,
+    completed:    data?.completed     ?? 0,
+    voided:       data?.voided        ?? 0,
+    refunded:     data?.refunded      ?? 0,
+    todayCount:   data?.today_count   ?? 0,
+    todayRevenue: parseFloat(data?.today_revenue ?? 0),
   };
 }
 

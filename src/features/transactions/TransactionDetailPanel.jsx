@@ -11,7 +11,9 @@ import {
 import { usePrintReceipt } from "@/hooks/usePrintReceipt";
 import { toast } from "sonner";
 
+import { useQuery }              from "@tanstack/react-query";
 import { useTransaction }        from "./useTransactions";
+import { getTransactionReturnedQty } from "@/commands/returns";
 import { InitiateReturnModal }   from "@/features/returns/InitiateReturnModal";
 import { PageHeader }            from "@/components/shared/PageHeader";
 import { StatusBadge }      from "@/components/shared/StatusBadge";
@@ -467,6 +469,25 @@ export function TransactionDetailPanel() {
   const canVoid   = usePermission("transactions.void");
   const canRefund = usePermission("transactions.refund");
 
+  // Fetch per-item already-returned quantities whenever the transaction has
+  // had at least one partial return. Only active while returnOpen is possible.
+  const isPartiallyRefunded = tx?.status === "partially_refunded";
+  const { data: returnedQtyRaw } = useQuery({
+    queryKey:  ["tx-returned-qty", tx?.id],
+    queryFn:   () => getTransactionReturnedQty(tx.id),
+    enabled:   !!tx?.id && isPartiallyRefunded,
+    staleTime: 30 * 1000,
+  });
+
+  // Build a map keyed by item_id (UUID string) → number
+  const returnedQtyMap = useMemo(() => {
+    const map = {};
+    (returnedQtyRaw ?? []).forEach(({ item_id, quantity_returned }) => {
+      map[item_id] = parseFloat(quantity_returned ?? 0);
+    });
+    return map;
+  }, [returnedQtyRaw]);
+
   const { print, isPrinting } = usePrintReceipt();
 
   async function handleReprint() {
@@ -493,17 +514,19 @@ export function TransactionDetailPanel() {
   }
 
   // Action availability
-  // "refunded"           = fully refunded (via full_refund command or create_return full)
-  // "partially_refunded" = at least one partial return/refund has been processed
-  const BLOCKED_STATUSES     = ["voided", "cancelled", "refunded"];
-  const isCompleted          = tx?.status === "completed";
-  const isVoidable           = isCompleted; // same-day enforcement is server-side
-  // isRefundable: allow Partial Refund and Return Items on completed OR partially_refunded
-  const isRefundable         = !BLOCKED_STATUSES.includes(tx?.status);
-  // isFullyRefundable: only allow Full Refund on a fresh completed transaction —
-  // once any partial return/refund has been processed the amount no longer matches total
-  const isFullyRefundable    = !BLOCKED_STATUSES.includes(tx?.status)
-                             && tx?.status !== "partially_refunded";
+  // "completed"           = normal completed sale — all actions available
+  // "partially_refunded"  = at least one item has been returned/refunded
+  // "refunded"            = fully refunded — no further actions
+  // "voided" / "cancelled" = reversed — no actions
+  const isCompleted       = tx?.status === "completed";
+  const isVoidable        = isCompleted; // same-day enforcement is server-side
+  // Allow partial refund / return on completed AND partially_refunded transactions.
+  // Prevents showing these buttons on voided, cancelled, fully-refunded, or any
+  // intermediate status that the backend would reject anyway.
+  const isRefundable      = isCompleted || tx?.status === "partially_refunded";
+  // Full refund only on a fresh completed transaction — once any partial
+  // return/refund has been processed the amount no longer matches the total.
+  const isFullyRefundable = isCompleted;
 
   // Handlers
   async function handleVoid(payload) {
@@ -576,13 +599,13 @@ export function TransactionDetailPanel() {
         }
         action={
           <div className="flex items-center gap-2">
-            {/* Copy ref */}
+            {/* Copy ref — non-destructive, stays in header */}
             <Button variant="outline" size="xs" onClick={copyRef} className="h-8 gap-1.5">
               {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? "Copied" : "Copy Ref"}
             </Button>
 
-            {/* Reprint */}
+            {/* Reprint — non-destructive, stays in header */}
             <Button
               variant="outline"
               size="xs"
@@ -595,56 +618,7 @@ export function TransactionDetailPanel() {
                 : <><Printer className="h-3.5 w-3.5" />Print Receipt</>
               }
             </Button>
-
-            {/* Void */}
-            {canVoid && isVoidable && (
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => setVoidOpen(true)}
-                className="h-8 gap-1.5 border-destructive/30 text-destructive hover:bg-destructive/10"
-              >
-                <Ban className="h-3.5 w-3.5" />
-                Void
-              </Button>
-            )}
-
-            {/* Partial Refund */}
-            {canRefund && isRefundable && items.length > 0 && (
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => setPartialOpen(true)}
-                className="h-8 gap-1.5 border-warning/30 text-warning hover:bg-warning/10"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Partial Refund
-              </Button>
-            )}
-
-            {/* Full Refund */}
-            {canRefund && isFullyRefundable && (
-              <Button
-                size="xs"
-                onClick={() => setFullOpen(true)}
-                className="h-8 gap-1.5 bg-warning hover:bg-warning/90 text-white"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Full Refund
-              </Button>
-            )}
-
-            {/* Initiate Return */}
-            {canRefund && isRefundable && items.length > 0 && (
-              <Button
-                size="xs"
-                onClick={() => setReturnOpen(true)}
-                className="h-8 gap-1.5 bg-primary hover:bg-primary/90 text-white"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Return Items
-              </Button>
-            )}
+            {/* Destructive actions (Void / Refund / Return) are in the sidebar Actions card */}
           </div>
         }
       />
@@ -913,6 +887,23 @@ export function TransactionDetailPanel() {
                     </button>
                   )}
 
+                  {/* Return Items — creates a tracked Return record */}
+                  {canRefund && isRefundable && items.length > 0 && (
+                    <button
+                      onClick={() => setReturnOpen(true)}
+                      className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg border border-primary/20 bg-primary/5 hover:bg-primary/10 transition-colors group"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <RotateCcw className="h-4 w-4 text-primary" />
+                        <div className="text-left">
+                          <p className="text-xs font-semibold text-primary">Return Items</p>
+                          <p className="text-[10px] text-muted-foreground">Select items · Creates a return record</p>
+                        </div>
+                      </div>
+                      <ChevronRight className="h-3.5 w-3.5 text-primary/50 group-hover:text-primary transition-colors" />
+                    </button>
+                  )}
+
                   {/* No destructive actions available */}
                   {!isVoidable && !isRefundable && !isFullyRefundable && (
                     <p className="text-center text-[11px] text-muted-foreground pt-1 pb-2">
@@ -954,6 +945,7 @@ export function TransactionDetailPanel() {
         onOpenChange={setReturnOpen}
         transaction={tx}
         txItems={items}
+        returnedQtyMap={returnedQtyMap}
         onSuccess={() => {
           toast.success("Return processed. Transaction status updated.");
         }}

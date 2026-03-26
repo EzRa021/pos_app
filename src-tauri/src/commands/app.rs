@@ -5,11 +5,11 @@
 // ============================================================================
 
 use tauri::State;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri_plugin_store::StoreExt;
 use crate::{
     database::pool::{create_pool, ping},
-    error::{AppError, AppResult},
+    error::AppResult,
     state::{AppState, DbConfig},
 };
 

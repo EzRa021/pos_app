@@ -11,6 +11,9 @@ export const getSupplier = (id) =>
 export const getSupplierStats = (id) =>
   rpc("get_supplier_stats", { id });
 
+export const getSupplierSpendTimeline = (id) =>
+  rpc("get_supplier_spend_timeline", { id });
+
 export const searchSuppliers = (query, storeId, limit = 10) =>
   rpc("search_suppliers", { query, store_id: storeId, limit });
 

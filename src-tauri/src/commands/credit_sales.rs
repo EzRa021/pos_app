@@ -13,33 +13,6 @@ use crate::{
 };
 use super::auth::guard_permission;
 
-// ── Inner wrappers for HTTP dispatcher ───────────────────────────────────────
-
-pub(crate) async fn get_credit_sales_inner(state: &AppState, token: String, filters: CreditSaleFilters) -> AppResult<PagedResult<CreditSale>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_credit_sales(s, token, filters).await
-}
-pub(crate) async fn get_credit_sale_inner(state: &AppState, token: String, id: i32) -> AppResult<CreditSale> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_credit_sale(s, token, id).await
-}
-pub(crate) async fn record_credit_payment_inner(state: &AppState, token: String, payload: RecordCreditPaymentDto) -> AppResult<CreditSale> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; record_credit_payment(s, token, payload).await
-}
-pub(crate) async fn get_credit_payments_inner(state: &AppState, token: String, credit_sale_id: i32) -> AppResult<Vec<CreditPayment>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_credit_payments(s, token, credit_sale_id).await
-}
-pub(crate) async fn cancel_credit_sale_inner(state: &AppState, token: String, id: i32, reason: Option<String>) -> AppResult<CreditSale> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; cancel_credit_sale(s, token, id, reason).await
-}
-pub(crate) async fn get_outstanding_balances_inner(state: &AppState, token: String, store_id: Option<i32>) -> AppResult<Vec<OutstandingBalance>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_outstanding_balances(s, token, store_id).await
-}
-pub(crate) async fn get_overdue_sales_inner(state: &AppState, token: String, store_id: Option<i32>) -> AppResult<Vec<OverdueSale>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_overdue_sales(s, token, store_id).await
-}
-pub(crate) async fn get_credit_summary_inner(state: &AppState, token: String, store_id: Option<i32>) -> AppResult<CreditSummary> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_credit_summary(s, token, store_id).await
-}
-
 // ── Shared fetch ──────────────────────────────────────────────────────────────
 
 async fn fetch_credit_sale(pool: &sqlx::PgPool, id: i32) -> AppResult<CreditSale> {
@@ -78,14 +51,26 @@ pub async fn get_credit_sales(
     let df     = filters.date_from.as_deref();
     let dt     = filters.date_to.as_deref();
 
+    let search = filters.search.as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
+
     let total: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM credit_sales
-           WHERE ($1::int  IS NULL OR store_id    = $1)
-             AND ($2::int  IS NULL OR customer_id = $2)
-             AND ($3::text IS NULL OR status      = $3)
-             AND ($4::text IS NULL OR created_at >= $4::timestamptz)
-             AND ($5::text IS NULL OR created_at <= $5::timestamptz)"#,
-        filters.store_id, filters.customer_id, filters.status, df, dt,
+        r#"SELECT COUNT(*)
+           FROM   credit_sales cs
+           JOIN   transactions t ON t.id = cs.transaction_id
+           JOIN   customers    c ON c.id = cs.customer_id
+           WHERE ($1::int  IS NULL OR cs.store_id    = $1)
+             AND ($2::int  IS NULL OR cs.customer_id = $2)
+             AND ($3::text IS NULL OR cs.status      = $3)
+             AND ($4::text IS NULL OR cs.created_at >= $4::timestamptz)
+             AND ($5::text IS NULL OR cs.created_at <= $5::timestamptz)
+             AND ($6::text IS NULL OR (
+                   t.reference_no                          ILIKE $6
+                OR CONCAT(c.first_name, ' ', c.last_name)  ILIKE $6
+             ))"#,
+        filters.store_id, filters.customer_id, filters.status, df, dt, search.as_deref(),
     )
     .fetch_one(&pool)
     .await?
@@ -107,10 +92,14 @@ pub async fn get_credit_sales(
              AND ($3::text IS NULL OR cs.status      = $3)
              AND ($4::text IS NULL OR cs.created_at >= $4::timestamptz)
              AND ($5::text IS NULL OR cs.created_at <= $5::timestamptz)
+             AND ($6::text IS NULL OR (
+                   t.reference_no                          ILIKE $6
+                OR CONCAT(c.first_name, ' ', c.last_name)  ILIKE $6
+             ))
            ORDER  BY cs.created_at DESC
-           LIMIT $6 OFFSET $7"#,
+           LIMIT $7 OFFSET $8"#,
         filters.store_id, filters.customer_id, filters.status,
-        df, dt, limit, offset,
+        df, dt, search.as_deref(), limit, offset,
     )
     .fetch_all(&pool)
     .await?;

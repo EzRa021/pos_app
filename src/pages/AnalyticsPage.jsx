@@ -1,12 +1,13 @@
 // pages/AnalyticsPage.jsx — Full analytics dashboard with tabs
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { Link, useLocation } from "react-router-dom";
 import {
-  BarChart3, TrendingUp, Package, Users, CreditCard, Star,
-  DollarSign, ShoppingCart, RotateCcw, Award, AlertTriangle, Download,
+  BarChart3, TrendingUp, Package, Users, CreditCard, Star, Tag,
+  DollarSign, ShoppingCart, RotateCcw, Award, AlertTriangle,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  XAxis, YAxis, CartesianGrid, Legend,
 } from "recharts";
 
 import { PageHeader }     from "@/components/shared/PageHeader";
@@ -17,23 +18,38 @@ import { Button }         from "@/components/ui/button";
 import { cn }             from "@/lib/utils";
 import {
   useSalesSummary, useRevenueByPeriod, useItemAnalytics,
-  useCategoryAnalytics, useProfitAnalysis, useProfitLossSummary,
+  useCategoryAnalytics, useDepartmentAnalytics, useProfitAnalysis,
+  useProfitLossSummary, useLowMarginItems, useStockVelocity,
   useCashierPerformance, usePeakHoursAnalysis,
   usePaymentMethodSummary, useSlowMovingItems, useDeadStock,
   useCustomerAnalytics, useReturnAnalysis, useDiscountAnalytics,
+  useComparisonReport, useTaxReport, useBusinessHealthSummary,
 } from "@/features/analytics/useAnalytics";
+import { InsightFeed }      from "@/features/analytics/insights/InsightFeed";
+import { computeInsights, filterInsights } from "@/features/analytics/insights";
 import { formatCurrency, formatCurrencyCompact, formatDecimal, formatDate, formatQuantity } from "@/lib/format";
 import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
+import { ChartContainer, ChartTooltip, CurrencyTooltipContent, CHART_COLORS } from "@/components/ui/chart";
+
+const REV_CFG  = { revenue: { label: "Revenue",      color: "var(--chart-1)" } };
+const BAR_CFG  = { revenue: { label: "Revenue",      color: "var(--chart-1)" } };
+const CAT_CFG  = { revenue: { label: "Revenue",      color: "var(--chart-2)" } };
+const HOUR_CFG = { count:   { label: "Transactions", color: "var(--chart-1)" } };
+const DEPT_CFG = { revenue: { label: "Revenue",      color: "var(--chart-1)" }, qty: { label: "Qty Sold", color: "var(--chart-2)" } };
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: "overview",      label: "Overview",      icon: BarChart3   },
   { id: "sales",         label: "Sales",         icon: TrendingUp  },
-  { id: "products",      label: "Products",      icon: Package     },
+  { id: "products",      label: "Item Performance", icon: Package  },
   { id: "profitability", label: "Profitability", icon: DollarSign  },
   { id: "cashiers",      label: "Cashiers",      icon: Award       },
   { id: "inventory",     label: "Inventory",     icon: Package     },
   { id: "customers",     label: "Customers",     icon: Users       },
+  { id: "discounts",     label: "Discounts",     icon: Tag         },
+  { id: "returns",       label: "Returns",       icon: RotateCcw   },
+  { id: "comparison",    label: "Comparison",    icon: TrendingUp  },
+  { id: "tax",           label: "Tax Report",    icon: DollarSign  },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -63,32 +79,37 @@ function Section({ title, children }) {
   );
 }
 
-const CHART_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#f97316"];
-
 // ── Tab content components ────────────────────────────────────────────────────
 
-function OverviewTab({ params }) {
-  const { data: summary,   isLoading: l1 } = useSalesSummary(params);
+function OverviewTab({ params, insights }) {
+  const { data: summary }                  = useSalesSummary(params);
   const { data: revenue,   isLoading: l2 } = useRevenueByPeriod({ ...params, period: "day" });
   const { data: payments,  isLoading: l3 } = usePaymentMethodSummary(params);
 
-  const revenueData = (revenue ?? []).map((r) => ({
-    name:    r.period_label,
+  const revenueData = useMemo(() => (revenue ?? []).map((r) => ({
+    name:    r.period,
     revenue: parseFloat(r.revenue ?? 0),
     txns:    r.transactions ?? 0,
-  }));
+  })), [revenue]);
 
-  const paymentData = (payments ?? []).map((p) => ({
+  const paymentData = useMemo(() => (payments ?? []).map((p) => ({
     name:  PAYMENT_METHOD_LABELS[p.payment_method] ?? p.payment_method,
     value: parseFloat(p.total ?? 0),
-  }));
+  })), [payments]);
+
+  const overviewInsights = useMemo(() =>
+    filterInsights(insights ?? [], ["sales_", "profitability_"], 3),
+  [insights]);
 
   return (
     <div className="space-y-5">
+      {overviewInsights.length > 0 && (
+        <InsightFeed insights={overviewInsights} compact />
+      )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KPICard label="Gross Sales"    value={formatCurrencyCompact(parseFloat(summary?.gross_sales    ?? 0))} icon={DollarSign}  accent="primary" sub={`${summary?.transactions_count ?? 0} transactions`} />
-        <KPICard label="Net Sales"      value={formatCurrencyCompact(parseFloat(summary?.net_sales      ?? 0))} icon={TrendingUp}  accent="success" />
-        <KPICard label="Avg Basket"     value={formatCurrency(parseFloat(summary?.avg_order_value       ?? 0))} icon={ShoppingCart} />
+        <KPICard label="Gross Sales"    value={formatCurrencyCompact(parseFloat(summary?.total_revenue   ?? 0))} icon={DollarSign}  accent="primary" sub={`${summary?.total_transactions ?? 0} transactions`} />
+        <KPICard label="Net Sales"      value={formatCurrencyCompact(parseFloat(summary?.net_revenue     ?? 0))} icon={TrendingUp}  accent="success" />
+        <KPICard label="Avg Basket"     value={formatCurrency(parseFloat(summary?.average_order          ?? 0))} icon={ShoppingCart} />
         <KPICard label="Total Discounts" value={formatCurrencyCompact(parseFloat(summary?.total_discounts ?? 0))} icon={Star} accent="warning" />
       </div>
 
@@ -96,21 +117,21 @@ function OverviewTab({ params }) {
         <div className="col-span-2">
           <Section title="Revenue Trend">
             {l2 ? <div className="h-48 animate-pulse bg-muted/30 rounded-lg" /> : (
-              <ResponsiveContainer width="100%" height={200}>
+              <ChartContainer config={REV_CFG} className="h-[200px]">
                 <AreaChart data={revenueData}>
                   <defs>
                     <linearGradient id="rev-gradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.2} />
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}   />
+                      <stop offset="5%"  stopColor="var(--color-revenue)" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="var(--color-revenue)" stopOpacity={0}   />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis tickFormatter={(v) => formatCurrencyCompact(v)} tick={{ fontSize: 10 }} />
-                  <Tooltip formatter={(v) => formatCurrency(v)} />
-                  <Area type="monotone" dataKey="revenue" stroke="#3b82f6" fill="url(#rev-gradient)" strokeWidth={2} />
+                  <CartesianGrid vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />
+                  <YAxis tickFormatter={(v) => formatCurrencyCompact(v)} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />
+                  <ChartTooltip content={<CurrencyTooltipContent formatFn={formatCurrency} />} />
+                  <Area type="monotone" dataKey="revenue" stroke="var(--color-revenue)" fill="url(#rev-gradient)" strokeWidth={2} />
                 </AreaChart>
-              </ResponsiveContainer>
+              </ChartContainer>
             )}
           </Section>
         </div>
@@ -119,14 +140,14 @@ function OverviewTab({ params }) {
             paymentData.length === 0
               ? <EmptyState icon={CreditCard} title="No data" compact />
               : (
-                <ResponsiveContainer width="100%" height={200}>
+                <ChartContainer config={{}} className="h-[200px]">
                   <PieChart>
                     <Pie data={paymentData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
                       {paymentData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                     </Pie>
-                    <Tooltip formatter={(v) => formatCurrency(v)} />
+                    <ChartTooltip content={<CurrencyTooltipContent formatFn={formatCurrency} />} />
                   </PieChart>
-                </ResponsiveContainer>
+                </ChartContainer>
               )
           )}
         </Section>
@@ -147,28 +168,28 @@ function SalesTab({ params }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Section title="Top Items by Revenue">
           {l1 ? <div className="h-48 animate-pulse bg-muted/30 rounded-lg" /> : (
-            <ResponsiveContainer width="100%" height={220}>
+            <ChartContainer config={BAR_CFG} className="h-[220px]">
               <BarChart data={topItemData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis type="number" tickFormatter={(v) => formatCurrencyCompact(v)} tick={{ fontSize: 10 }} />
-                <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 9 }} />
-                <Tooltip formatter={(v) => formatCurrency(v)} />
-                <Bar dataKey="revenue" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+                <CartesianGrid horizontal={false} />
+                <XAxis type="number" tickFormatter={(v) => formatCurrencyCompact(v)} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />
+                <YAxis type="category" dataKey="name" width={100} tickLine={false} axisLine={false} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
+                <ChartTooltip content={<CurrencyTooltipContent formatFn={formatCurrency} />} />
+                <Bar dataKey="revenue" fill="var(--color-revenue)" radius={[0, 4, 4, 0]} />
               </BarChart>
-            </ResponsiveContainer>
+            </ChartContainer>
           )}
         </Section>
         <Section title="Sales by Category">
           {l2 ? <div className="h-48 animate-pulse bg-muted/30 rounded-lg" /> : (
-            <ResponsiveContainer width="100%" height={220}>
+            <ChartContainer config={CAT_CFG} className="h-[220px]">
               <BarChart data={catData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="name" tick={{ fontSize: 9 }} />
-                <YAxis tickFormatter={(v) => formatCurrencyCompact(v)} tick={{ fontSize: 10 }} />
-                <Tooltip formatter={(v) => formatCurrency(v)} />
-                <Bar dataKey="revenue" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                <CartesianGrid vertical={false} />
+                <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
+                <YAxis tickFormatter={(v) => formatCurrencyCompact(v)} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />
+                <ChartTooltip content={<CurrencyTooltipContent formatFn={formatCurrency} />} />
+                <Bar dataKey="revenue" fill="var(--color-revenue)" radius={[4, 4, 0, 0]} />
               </BarChart>
-            </ResponsiveContainer>
+            </ChartContainer>
           )}
         </Section>
       </div>
@@ -192,7 +213,7 @@ function SalesTab({ params }) {
 }
 
 function ProfitabilityTab({ params }) {
-  const { data: pl,     isLoading: l1 } = useProfitLossSummary(params);
+  const { data: pl }                    = useProfitLossSummary(params);
   const { data: profit, isLoading: l2 } = useProfitAnalysis({ ...params, limit: 15, sort_by: "gross_profit" });
 
   const v = (k) => parseFloat(pl?.[k] ?? 0);
@@ -217,7 +238,7 @@ function ProfitabilityTab({ params }) {
             { key: "gross_profit",  header: "Gross Profit", align: "right", sortable: true, render: (r) => { const p = parseFloat(r.gross_profit ?? 0); return <span className={cn("text-xs font-mono font-bold tabular-nums", p >= 0 ? "text-success" : "text-destructive")}>{formatCurrency(p)}</span>; } },
             { key: "margin_percent",header: "Margin",       align: "right", sortable: true, render: (r) => <span className="text-xs tabular-nums">{parseFloat(r.margin_percent ?? 0).toFixed(1)}%</span> },
           ]}
-          data={profit ?? []}
+          data={profit?.by_item ?? []}
           isLoading={l2}
           emptyState={<EmptyState icon={DollarSign} title="No profit data" compact />}
         />
@@ -245,32 +266,219 @@ function CashiersTab({ params }) {
   return (
     <div className="space-y-5">
       <Section title="Peak Hours">
-        <ResponsiveContainer width="100%" height={160}>
+        <ChartContainer config={HOUR_CFG} className="h-[160px]">
           <BarChart data={hourData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-            <XAxis dataKey="hour" tick={{ fontSize: 8 }} />
-            <YAxis tick={{ fontSize: 9 }} />
-            <Tooltip />
-            <Bar dataKey="count" fill="#3b82f6" radius={[2, 2, 0, 0]} name="Transactions" />
+            <CartesianGrid vertical={false} />
+            <XAxis dataKey="hour" tickLine={false} axisLine={false} tick={{ fontSize: 8, fill: "var(--muted-foreground)" }} />
+            <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
+            <ChartTooltip content={<CurrencyTooltipContent formatFn={(v) => String(v)} />} />
+            <Bar dataKey="count" fill="var(--color-count)" radius={[2, 2, 0, 0]} name="Transactions" />
           </BarChart>
-        </ResponsiveContainer>
+        </ChartContainer>
       </Section>
 
       <Section title="Cashier Performance">
         <DataTable
           columns={[
-            { key: "cashier_name",      header: "Cashier",       render: (r) => <span className="text-xs font-semibold">{r.cashier_name}</span> },
-            { key: "total_transactions",header: "Transactions",  align: "right", sortable: true, render: (r) => <span className="text-xs tabular-nums">{r.total_transactions ?? 0}</span> },
-            { key: "total_value",       header: "Total Value",   align: "right", sortable: true, render: (r) => <span className="text-xs font-mono tabular-nums">{formatCurrency(parseFloat(r.total_value ?? 0))}</span> },
-            { key: "avg_transaction",   header: "Avg Basket",    align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.avg_transaction ?? 0))}</span> },
-            { key: "voids_count",       header: "Voids",         align: "right", render: (r) => <span className={cn("text-xs tabular-nums", (r.voids_count ?? 0) > 0 ? "text-warning" : "text-muted-foreground")}>{r.voids_count ?? 0}</span> },
-            { key: "total_discounts",   header: "Discounts",     align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.total_discounts ?? 0))}</span> },
+            { key: "cashier_name",        header: "Cashier",       render: (r) => <span className="text-xs font-semibold">{r.cashier_name}</span> },
+            { key: "transaction_count",  header: "Transactions",  align: "right", sortable: true, render: (r) => <span className="text-xs tabular-nums">{r.transaction_count ?? 0}</span> },
+            { key: "total_sales",        header: "Total Sales",   align: "right", sortable: true, render: (r) => <span className="text-xs font-mono tabular-nums">{formatCurrency(parseFloat(r.total_sales ?? 0))}</span> },
+            { key: "avg_transaction_value", header: "Avg Basket", align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.avg_transaction_value ?? 0))}</span> },
+            { key: "void_count",         header: "Voids",         align: "right", render: (r) => <span className={cn("text-xs tabular-nums", (r.void_count ?? 0) > 0 ? "text-warning" : "text-muted-foreground")}>{r.void_count ?? 0}</span> },
+            { key: "total_discounts",    header: "Discounts",     align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.total_discounts ?? 0))}</span> },
           ]}
           data={cashiers ?? []}
           isLoading={isLoading}
           emptyState={<EmptyState icon={Award} title="No cashier data" compact />}
         />
       </Section>
+    </div>
+  );
+}
+
+function ProductsTab({ params }) {
+  const { data: items,   isLoading: l1 } = useItemAnalytics({ ...params, limit: 25, sort_by: "qty" });
+  const { data: depts,   isLoading: l2 } = useDepartmentAnalytics(params);
+  const { data: lowMargin, isLoading: l3 } = useLowMarginItems({ ...params, limit: 20 });
+  const { data: velocity,  isLoading: l4 } = useStockVelocity({ ...params, limit: 20 });
+
+  const deptData = (depts ?? []).map((d) => ({
+    name:    d.department_name,
+    revenue: parseFloat(d.revenue ?? 0),
+    qty:     parseFloat(d.qty_sold ?? 0),
+  }));
+
+  return (
+    <div className="space-y-5">
+      {/* Department breakdown */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Section title="Revenue by Department">
+          {l2 ? <div className="h-48 animate-pulse bg-muted/30 rounded-lg" /> : (
+            deptData.length === 0
+              ? <EmptyState icon={Package} title="No department data" compact />
+              : (
+                <ChartContainer config={DEPT_CFG} className="h-[200px]">
+                  <BarChart data={deptData}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
+                    <YAxis tickFormatter={(v) => formatCurrencyCompact(v)} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />
+                    <ChartTooltip content={<CurrencyTooltipContent formatFn={(v, name) => name === "revenue" ? formatCurrency(v) : String(formatDecimal(v))} />} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    <Bar dataKey="revenue" fill="var(--color-revenue)" name="Revenue"  radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="qty"     fill="var(--color-qty)"     name="Qty Sold" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ChartContainer>
+              )
+          )}
+        </Section>
+
+        <Section title="Low Margin Items">
+          <DataTable
+            columns={[
+              { key: "item_name",      header: "Item",    render: (r) => <span className="text-xs font-semibold">{r.item_name}</span> },
+              { key: "selling_price",  header: "Price",   align: "right", render: (r) => <span className="text-xs tabular-nums font-mono">{formatCurrency(parseFloat(r.selling_price ?? 0))}</span> },
+              { key: "cost_price",     header: "Cost",    align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground font-mono">{formatCurrency(parseFloat(r.cost_price ?? 0))}</span> },
+              { key: "margin_percent", header: "Margin",  align: "right", sortable: true, render: (r) => {
+                const m = parseFloat(r.margin_percent ?? 0);
+                return <span className={cn("text-xs font-bold tabular-nums", m < 10 ? "text-destructive" : m < 20 ? "text-warning" : "text-success")}>{m.toFixed(1)}%</span>;
+              }},
+            ]}
+            data={lowMargin ?? []}
+            isLoading={l3}
+            emptyState={<EmptyState icon={Tag} title="No low-margin items" description="All items have healthy margins." compact />}
+          />
+        </Section>
+      </div>
+
+      {/* Top items by qty sold */}
+      <Section title="Top Items by Quantity Sold">
+        <DataTable
+          columns={[
+            { key: "item_name",   header: "Item",       render: (r) => <span className="text-xs font-semibold">{r.item_name}</span> },
+            { key: "category_name", header: "Category", render: (r) => <span className="text-xs text-muted-foreground">{r.category_name ?? "—"}</span> },
+            { key: "qty_sold",    header: "Qty Sold",   align: "right", sortable: true, render: (r) => <span className="text-xs tabular-nums font-mono">{formatQuantity(parseFloat(r.qty_sold ?? 0), r.measurement_type, r.unit_type)}</span> },
+            { key: "revenue",     header: "Revenue",    align: "right", sortable: true, render: (r) => <span className="text-xs tabular-nums font-mono font-bold">{formatCurrency(parseFloat(r.revenue ?? 0))}</span> },
+            { key: "avg_price",   header: "Avg Price",  align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.avg_price ?? 0))}</span> },
+          ]}
+          data={items ?? []}
+          isLoading={l1}
+          emptyState={<EmptyState icon={Package} title="No product data" compact />}
+        />
+      </Section>
+
+      {/* Stock velocity */}
+      <Section title="Stock Velocity (Fastest Moving)">
+        <DataTable
+          columns={[
+            { key: "item_name",        header: "Item",            render: (r) => <span className="text-xs font-semibold">{r.item_name}</span> },
+            { key: "qty_sold",         header: "Qty Sold",        align: "right", render: (r) => <span className="text-xs tabular-nums">{formatQuantity(parseFloat(r.qty_sold ?? 0), r.measurement_type, r.unit_type)}</span> },
+            { key: "current_stock",    header: "In Stock",        align: "right", render: (r) => <span className="text-xs tabular-nums">{formatQuantity(parseFloat(r.current_stock ?? 0), r.measurement_type, r.unit_type)}</span> },
+            { key: "days_of_stock_remaining", header: "Days Left", align: "right", sortable: true, render: (r) => {
+              const d = r.days_of_stock_remaining;
+              return <span className={cn("text-xs font-bold tabular-nums", d == null ? "text-muted-foreground" : d < 7 ? "text-destructive" : d < 14 ? "text-warning" : "text-success")}>{d ?? "∞"}</span>;
+            }},
+          ]}
+          data={velocity ?? []}
+          isLoading={l4}
+          emptyState={<EmptyState icon={Package} title="No stock velocity data" compact />}
+        />
+      </Section>
+    </div>
+  );
+}
+
+function DiscountsTab({ params }) {
+  const { data, isLoading } = useDiscountAnalytics(params);
+
+  const byItem    = (data?.by_item    ?? []).slice(0, 15);
+  const byCashier = (data?.by_cashier ?? []).slice(0, 10);
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+        <KPICard label="Total Discounts Given" value={formatCurrencyCompact(parseFloat(data?.total_discounts_given           ?? 0))} icon={Tag}          accent="warning" />
+        <KPICard label="Discounted Transactions" value={(data?.transactions_with_discounts ?? 0).toLocaleString()}                  icon={ShoppingCart} />
+        <KPICard label="Avg Discount"            value={formatCurrency(parseFloat(data?.avg_discount_per_transaction ?? 0))}        icon={Tag} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Section title="Most Discounted Items">
+          <DataTable
+            columns={[
+              { key: "item_name",          header: "Item",           render: (r) => <span className="text-xs font-semibold">{r.item_name}</span> },
+              { key: "tx_count",           header: "Transactions",   align: "right", render: (r) => <span className="text-xs tabular-nums">{r.tx_count ?? 0}</span> },
+              { key: "total_discount",     header: "Total Discount", align: "right", sortable: true, render: (r) => <span className="text-xs font-mono font-bold tabular-nums text-warning">{formatCurrency(parseFloat(r.total_discount ?? 0))}</span> },
+              { key: "avg_discount_amount",header: "Avg Discount",   align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.avg_discount_amount ?? 0))}</span> },
+            ]}
+            data={byItem}
+            isLoading={isLoading}
+            emptyState={<EmptyState icon={Tag} title="No item discount data" description="No per-item discounts in this period." compact />}
+          />
+        </Section>
+
+        <Section title="Discounts by Cashier">
+          <DataTable
+            columns={[
+              { key: "cashier_name",       header: "Cashier",        render: (r) => <span className="text-xs font-semibold">{r.cashier_name}</span> },
+              { key: "discount_count",     header: "Count",          align: "right", render: (r) => <span className="text-xs tabular-nums">{r.discount_count ?? 0}</span> },
+              { key: "total_discounts",    header: "Total Given",    align: "right", sortable: true, render: (r) => <span className="text-xs font-mono font-bold tabular-nums text-warning">{formatCurrency(parseFloat(r.total_discounts ?? 0))}</span> },
+              { key: "avg_discount_amount",header: "Avg Amount",     align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.avg_discount_amount ?? 0))}</span> },
+            ]}
+            data={byCashier}
+            isLoading={isLoading}
+            emptyState={<EmptyState icon={Award} title="No cashier discount data" compact />}
+          />
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+function ReturnsTab({ params }) {
+  const { data, isLoading } = useReturnAnalysis(params);
+
+  const summary   = data?.summary   ?? {};
+  const byItem    = (data?.by_item    ?? []).slice(0, 15);
+  const byCashier = (data?.by_cashier ?? []).slice(0, 10);
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KPICard label="Total Return Value" value={formatCurrencyCompact(parseFloat(summary.total_return_value ?? 0))} icon={RotateCcw} accent="warning" />
+        <KPICard label="Return Count"       value={(summary.return_count ?? 0).toLocaleString()}                      icon={RotateCcw} />
+        <KPICard label="Return Rate"        value={`${parseFloat(summary.return_rate ?? 0).toFixed(1)}%`}             icon={TrendingUp} accent={parseFloat(summary.return_rate ?? 0) > 5 ? "destructive" : "default"} />
+        <KPICard label="Items Returned"     value={formatDecimal(parseFloat(summary.items_returned ?? 0))}            icon={Package} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Section title="Most Returned Items">
+          <DataTable
+            columns={[
+              { key: "item_name",          header: "Item",           render: (r) => <span className="text-xs font-semibold">{r.item_name}</span> },
+              { key: "total_returned",     header: "Qty Returned",   align: "right", sortable: true, render: (r) => <span className="text-xs tabular-nums">{formatDecimal(parseFloat(r.total_returned ?? 0))}</span> },
+              { key: "return_rate_percent",header: "Return Rate",    align: "right", render: (r) => <span className="text-xs tabular-nums">{parseFloat(r.return_rate_percent ?? 0).toFixed(1)}%</span> },
+              { key: "return_value",       header: "Value",          align: "right", render: (r) => <span className="text-xs font-mono font-bold tabular-nums text-warning">{formatCurrency(parseFloat(r.return_value ?? 0))}</span> },
+            ]}
+            data={byItem}
+            isLoading={isLoading}
+            emptyState={<EmptyState icon={RotateCcw} title="No return data" description="No returns in this period." compact />}
+          />
+        </Section>
+
+        <Section title="Returns by Cashier">
+          <DataTable
+            columns={[
+              { key: "cashier_name",       header: "Cashier",        render: (r) => <span className="text-xs font-semibold">{r.cashier_name}</span> },
+              { key: "total_return_count", header: "Total Returns",  align: "right", sortable: true, render: (r) => <span className="text-xs tabular-nums">{r.total_return_count ?? 0}</span> },
+              { key: "refund_count",       header: "Refunds",        align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{r.refund_count ?? 0}</span> },
+              { key: "total_return_value", header: "Total Value",    align: "right", render: (r) => <span className="text-xs font-mono tabular-nums text-warning">{formatCurrency(parseFloat(r.total_return_value ?? 0))}</span> },
+            ]}
+            data={byCashier}
+            isLoading={isLoading}
+            emptyState={<EmptyState icon={Award} title="No cashier return data" compact />}
+          />
+        </Section>
+      </div>
     </div>
   );
 }
@@ -317,18 +525,22 @@ function CustomersTab({ params }) {
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KPICard label="Total Customers"   value={(data?.total_customers   ?? 0).toLocaleString()} icon={Users} />
-        <KPICard label="Active This Period" value={(data?.active_customers  ?? 0).toLocaleString()} icon={TrendingUp} accent="success" />
-        <KPICard label="Lapsed Customers"  value={(data?.lapsed_customers  ?? 0).toLocaleString()} icon={AlertTriangle} accent="warning" />
+        <KPICard label="Total Customers"    value={(data?.total_customers   ?? 0).toLocaleString()} icon={Users} />
+        <KPICard label="Active (last 60d)"  value={(data?.active_customers  ?? 0).toLocaleString()} icon={TrendingUp} accent="success" />
+        <KPICard label="Lapsed (60–365d)"   value={(data?.lapsed_customers  ?? 0).toLocaleString()} icon={AlertTriangle} accent={(data?.lapsed_customers ?? 0) > 0 ? "warning" : "default"} />
         <KPICard label="Avg Lifetime Value" value={formatCurrency(parseFloat(data?.avg_lifetime_value ?? 0))} icon={DollarSign} accent="primary" />
       </div>
-      <Section title="Top Customers">
+      <Section title="Top Customers by Spend">
         <DataTable
           columns={[
-            { key: "customer_name",    header: "Customer", render: (r) => <span className="text-xs font-semibold">{r.customer_name}</span> },
-            { key: "visit_count",      header: "Visits",   align: "right", render: (r) => <span className="text-xs tabular-nums">{r.visit_count ?? 0}</span> },
-            { key: "total_spent",      header: "Spent",    align: "right", sortable: true, render: (r) => <span className="text-xs font-mono font-bold tabular-nums">{formatCurrency(parseFloat(r.total_spent ?? 0))}</span> },
-            { key: "avg_basket",       header: "Avg Basket",align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.avg_basket ?? 0))}</span> },
+            { key: "customer_name",    header: "Customer",   render: (r) => <span className="text-xs font-semibold">{r.customer_name}</span> },
+            { key: "transaction_count",header: "Visits",     align: "right", render: (r) => <span className="text-xs tabular-nums">{r.transaction_count ?? 0}</span> },
+            { key: "total_spent",      header: "Total Spent",align: "right", sortable: true, render: (r) => <span className="text-xs font-mono font-bold tabular-nums">{formatCurrency(parseFloat(r.total_spent ?? 0))}</span> },
+            { key: "avg_basket_size",  header: "Avg Basket", align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{formatCurrency(parseFloat(r.avg_basket_size ?? 0))}</span> },
+            { key: "days_since_last_purchase", header: "Last Purchase", align: "right", render: (r) => {
+              const d = r.days_since_last_purchase;
+              return <span className={cn("text-xs tabular-nums", d == null ? "text-muted-foreground" : d > 60 ? "text-warning" : "text-foreground")}>{d == null ? "—" : `${d}d ago`}</span>;
+            }},
           ]}
           data={data?.top_customers ?? []}
           isLoading={isLoading}
@@ -339,9 +551,110 @@ function CustomersTab({ params }) {
   );
 }
 
+function ComparisonTab({ params }) {
+  const { data, isLoading } = useComparisonReport(params);
+  const metrics = data?.metrics ?? [];
+
+  const fmtValue = (metric, val) => {
+    const v = parseFloat(val ?? 0);
+    return metric === "transaction_count" ? v.toLocaleString() : formatCurrency(v);
+  };
+
+  return (
+    <div className="space-y-5">
+      {data && (
+        <div className="flex items-center gap-4 px-1 text-[11px] text-muted-foreground">
+          <span className="font-bold text-foreground">{data.current_label}</span>
+          <span>vs</span>
+          <span>{data.previous_label}</span>
+        </div>
+      )}
+      <Section title="Period Comparison">
+        <DataTable
+          columns={[
+            { key: "metric",         header: "Metric",          render: (r) => <span className="text-xs font-semibold capitalize">{(r.metric ?? "").replace(/_/g, " ")}</span> },
+            { key: "current_value",  header: data?.current_label  ?? "Current Period",  align: "right", render: (r) => <span className="text-xs font-mono tabular-nums font-bold">{fmtValue(r.metric, r.current_value)}</span> },
+            { key: "previous_value", header: data?.previous_label ?? "Previous Period", align: "right", render: (r) => <span className="text-xs font-mono tabular-nums text-muted-foreground">{fmtValue(r.metric, r.previous_value)}</span> },
+            { key: "change_percent", header: "Change",          align: "right", render: (r) => {
+              const pct = parseFloat(r.change_percent ?? 0);
+              return <span className={cn("text-xs font-bold tabular-nums", pct > 0 ? "text-success" : pct < 0 ? "text-destructive" : "text-muted-foreground")}>{pct > 0 ? "+" : ""}{pct.toFixed(1)}%</span>;
+            }},
+            { key: "change_amount",  header: "Δ Amount",        align: "right", render: (r) => {
+              const v = parseFloat(r.change_amount ?? 0);
+              return <span className={cn("text-xs tabular-nums", v > 0 ? "text-success" : v < 0 ? "text-destructive" : "text-muted-foreground")}>{v >= 0 ? "+" : ""}{fmtValue(r.metric, r.change_amount)}</span>;
+            }},
+          ]}
+          data={metrics}
+          isLoading={isLoading}
+          emptyState={<EmptyState icon={TrendingUp} title="No comparison data" description="Select a date range to compare periods." compact />}
+        />
+      </Section>
+    </div>
+  );
+}
+
+function TaxTab({ params }) {
+  const { data, isLoading } = useTaxReport(params);
+  const periodRows  = data?.period_rows      ?? [];
+  const byCategory  = data?.vat_by_category  ?? [];
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-3 gap-3">
+        <KPICard label="Total VAT Collected" value={formatCurrencyCompact(parseFloat(data?.total_vat     ?? 0))} accent="primary" icon={DollarSign} sub={`${(data?.transaction_count ?? 0).toLocaleString()} transactions`} />
+        <KPICard label="Gross Sales"          value={formatCurrencyCompact(parseFloat(data?.gross_sales   ?? 0))} accent="default" icon={TrendingUp} />
+        <KPICard label="Net Sales (ex-VAT)"   value={formatCurrencyCompact(parseFloat(data?.net_sales     ?? 0))} accent="success" icon={ShoppingCart} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Section title="VAT by Tax Category">
+          <DataTable
+            columns={[
+              { key: "category_name", header: "Tax Category",  render: (r) => <span className="text-xs font-semibold">{r.category_name}</span> },
+              { key: "rate",          header: "Rate",           align: "right", render: (r) => <span className="text-xs tabular-nums">{parseFloat(r.rate ?? 0).toFixed(1)}%</span> },
+              { key: "taxable_sales", header: "Taxable Sales",  align: "right", render: (r) => <span className="text-xs font-mono tabular-nums">{formatCurrency(parseFloat(r.taxable_sales ?? 0))}</span> },
+              { key: "vat_amount",    header: "VAT Amount",     align: "right", sortable: true, render: (r) => <span className="text-xs font-mono font-bold tabular-nums text-primary">{formatCurrency(parseFloat(r.vat_amount ?? 0))}</span> },
+            ]}
+            data={byCategory}
+            isLoading={isLoading}
+            emptyState={<EmptyState icon={DollarSign} title="No tax category data" description="Tax data will appear here after sales are recorded." compact />}
+          />
+        </Section>
+
+        <Section title="VAT by Period">
+          <DataTable
+            columns={[
+              { key: "period",             header: "Period",        render: (r) => <span className="text-xs font-semibold">{r.period}</span> },
+              { key: "gross_sales",        header: "Gross Sales",   align: "right", render: (r) => <span className="text-xs font-mono tabular-nums">{formatCurrency(parseFloat(r.gross_sales ?? 0))}</span> },
+              { key: "vat_collected",      header: "VAT Collected", align: "right", sortable: true, render: (r) => <span className="text-xs font-mono font-bold tabular-nums text-primary">{formatCurrency(parseFloat(r.vat_collected ?? 0))}</span> },
+              { key: "transaction_count",  header: "Transactions",  align: "right", render: (r) => <span className="text-xs tabular-nums text-muted-foreground">{r.transaction_count ?? 0}</span> },
+            ]}
+            data={periodRows}
+            isLoading={isLoading}
+            emptyState={<EmptyState icon={DollarSign} title="No period data" compact />}
+          />
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+// ── Path → tab mapping ─────────────────────────────────────────────────────────
+const PATH_TAB_MAP = {
+  "/analytics/sales":          "sales",
+  "/analytics/products":       "products",
+  "/analytics/inventory":      "inventory",
+  "/analytics/profitability":  "profitability",
+  "/analytics/cashiers":       "cashiers",
+  "/analytics/customers":      "customers",
+  "/analytics/reports":        "overview",
+};
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
-  const [tab,      setTab]      = useState("overview");
+  const location = useLocation();
+  const initialTab = PATH_TAB_MAP[location.pathname] ?? "overview";
+  const [tab,      setTab]      = useState(initialTab);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo,   setDateTo]   = useState("");
 
@@ -350,29 +663,67 @@ export default function AnalyticsPage() {
     date_to:   dateTo   || undefined,
   };
 
+  // Fetch all data needed to power insights across tabs
+  const { data: health }    = useBusinessHealthSummary();
+  const { data: summary }   = useSalesSummary(params);
+  const { data: velocity }  = useStockVelocity({ limit: 50 });
+  const { data: deadStock } = useDeadStock({ days: 30 });
+  const { data: cashiers }  = useCashierPerformance(params);
+  const { data: discounts } = useDiscountAnalytics(params);
+  const { data: returns }   = useReturnAnalysis(params);
+  const { data: customers } = useCustomerAnalytics({ ...params, lapsed_days: 60 });
+  const { data: items }     = useItemAnalytics({ ...params, limit: 10, sort_by: "revenue" });
+  const { data: profit }    = useProfitAnalysis(params);
+  const { data: pl }        = useProfitLossSummary(params);
+  const { data: lowMargin } = useLowMarginItems({ ...params, min_margin_percent: 10 });
+  const { data: comparison } = useComparisonReport({ metric: "revenue", period: "month" });
+
+  const insights = useMemo(() => computeInsights({
+    health, summary,
+    items:   Array.isArray(items)     ? items     : null,
+    profit,
+    pl,
+    lowMargin: Array.isArray(lowMargin) ? lowMargin : null,
+    velocity:  Array.isArray(velocity)  ? velocity  : null,
+    deadStock: Array.isArray(deadStock) ? deadStock : null,
+    cashiers:  Array.isArray(cashiers)  ? cashiers  : null,
+    discounts, returns, customers, comparison,
+    maxInsights: 15,
+  }), [health, summary, items, profit, pl, lowMargin, velocity, deadStock, cashiers, discounts, returns, customers, comparison]);
+
   const renderTab = () => {
     switch (tab) {
-      case "overview":      return <OverviewTab        params={params} />;
+      case "overview":      return <OverviewTab        params={params} insights={insights} />;
       case "sales":         return <SalesTab           params={params} />;
       case "profitability": return <ProfitabilityTab   params={params} />;
       case "cashiers":      return <CashiersTab        params={params} />;
       case "inventory":     return <InventoryTab       params={params} />;
+      case "products":      return <ProductsTab        params={params} />;
       case "customers":     return <CustomersTab       params={params} />;
-      default:              return <OverviewTab        params={params} />;
+      case "discounts":     return <DiscountsTab       params={params} />;
+      case "returns":       return <ReturnsTab         params={params} />;
+      case "comparison":    return <ComparisonTab      params={params} />;
+      case "tax":           return <TaxTab             params={params} />;
+      default:              return <OverviewTab        params={params} insights={insights} />;
     }
   };
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <PageHeader
-        title="Analytics"
+        title="Analytics Reports"
         description="Sales insights, profitability analysis, and operational metrics."
         action={
-          <DateRangePicker
-            from={dateFrom} to={dateTo}
-            onFromChange={setDateFrom} onToChange={setDateTo}
-            onClear={() => { setDateFrom(""); setDateTo(""); }}
-          />
+          <div className="flex items-center gap-2">
+            <Link to="/analytics">
+              <Button variant="outline" size="sm">← Dashboard</Button>
+            </Link>
+            <DateRangePicker
+              from={dateFrom} to={dateTo}
+              onFromChange={setDateFrom} onToChange={setDateTo}
+              onClear={() => { setDateFrom(""); setDateTo(""); }}
+            />
+          </div>
         }
       />
 

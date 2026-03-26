@@ -14,14 +14,18 @@ import { getItems, getItemByBarcode } from "@/commands/items";
 import { getCategories } from "@/commands/categories";
 import { getCustomers }  from "@/commands/customers";
 import { createTransaction } from "@/commands/transactions";
+import { earnPoints }        from "@/commands/loyalty";
+import { checkReorderAlerts } from "@/commands/reorder_alerts";
 import { invalidateAfterSale } from "@/lib/invalidations";
+import { queryClient } from "@/lib/queryClient";
+import { toastSuccess, toastError } from "@/lib/toast";
 
 // ── usePos ────────────────────────────────────────────────────────────────────
 export function usePos({
-  search   = "",
-  catId    = null,
-  page     = 1,
-  limit    = 20,
+  search = "",
+  catId  = null,
+  page   = 1,
+  limit  = 20,
 } = {}) {
   const storeId     = useBranchStore((s) => s.activeStore?.id);
   const activeShift = useShiftStore((s) => s.activeShift);
@@ -66,13 +70,12 @@ export function usePos({
   }, [catsRaw]);
 
   // ── Charge (create transaction) ───────────────────────────────────────────
-  // After success, refresh the shift summary so KPI cards stay accurate.
   async function charge({ cartItems, payments, discountAmt, customer, note, heldTxId, loyaltyPointsRedeemed }) {
-    if (!storeId)      throw new Error("No store selected");
+    if (!storeId)          throw new Error("No store selected");
     if (!cartItems.length) throw new Error("Cart is empty");
     if (!payments.length)  throw new Error("No payment entered");
 
-    // Separate out wallet / loyalty entries from "real" payment methods
+    // Separate wallet / loyalty entries from "real" payment methods
     const walletEntries = payments.filter((p) => p.type === "wallet");
     const mainPayments  = payments.filter((p) => p.type !== "wallet" && p.type !== "loyalty");
     const walletAmount  = walletEntries.reduce((s, p) => s + p.amount, 0) || null;
@@ -87,6 +90,7 @@ export function usePos({
           : mainPayments.length > 1 || (mainPayments.length > 0 && walletAmount)
             ? "split"
             : mainPayments[0]?.type ?? "cash";
+
     const amountTendered = payments
       .filter((p) => p.type !== "loyalty")
       .reduce((s, p) => s + p.amount, 0);
@@ -97,17 +101,16 @@ export function usePos({
       payment_method:  paymentMethod,
       amount_tendered: amountTendered,
       notes:           note || null,
-      discount_amount:          discountAmt > 0.001 ? discountAmt : null,
-      // Pass per-leg breakdown when split so the backend creates one Payment
-      // row per method instead of a single opaque "split" row.
+      discount_amount: discountAmt > 0.001 ? discountAmt : null,
+      // Per-leg breakdown for split so backend creates one Payment row per method
       split_payments: paymentMethod === "split"
         ? mainPayments.map((p) => ({ method: p.type, amount: p.amount }))
         : undefined,
-      wallet_amount:             walletAmount,
-      loyalty_points_redeemed:   loyaltyPointsRedeemed ?? null,
-      held_tx_id:                heldTxId ?? null,
-      client_uuid:     crypto.randomUUID(),
-      offline_sale:    false,
+      wallet_amount:           walletAmount,
+      loyalty_points_redeemed: loyaltyPointsRedeemed ?? null,
+      held_tx_id:              heldTxId ?? null,
+      client_uuid:  crypto.randomUUID(),
+      offline_sale: false,
       items: cartItems.map((item) => ({
         item_id:    item.itemId,
         quantity:   item.quantity,
@@ -116,15 +119,58 @@ export function usePos({
       })),
     });
 
-    // Invalidate every cache that a sale affects: stock, transactions, analytics, shift, etc.
+    // ── Earn loyalty points ───────────────────────────────────────────────────
+    // Fire-and-forget: a loyalty failure must never block the receipt flow.
+    // Credit sales are excluded — the customer hasn't actually paid yet.
+    // The backend earn_points command checks whether the programme is active
+    // and silently ignores stores with no loyalty settings configured.
+    if (customer?.id && paymentMethod !== "credit") {
+      earnPoints({
+        customer_id:    customer.id,
+        store_id:       storeId,
+        transaction_id: result?.transaction?.id ?? null,
+        sale_amount:    parseFloat(result?.transaction?.total_amount ?? 0),
+      }).catch(() => {}); // silent — loyalty errors must never surface to cashier
+    }
+
+    // ── Sale complete toast ──────────────────────────────────────────────────────────────
+    const txTotal = parseFloat(result?.transaction?.total_amount ?? 0);
+    const txRef   = result?.transaction?.reference_no ? ` · ${result.transaction.reference_no}` : "";
+    const method  = paymentMethod === "split" ? "Split payment" :
+                    paymentMethod === "cash"   ? "Cash" :
+                    paymentMethod === "card"   ? "Card" :
+                    paymentMethod === "wallet" ? "Wallet" :
+                    paymentMethod === "credit" ? "Credit" :
+                    paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
+    const desc    = customer
+      ? `${method} · ${customer.first_name} ${customer.last_name}`
+      : method;
+    toastSuccess(`Sale Complete — ₦${txTotal.toLocaleString()}${txRef}`, desc);
+
+    // Invalidate every cache a sale affects: stock, transactions, analytics, shift, etc.
     invalidateAfterSale({
       storeId,
-      shiftId:       activeShift?.id,
-      customerId:    customer?.id,
+      shiftId:    activeShift?.id,
+      customerId: customer?.id,
       paymentMethod,
-      walletUsed:    !!walletAmount,
-      loyaltyUsed:   !!loyaltyPointsRedeemed,
+      walletUsed:  !!walletAmount,
+      loyaltyUsed: !!loyaltyPointsRedeemed,
     });
+
+    // Fire reorder check after every sale — non-fatal, always runs in background.
+    // The backend already checks inline during create_transaction, but this call
+    // ensures the frontend caches refresh immediately so the notification bell
+    // badge updates without waiting for the 30-second poll interval.
+    if (storeId) {
+      checkReorderAlerts(storeId)
+        .then(() => {
+          // Must match the exact key prefixes used in useNotifications.js
+          queryClient.invalidateQueries({ queryKey: ["notifications",       storeId] });
+          queryClient.invalidateQueries({ queryKey: ["notifications-count", storeId] });
+          queryClient.invalidateQueries({ queryKey: ["reorder-alerts",      storeId] });
+        })
+        .catch(() => {}); // silent — never block the sale
+    }
 
     return result;
   }

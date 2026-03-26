@@ -91,6 +91,15 @@ pub struct PriceListFilters {
     pub list_type: Option<String>,
 }
 
+/// Aggregate stats from v_price_change_stats — one query replaces a 200-row fetch.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PriceChangeStats {
+    pub total_count:    i64,
+    pub pending_count:  i64,
+    pub applied_count:  i64,
+    pub rejected_count: i64,
+}
+
 #[derive(Debug, Serialize, Clone, sqlx::FromRow)]
 pub struct PriceHistory {
     pub id:         i32,

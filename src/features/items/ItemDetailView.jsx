@@ -8,7 +8,7 @@ import {
   Package, Edit3, Archive, Power, PowerOff, ArrowLeft,
   BarChart3, History, Boxes, Hash, Tag, DollarSign, ClipboardList,
   CheckCircle2, XCircle, AlertTriangle, TrendingDown, Clock,
-  RefreshCw, Filter, X, User, Hash as HashIcon,
+  RefreshCw, Filter, X, User, Hash as HashIcon, Printer,
 } from "lucide-react";
 
 import { PageHeader }       from "@/components/shared/PageHeader";
@@ -29,12 +29,16 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 
-import { useItem, useItemHistory } from "@/features/items/useItems";
-import { useInventoryItem }        from "@/features/inventory/useInventory";
-import { ItemImage }               from "@/components/shared/ItemImage";
-import { AdjustInventoryDialog }   from "@/features/inventory/AdjustInventoryDialog";
-import { RestockDialog }           from "@/features/inventory/RestockDialog";
-import { formatCurrency, formatDecimal, formatQuantity, formatDateTime, formatDate, measurementTypeLabel } from "@/lib/format";
+import { useItem, useItemHistory }  from "@/features/items/useItems";
+import { useInventoryItem }         from "@/features/inventory/useInventory";
+import { ItemImage }                from "@/components/shared/ItemImage";
+import { AdjustInventoryDialog }    from "@/features/inventory/AdjustInventoryDialog";
+import { RestockDialog }            from "@/features/inventory/RestockDialog";
+import { PrintLabelsDialog }        from "@/features/labels/PrintLabelsDialog";
+import {
+  formatCurrency, formatDecimal, formatQuantity,
+  formatDateTime, formatDate, measurementTypeLabel,
+} from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // ── Detail field ──────────────────────────────────────────────────────────────
@@ -107,37 +111,32 @@ function QtyChange({ change, measurementType, unitType }) {
 
 // ── All event types ───────────────────────────────────────────────────────────
 const EVENT_TYPES = [
-  { value: "SALE",         label: "Sale"            },
-  { value: "RETURN",       label: "Return"          },
-  { value: "RESTOCK",      label: "Restock"         },
-  { value: "ADJUSTMENT",   label: "Adjustment"      },
-  { value: "MANUAL_ADJUST",label: "Manual Adjust"   },
-  { value: "STOCK_COUNT",  label: "Stock Count"     },
-  { value: "PURCHASE",     label: "Purchase Order"  },
-  { value: "TRANSFER_IN",  label: "Transfer In"     },
-  { value: "TRANSFER_OUT", label: "Transfer Out"    },
-  { value: "CREATE",       label: "Created"         },
-  { value: "UPDATE",       label: "Updated"         },
-  { value: "PRICE_CHANGE", label: "Price Change"    },
-  { value: "STATUS_CHANGE",label: "Status Change"   },
+  { value: "SALE",          label: "Sale"           },
+  { value: "RETURN",        label: "Return"         },
+  { value: "RESTOCK",       label: "Restock"        },
+  { value: "ADJUSTMENT",    label: "Adjustment"     },
+  { value: "MANUAL_ADJUST", label: "Manual Adjust"  },
+  { value: "STOCK_COUNT",   label: "Stock Count"    },
+  { value: "PURCHASE",      label: "Purchase Order" },
+  { value: "TRANSFER_IN",   label: "Transfer In"    },
+  { value: "TRANSFER_OUT",  label: "Transfer Out"   },
+  { value: "CREATE",        label: "Created"        },
+  { value: "UPDATE",        label: "Updated"        },
+  { value: "PRICE_CHANGE",  label: "Price Change"   },
+  { value: "STATUS_CHANGE", label: "Status Change"  },
 ];
 
 // ── History event detail drawer ───────────────────────────────────────────────
 function HistoryEventDrawer({ event, open, onClose, measurementType, unitType }) {
   if (!event) return null;
-  const def  = EVENT_BADGE_STYLES[event.event_type];
+  const def      = EVENT_BADGE_STYLES[event.event_type];
   const qtyChange = event.quantity_change != null ? parseFloat(event.quantity_change) : null;
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent
-        side="right"
-        className="w-full sm:max-w-md bg-card border-l border-border p-0 flex flex-col"
-      >
-        {/* Accent bar */}
-        <div className={cn("h-[3px] w-full shrink-0", def ? "" : "bg-primary")} style={def ? { background: "var(--color-primary)" } : undefined} />
-
-        {/* Header */}
+      <SheetContent side="right" className="w-full sm:max-w-md bg-card border-l border-border p-0 flex flex-col">
+        <div className={cn("h-[3px] w-full shrink-0", def ? "" : "bg-primary")}
+          style={def ? { background: "var(--color-primary)" } : undefined} />
         <div className="px-5 pt-5 pb-4 border-b border-border shrink-0">
           <SheetHeader className="gap-2">
             <div className="flex items-start justify-between gap-3">
@@ -153,11 +152,7 @@ function HistoryEventDrawer({ event, open, onClose, measurementType, unitType })
             </SheetDescription>
           </SheetHeader>
         </div>
-
-        {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-
-          {/* Notes */}
           {event.notes && (
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">Notes</p>
@@ -166,18 +161,14 @@ function HistoryEventDrawer({ event, open, onClose, measurementType, unitType })
               </p>
             </div>
           )}
-
-          {/* Qty change */}
           {qtyChange !== null && (
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Quantity</p>
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-center">
                   <p className="text-[10px] text-muted-foreground mb-1">Change</p>
-                  <p className={cn(
-                    "text-base font-bold tabular-nums",
-                    qtyChange > 0 ? "text-emerald-400" : qtyChange < 0 ? "text-rose-400" : "text-muted-foreground",
-                  )}>
+                  <p className={cn("text-base font-bold tabular-nums",
+                    qtyChange > 0 ? "text-emerald-400" : qtyChange < 0 ? "text-rose-400" : "text-muted-foreground")}>
                     {qtyChange > 0 ? "+" : ""}{formatQuantity(qtyChange, measurementType, unitType)}
                   </p>
                 </div>
@@ -200,8 +191,6 @@ function HistoryEventDrawer({ event, open, onClose, measurementType, unitType })
               </div>
             </div>
           )}
-
-          {/* Price change */}
           {(event.price_before != null || event.price_after != null) && (
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Price Change</p>
@@ -221,16 +210,12 @@ function HistoryEventDrawer({ event, open, onClose, measurementType, unitType })
               </div>
             </div>
           )}
-
-          {/* Reference + user */}
           <div className="space-y-2">
             <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Metadata</p>
             <div className="rounded-lg border border-border/60 bg-muted/20 divide-y divide-border/40">
               {event.reference_id && (
                 <div className="flex items-center justify-between px-3 py-2.5">
-                  <span className="text-[11px] text-muted-foreground">
-                    {event.reference_type ?? "Reference"}
-                  </span>
+                  <span className="text-[11px] text-muted-foreground">{event.reference_type ?? "Reference"}</span>
                   <span className="font-mono text-[11px] text-foreground">{event.reference_id}</span>
                 </div>
               )}
@@ -244,7 +229,6 @@ function HistoryEventDrawer({ event, open, onClose, measurementType, unitType })
               </div>
             </div>
           </div>
-
         </div>
       </SheetContent>
     </Sheet>
@@ -259,16 +243,14 @@ function HistoryTab({ itemId, measurementType, unitType }) {
   const [eventType, setEventType] = useState("");
   const [selected,  setSelected]  = useState(null);
 
-  const handleFromChange  = (v) => { setDateFrom(v);  setPage(1); };
-  const handleToChange    = (v) => { setDateTo(v);    setPage(1); };
-  const handleTypeChange  = (v) => { setEventType(v === "ALL" ? "" : v); setPage(1); };
-  const clearAll          = ()  => { setDateFrom(""); setDateTo(""); setEventType(""); setPage(1); };
-
+  const handleFromChange = (v) => { setDateFrom(v); setPage(1); };
+  const handleToChange   = (v) => { setDateTo(v);   setPage(1); };
+  const handleTypeChange = (v) => { setEventType(v === "ALL" ? "" : v); setPage(1); };
+  const clearAll         = ()  => { setDateFrom(""); setDateTo(""); setEventType(""); setPage(1); };
   const hasFilter = dateFrom || dateTo || eventType;
 
-  const { history, total, totalPages, isLoading, error } = useItemHistory(itemId, {
-    page,
-    limit: 15,
+  const { history, total, isLoading, error } = useItemHistory(itemId, {
+    page, limit: 15,
     dateFrom:  dateFrom  || undefined,
     dateTo:    dateTo    || undefined,
     eventType: eventType || undefined,
@@ -276,25 +258,19 @@ function HistoryTab({ itemId, measurementType, unitType }) {
 
   const columns = useMemo(() => [
     {
-      key:      "performed_at",
-      header:   "Date & Time",
-      sortable: true,
-      width:    "148px",
-      render:   (row) => (
+      key: "performed_at", header: "Date & Time", sortable: true, width: "148px",
+      render: (row) => (
         <span className="text-xs tabular-nums text-muted-foreground whitespace-nowrap">
           {formatDateTime(row.performed_at)}
         </span>
       ),
     },
     {
-      key:    "event_type",
-      header: "Event",
-      width:  "126px",
+      key: "event_type", header: "Event", width: "126px",
       render: (row) => <EventBadge type={row.event_type} />,
     },
     {
-      key:    "event_description",
-      header: "Description",
+      key: "event_description", header: "Description",
       render: (row) => (
         <span className="text-xs text-foreground truncate block max-w-[260px]">
           {row.event_description ?? "—"}
@@ -302,18 +278,13 @@ function HistoryTab({ itemId, measurementType, unitType }) {
       ),
     },
     {
-      key:    "quantity_change",
-      header: "Qty Δ",
-      align:  "right",
-      width:  "90px",
+      key: "quantity_change", header: "Qty Δ", align: "right", width: "90px",
       render: (row) => (
         <QtyChange change={row.quantity_change} measurementType={measurementType} unitType={unitType} />
       ),
     },
     {
-      key:    "user_name",
-      header: "By",
-      width:  "100px",
+      key: "user_name", header: "By", width: "100px",
       render: (row) => (
         <span className="text-xs text-muted-foreground truncate block">{row.user_name ?? "—"}</span>
       ),
@@ -323,11 +294,9 @@ function HistoryTab({ itemId, measurementType, unitType }) {
   return (
     <>
       <div>
-        {/* Filter bar */}
         <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-border bg-muted/10">
           <DateRangePicker
-            from={dateFrom}
-            to={dateTo}
+            from={dateFrom} to={dateTo}
             onFromChange={handleFromChange}
             onToChange={handleToChange}
             onClear={() => { setDateFrom(""); setDateTo(""); setPage(1); }}
@@ -345,11 +314,8 @@ function HistoryTab({ itemId, measurementType, unitType }) {
             </SelectContent>
           </Select>
           {hasFilter && (
-            <button
-              type="button"
-              onClick={clearAll}
-              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-            >
+            <button type="button" onClick={clearAll}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
               <X className="h-3 w-3" /> Clear all
             </button>
           )}
@@ -357,49 +323,25 @@ function HistoryTab({ itemId, measurementType, unitType }) {
             {total} event{total !== 1 ? "s" : ""}
           </span>
         </div>
-
-        {/* Error */}
         {error && (
-          <div className="px-4 py-3 text-xs text-destructive border-b border-border">
-            {String(error)}
-          </div>
+          <div className="px-4 py-3 text-xs text-destructive border-b border-border">{String(error)}</div>
         )}
-
-        {/* Table */}
         <DataTable
-          columns={columns}
-          data={history}
-          isLoading={isLoading}
-          rowKey="id"
+          columns={columns} data={history} isLoading={isLoading} rowKey="id"
           onRowClick={(row) => setSelected(row)}
-          pagination={{
-            page,
-            pageSize: 15,
-            total,
-            onPageChange: setPage,
-          }}
+          pagination={{ page, pageSize: 15, total, onPageChange: setPage }}
           emptyState={
-            <EmptyState
-              icon={History}
+            <EmptyState icon={History}
               title={hasFilter ? "No matching events" : "No history recorded yet"}
-              description={
-                hasFilter
-                  ? "Try adjusting or clearing the filters."
-                  : "Activity on this item will appear here."
-              }
+              description={hasFilter ? "Try adjusting or clearing the filters." : "Activity on this item will appear here."}
               compact
             />
           }
         />
       </div>
-
-      {/* Event detail drawer */}
       <HistoryEventDrawer
-        event={selected}
-        open={!!selected}
-        onClose={() => setSelected(null)}
-        measurementType={measurementType}
-        unitType={unitType}
+        event={selected} open={!!selected} onClose={() => setSelected(null)}
+        measurementType={measurementType} unitType={unitType}
       />
     </>
   );
@@ -407,10 +349,12 @@ function HistoryTab({ itemId, measurementType, unitType }) {
 
 // ── Stock tab ─────────────────────────────────────────────────────────────────
 function StockTab({ item, storeId, onRestock, onAdjust }) {
-  const { detail, isLoading } = useInventoryItem(item?.id, storeId);
+  const { detail } = useInventoryItem(item?.id, storeId);
 
   if (!item?.track_stock) return (
-    <div className="py-12 text-center text-sm text-muted-foreground">Stock tracking is disabled for this item.</div>
+    <div className="py-12 text-center text-sm text-muted-foreground">
+      Stock tracking is disabled for this item.
+    </div>
   );
 
   const mt       = item?.measurement_type ?? "quantity";
@@ -426,7 +370,6 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
 
   return (
     <div className="p-4 space-y-4">
-      {/* Status banner */}
       {isOut ? (
         <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5">
           <XCircle className="h-4 w-4 text-red-400 shrink-0" />
@@ -445,8 +388,6 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
           <p className="text-xs font-semibold text-emerald-400">In Stock</p>
         </div>
       )}
-
-      {/* Stock bar */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[11px] text-muted-foreground">Stock Level</span>
@@ -455,19 +396,16 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
           </span>
         </div>
         <div className="h-2 rounded-full bg-muted/40 overflow-hidden">
-          <div
-            className={cn("h-full rounded-full transition-all", isOut ? "bg-red-500" : isLow ? "bg-amber-400" : "bg-emerald-400")}
-            style={{ width: `${pct}%` }}
-          />
+          <div className={cn("h-full rounded-full transition-all",
+            isOut ? "bg-red-500" : isLow ? "bg-amber-400" : "bg-emerald-400")}
+            style={{ width: `${pct}%` }} />
         </div>
       </div>
-
-      {/* Stock grid */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: "On Hand",    value: qty,      color: "text-foreground" },
-          { label: "Available",  value: avail,    color: "text-emerald-400" },
-          { label: "Reserved",   value: reserved, color: "text-amber-400"  },
+          { label: "On Hand",   value: qty,      color: "text-foreground"  },
+          { label: "Available", value: avail,    color: "text-emerald-400" },
+          { label: "Reserved",  value: reserved, color: "text-amber-400"   },
         ].map(({ label, value, color }) => (
           <div key={label} className="rounded-lg border border-border/60 bg-muted/20 p-3 text-center">
             <p className={cn("text-xl font-bold tabular-nums", color)}>{formatQuantity(value, mt, ut)}</p>
@@ -475,7 +413,6 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
           </div>
         ))}
       </div>
-
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Field label="Min Level" value={formatQuantity(minLevel, mt, ut)} />
         <Field label="Max Level" value={formatQuantity(maxLevel, mt, ut)} />
@@ -485,8 +422,6 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
           </div>
         )}
       </div>
-
-      {/* Actions */}
       <div className="flex gap-2 pt-1">
         <Button size="sm" className="flex-1" onClick={onRestock}>
           <RefreshCw className="h-3.5 w-3.5" /> Restock
@@ -501,12 +436,13 @@ function StockTab({ item, storeId, onRestock, onAdjust }) {
 
 // ── ItemDetailView (main export) ──────────────────────────────────────────────
 export function ItemDetailView({ itemId }) {
-  const navigate   = useNavigate();
-  const [activeTab, setActiveTab] = useState("details");
-  const [editOpen,  setEditOpen]  = useState(false);
+  const navigate = useNavigate();
+  const [activeTab,   setActiveTab]   = useState("details");
+  const [editOpen,    setEditOpen]    = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [restockOpen, setRestockOpen] = useState(false);
   const [adjustOpen,  setAdjustOpen]  = useState(false);
+  const [printOpen,   setPrintOpen]   = useState(false);   // ← label print
 
   const { item, isLoading, error, storeId, update, activate, deactivate, archive } = useItem(itemId);
   const { restock: restockMut, adjust: adjustMut } = useInventoryItem(itemId, storeId);
@@ -521,9 +457,9 @@ export function ItemDetailView({ itemId }) {
   const isOut  = item.track_stock && qty === 0;
 
   const tabs = [
-    { key: "details",  label: "Details",  icon: ClipboardList },
-    { key: "stock",    label: "Stock",    icon: Boxes },
-    { key: "history",  label: "History",  icon: History },
+    { key: "details", label: "Details", icon: ClipboardList },
+    { key: "stock",   label: "Stock",   icon: Boxes },
+    { key: "history", label: "History", icon: History },
   ];
 
   return (
@@ -535,7 +471,9 @@ export function ItemDetailView({ itemId }) {
         badge={
           <div className="flex items-center gap-1.5">
             {!item.is_active && (
-              <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Inactive</span>
+              <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                Inactive
+              </span>
             )}
             {isOut ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-400">
@@ -554,10 +492,21 @@ export function ItemDetailView({ itemId }) {
         }
         action={
           <div className="flex items-center gap-1.5">
-            <Button size="sm" variant="outline" onClick={() => item.is_active ? deactivate.mutate(itemId) : activate.mutate(itemId)}>
-              {item.is_active ? <PowerOff className="h-3.5 w-3.5 text-amber-400" /> : <Power className="h-3.5 w-3.5 text-emerald-400" />}
+            {/* ── Print Labels button ─────────────────────────────────── */}
+            <Button size="sm" variant="outline" onClick={() => setPrintOpen(true)}
+              className="gap-1.5">
+              <Printer className="h-3.5 w-3.5" />
+              Print Labels
+            </Button>
+
+            <Button size="sm" variant="outline"
+              onClick={() => item.is_active ? deactivate.mutate(itemId) : activate.mutate(itemId)}>
+              {item.is_active
+                ? <PowerOff className="h-3.5 w-3.5 text-amber-400" />
+                : <Power    className="h-3.5 w-3.5 text-emerald-400" />}
               {item.is_active ? "Deactivate" : "Activate"}
             </Button>
+
             <Button size="sm" onClick={() => setEditOpen(true)}>
               <Edit3 className="h-3.5 w-3.5" /> Edit
             </Button>
@@ -592,20 +541,12 @@ export function ItemDetailView({ itemId }) {
                 <div className="flex items-start gap-5">
                   <ItemImage item={item} size="xl" rounded="xl" />
                   <div className="flex flex-col gap-2">
-                    <label
-                      htmlFor="detail-image-upload"
-                      className="flex items-center gap-2 cursor-pointer rounded-lg border border-border/60
-                                 bg-muted/30 hover:bg-muted/50 px-3 py-2 text-xs font-medium
-                                 text-foreground transition-colors w-fit"
-                    >
+                    <label htmlFor="detail-image-upload"
+                      className="flex items-center gap-2 cursor-pointer rounded-lg border border-border/60 bg-muted/30 hover:bg-muted/50 px-3 py-2 text-xs font-medium text-foreground transition-colors w-fit">
                       <Edit3 className="h-3.5 w-3.5" />
                       {item.image_data ? "Change image" : "Upload image"}
                     </label>
-                    <input
-                      id="detail-image-upload"
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
+                    <input id="detail-image-upload" type="file" accept="image/*" className="hidden"
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (!file) return;
@@ -635,14 +576,9 @@ export function ItemDetailView({ itemId }) {
                       }}
                     />
                     {item.image_data && (
-                      <button
-                        type="button"
-                        onClick={() => update.mutate({ image_data: null })}
-                        className="flex items-center gap-1.5 text-[11px] text-destructive
-                                   hover:text-destructive/80 transition-colors w-fit"
-                      >
-                        <Archive className="h-3 w-3" />
-                        Remove image
+                      <button type="button" onClick={() => update.mutate({ image_data: null })}
+                        className="flex items-center gap-1.5 text-[11px] text-destructive hover:text-destructive/80 transition-colors w-fit">
+                        <Archive className="h-3 w-3" /> Remove image
                       </button>
                     )}
                     <p className="text-[10px] text-muted-foreground">PNG, JPG or WEBP · 400×400px · ~30–80KB</p>
@@ -655,24 +591,26 @@ export function ItemDetailView({ itemId }) {
                 <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Core Information</h3>
                 <Separator className="bg-border" />
                 <div className="grid grid-cols-2 gap-4">
-                  <Field label="SKU"              value={item.sku}        mono />
-                  <Field label="Barcode"           value={item.barcode}    mono />
-                  <Field label="Category"          value={item.category_name} />
-                  <Field label="Department"        value={item.department_name} />
-                  <Field label="Branch"            value={item.branch_name} />
-                  <Field label="Measurement Type"  value={measurementTypeLabel(item.measurement_type)} />
-                  <Field label="Unit"              value={item.unit_type} />
-                  {(item.min_increment != null) && (
-                    <Field label="Min Increment" value={formatQuantity(parseFloat(item.min_increment), item.measurement_type, item.unit_type)} />
+                  <Field label="SKU"             value={item.sku}     mono />
+                  <Field label="Barcode"          value={item.barcode} mono />
+                  <Field label="Category"         value={item.category_name} />
+                  <Field label="Department"       value={item.department_name} />
+                  <Field label="Branch"           value={item.branch_name} />
+                  <Field label="Measurement Type" value={measurementTypeLabel(item.measurement_type)} />
+                  <Field label="Unit"             value={item.unit_type} />
+                  {item.min_increment != null && (
+                    <Field label="Min Increment"
+                      value={formatQuantity(parseFloat(item.min_increment), item.measurement_type, item.unit_type)} />
                   )}
-                  {(item.default_qty != null) && (
-                    <Field label="Default Qty" value={formatQuantity(parseFloat(item.default_qty), item.measurement_type, item.unit_type)} />
+                  {item.default_qty != null && (
+                    <Field label="Default Qty"
+                      value={formatQuantity(parseFloat(item.default_qty), item.measurement_type, item.unit_type)} />
                   )}
                   <div className="col-span-2">
-                    <Field label="Description"   value={item.description} />
+                    <Field label="Description" value={item.description} />
                   </div>
-                  <Field label="Created"          value={formatDate(item.created_at)} />
-                  <Field label="Last Updated"     value={formatDate(item.updated_at)} />
+                  <Field label="Created"      value={formatDate(item.created_at)} />
+                  <Field label="Last Updated" value={formatDate(item.updated_at)} />
                 </div>
               </div>
 
@@ -698,7 +636,9 @@ export function ItemDetailView({ itemId }) {
                   <div>
                     <dt className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-0.5">Margin</dt>
                     <dd className="text-sm font-bold text-emerald-400">
-                      {item.selling_price > 0 ? (((item.selling_price - item.cost_price) / item.selling_price) * 100).toFixed(1) + "%" : "—"}
+                      {item.selling_price > 0
+                        ? (((item.selling_price - item.cost_price) / item.selling_price) * 100).toFixed(1) + "%"
+                        : "—"}
                     </dd>
                   </div>
                   {item.max_discount_percent && (
@@ -716,14 +656,14 @@ export function ItemDetailView({ itemId }) {
                 <Separator className="bg-border" />
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   {[
-                    ["Active",          item.is_active],
-                    ["Sellable",        item.sellable],
+                    ["Active",           item.is_active],
+                    ["Sellable",         item.sellable],
                     ["Available for POS",item.available_for_pos],
-                    ["Track Stock",     item.track_stock],
-                    ["Taxable",         item.taxable],
-                    ["Allow Discount",  item.allow_discount],
-                    ["Requires Weight", item.requires_weight],
-                    ["Allow Neg. Stock",item.allow_negative_stock],
+                    ["Track Stock",      item.track_stock],
+                    ["Taxable",          item.taxable],
+                    ["Allow Discount",   item.allow_discount],
+                    ["Requires Weight",  item.requires_weight],
+                    ["Allow Neg. Stock", item.allow_negative_stock],
                   ].map(([label, val]) => (
                     <div key={label}>
                       <dt className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">{label}</dt>
@@ -742,8 +682,7 @@ export function ItemDetailView({ itemId }) {
                   <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Stock Management</h3>
                 </div>
                 <StockTab
-                  item={item}
-                  storeId={storeId}
+                  item={item} storeId={storeId}
                   onRestock={() => setRestockOpen(true)}
                   onAdjust={()  => setAdjustOpen(true)}
                 />
@@ -766,7 +705,7 @@ export function ItemDetailView({ itemId }) {
         </div>
       </div>
 
-      {/* Edit dialog */}
+      {/* ── Edit dialog ───────────────────────────────────────────────── */}
       {item && (
         <Dialog open={editOpen} onOpenChange={(v) => !update.isPending && setEditOpen(v)}>
           <DialogContent className="max-w-lg border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/60">
@@ -789,7 +728,7 @@ export function ItemDetailView({ itemId }) {
         </Dialog>
       )}
 
-      {/* Archive dialog */}
+      {/* ── Archive dialog ────────────────────────────────────────────── */}
       {item && (
         <Dialog open={archiveOpen} onOpenChange={(v) => !archive.isPending && setArchiveOpen(v)}>
           <DialogContent className="max-w-sm border-border bg-card p-0 overflow-hidden shadow-2xl">
@@ -805,9 +744,12 @@ export function ItemDetailView({ itemId }) {
                 <strong className="text-foreground">{item.item_name}</strong> will be archived and removed from all
                 active menus. This cannot be undone via the UI.
               </DialogDescription>
-              {archive.error && <p className="text-xs text-destructive">{String(archive.error)}</p>}
+              {archive.error && (
+                <p className="text-xs text-destructive">{String(archive.error)}</p>
+              )}
               <div className="flex gap-2">
-                <Button variant="outline" className="flex-1" disabled={archive.isPending} onClick={() => setArchiveOpen(false)}>Cancel</Button>
+                <Button variant="outline" className="flex-1" disabled={archive.isPending}
+                  onClick={() => setArchiveOpen(false)}>Cancel</Button>
                 <Button variant="destructive" className="flex-1" disabled={archive.isPending}
                   onClick={() => archive.mutate(itemId, { onSuccess: () => navigate("/products") })}>
                   {archive.isPending ? "Archiving…" : "Archive"}
@@ -818,20 +760,23 @@ export function ItemDetailView({ itemId }) {
         </Dialog>
       )}
 
-      {/* Restock dialog */}
+      {/* ── Restock dialog ────────────────────────────────────────────── */}
       <RestockDialog
-        open={restockOpen}
-        onOpenChange={setRestockOpen}
-        item={item}
-        mutation={restockMut}
+        open={restockOpen} onOpenChange={setRestockOpen}
+        item={item} mutation={restockMut}
       />
 
-      {/* Adjust dialog */}
+      {/* ── Adjust dialog ─────────────────────────────────────────────── */}
       <AdjustInventoryDialog
-        open={adjustOpen}
-        onOpenChange={setAdjustOpen}
-        item={item}
-        mutation={adjustMut}
+        open={adjustOpen} onOpenChange={setAdjustOpen}
+        item={item} mutation={adjustMut}
+      />
+
+      {/* ── Print Labels dialog ───────────────────────────────────────── */}
+      <PrintLabelsDialog
+        open={printOpen}
+        onOpenChange={setPrintOpen}
+        items={item ? [item] : []}
       />
     </>
   );
@@ -840,13 +785,13 @@ export function ItemDetailView({ itemId }) {
 // ── Quick edit form ───────────────────────────────────────────────────────────
 function QuickEditForm({ item, mutation, onClose }) {
   const [form, setForm] = useState({
-    item_name:     item.item_name     ?? "",
-    sku:           item.sku           ?? "",
-    barcode:       item.barcode       ?? "",
-    description:   item.description   ?? "",
-    cost_price:    parseFloat(item.cost_price)    || 0,
-    selling_price: parseFloat(item.selling_price) || 0,
-    discount_price: parseFloat(item.discount_price) || "",
+    item_name:       item.item_name       ?? "",
+    sku:             item.sku             ?? "",
+    barcode:         item.barcode         ?? "",
+    description:     item.description     ?? "",
+    cost_price:      parseFloat(item.cost_price)    || 0,
+    selling_price:   parseFloat(item.selling_price) || 0,
+    discount_price:  parseFloat(item.discount_price) || "",
     min_stock_level: item.min_stock_level ?? 5,
     max_stock_level: item.max_stock_level ?? 1000,
   });
@@ -857,8 +802,8 @@ function QuickEditForm({ item, mutation, onClose }) {
     e.preventDefault();
     const payload = {
       ...form,
-      cost_price:    parseFloat(form.cost_price) || 0,
-      selling_price: parseFloat(form.selling_price) || 0,
+      cost_price:     parseFloat(form.cost_price)     || 0,
+      selling_price:  parseFloat(form.selling_price)  || 0,
       discount_price: form.discount_price !== "" ? parseFloat(form.discount_price) : null,
       min_stock_level: parseInt(form.min_stock_level) || 0,
       max_stock_level: parseInt(form.max_stock_level) || 1000,
@@ -893,11 +838,17 @@ function QuickEditForm({ item, mutation, onClose }) {
         </div>
       </div>
       {mutation.error && (
-        <p className="text-xs text-destructive border border-destructive/30 bg-destructive/10 rounded-md px-3 py-2">{String(mutation.error)}</p>
+        <p className="text-xs text-destructive border border-destructive/30 bg-destructive/10 rounded-md px-3 py-2">
+          {String(mutation.error)}
+        </p>
       )}
       <div className="flex gap-2 pt-1">
-        <Button type="button" variant="outline" className="flex-1" disabled={mutation.isPending} onClick={onClose}>Cancel</Button>
-        <Button type="submit" className="flex-1" disabled={mutation.isPending}>{mutation.isPending ? "Saving…" : "Save"}</Button>
+        <Button type="button" variant="outline" className="flex-1" disabled={mutation.isPending} onClick={onClose}>
+          Cancel
+        </Button>
+        <Button type="submit" className="flex-1" disabled={mutation.isPending}>
+          {mutation.isPending ? "Saving…" : "Save"}
+        </Button>
       </div>
     </form>
   );

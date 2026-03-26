@@ -36,6 +36,8 @@ import {
 } from "@/components/ui/select";
 
 import { useCreateReturn } from "@/features/returns/useReturns";
+// Note: toast.success is NOT called here — useCreateReturn's onSuccess
+// handles all success feedback using formatCurrency (no hardcoded symbols).
 import { formatCurrency, formatRef, stepForType } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -96,14 +98,16 @@ function ConditionChip({ value, selected, onClick }) {
 }
 
 // ── ItemRow ────────────────────────────────────────────────────────────────────
-function ItemRow({ item, state, onChange }) {
-  const soldQty = parseFloat(item.quantity ?? 1);
-  const maxQty  = soldQty;
+function ItemRow({ item, state, onChange, alreadyReturned = 0 }) {
+  const soldQty  = parseFloat(item.quantity ?? 1);
+  // Cap max returnable qty to what hasn't been returned yet
+  const remaining = Math.max(0, soldQty - alreadyReturned);
+  const maxQty    = remaining;
+  const isFullyReturned = alreadyReturned >= soldQty;
   const unitPrice =
     parseFloat(item.line_total ?? 0) /
     Math.max(soldQty, 1);
   const lineTotal = state.enabled ? unitPrice * state.quantity : 0;
-  const isWeighted = !!item.measurement_type && item.measurement_type !== "quantity";
   const unitLabel  = item.unit_type ?? "unit(s)";
   const minIncrement = item.min_increment != null ? parseFloat(item.min_increment) : null;
   const step       = stepForType(item.measurement_type, minIncrement);
@@ -112,32 +116,42 @@ function ItemRow({ item, state, onChange }) {
     <div
       className={cn(
         "rounded-xl border p-3.5 transition-all duration-150",
-        state.enabled
-          ? "border-primary/25 bg-primary/5 shadow-sm"
-          : "border-border/50 bg-muted/10 opacity-80",
+        isFullyReturned
+          ? "border-border/40 bg-muted/20 opacity-60"
+          : state.enabled
+            ? "border-primary/25 bg-primary/5 shadow-sm"
+            : "border-border/50 bg-muted/10 opacity-80",
       )}
     >
       {/* Header row */}
       <div className="flex items-start gap-3">
-        {/* Checkbox */}
+        {/* Checkbox — disabled when fully returned */}
         <button
           type="button"
-          onClick={() => onChange({ enabled: !state.enabled })}
+          onClick={() => !isFullyReturned && onChange({ enabled: !state.enabled })}
+          disabled={isFullyReturned}
           className={cn(
             "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition-all",
-            state.enabled
-              ? "border-primary bg-primary text-white"
-              : "border-border/60 hover:border-primary/60",
+            isFullyReturned
+              ? "border-border/40 bg-muted/30 cursor-not-allowed"
+              : state.enabled
+                ? "border-primary bg-primary text-white"
+                : "border-border/60 hover:border-primary/60",
           )}
         >
-          {state.enabled && <CheckCircle2 className="h-3 w-3" />}
+          {isFullyReturned
+            ? <XCircle className="h-3 w-3 text-muted-foreground/50" />
+            : state.enabled && <CheckCircle2 className="h-3 w-3" />}
         </button>
 
         {/* Item info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <div>
-              <p className="text-sm font-semibold text-foreground leading-snug">
+              <p className={cn(
+                "text-sm font-semibold leading-snug",
+                isFullyReturned ? "text-muted-foreground line-through decoration-muted-foreground/50" : "text-foreground",
+              )}>
                 {item.item_name}
               </p>
               <p className="text-[10px] font-mono text-muted-foreground mt-0.5">
@@ -148,9 +162,19 @@ function ItemRow({ item, state, onChange }) {
               <p className="text-xs font-mono font-bold tabular-nums">
                 {formatCurrency(parseFloat(item.line_total ?? 0))}
               </p>
-              <p className="text-[10px] text-muted-foreground">
-                {maxQty} {unitLabel} × {formatCurrency(unitPrice)}
-              </p>
+              {isFullyReturned ? (
+                <p className="text-[10px] font-semibold text-success">
+                  Fully returned
+                </p>
+              ) : alreadyReturned > 0 ? (
+                <p className="text-[10px] text-warning font-semibold">
+                  {remaining} of {soldQty} remaining
+                </p>
+              ) : (
+                <p className="text-[10px] text-muted-foreground">
+                  {maxQty} {unitLabel} × {formatCurrency(unitPrice)}
+                </p>
+              )}
             </div>
           </div>
 
@@ -190,7 +214,7 @@ function ItemRow({ item, state, onChange }) {
                   </button>
                 </div>
                 <span className="text-[10px] text-muted-foreground">
-                  of {maxQty}
+                  of {maxQty}{alreadyReturned > 0 ? ` (${alreadyReturned} already returned)` : ""}
                 </span>
                 <span className="ml-auto text-sm font-mono font-bold text-primary">
                   {formatCurrency(lineTotal)}
@@ -264,6 +288,7 @@ export function InitiateReturnModal({
   onOpenChange,
   transaction,
   txItems = [],
+  returnedQtyMap = {},   // { [item_id: string]: number } — already returned per item
   onSuccess,
 }) {
   const [itemState, setItemState] = useState({});
@@ -280,15 +305,19 @@ export function InitiateReturnModal({
     if (!open) return;
     const init = {};
     txItems.forEach((item) => {
-      const rawQty = parseFloat(item.quantity ?? 1);
-      const isWeighted = item.measurement_type && item.measurement_type !== "quantity";
-      const maxQty = isWeighted ? rawQty : Math.floor(rawQty);
+      const rawQty      = parseFloat(item.quantity ?? 1);
+      const isWeighted  = item.measurement_type && item.measurement_type !== "quantity";
+      const soldQty     = isWeighted ? rawQty : Math.floor(rawQty);
+      const alreadyRet  = returnedQtyMap[item.item_id] ?? 0;
+      const remaining   = Math.max(0, soldQty - alreadyRet);
+      // Cap initial qty to what's still returnable; default to full remaining
+      const initQty     = remaining;
       init[item.item_id] = {
-        enabled: false,
-        quantity: maxQty,
+        enabled:   false,
+        quantity:  initQty > 0 ? initQty : 1, // avoid 0 default
         condition: "good",
-        restock: true,
-        notes: "",
+        restock:   true,
+        notes:     "",
       };
     });
     setItemState(init);
@@ -297,7 +326,7 @@ export function InitiateReturnModal({
     setReason("");
     setCustomReason("");
     setNotes("");
-  }, [open, txItems]);
+  }, [open, txItems, returnedQtyMap]);
 
   const updateItem = (id, patch) =>
     setItemState((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -311,10 +340,14 @@ export function InitiateReturnModal({
     (txItems ?? []).forEach((item) => {
       const s = itemState[item.item_id];
       if (!s?.enabled) return;
+      // Guard: skip if this item's qty has somehow been set above remaining
+      const alreadyRet = returnedQtyMap[item.item_id] ?? 0;
+      const soldQty    = parseFloat(item.quantity ?? 1);
+      if (alreadyRet >= soldQty) return;
       count++;
       const unitPrice =
         parseFloat(item.line_total ?? 0) /
-        Math.max(parseFloat(item.quantity ?? 1), 1);
+        Math.max(soldQty, 1);
       total += unitPrice * s.quantity;
       selected.push({ item, s });
     });
@@ -324,7 +357,7 @@ export function InitiateReturnModal({
       returnTotal: total,
       selectedItems: selected,
     };
-  }, [itemState, txItems]);
+  }, [itemState, txItems, returnedQtyMap]);
 
   const effectiveReason = reason === "Other" ? customReason : reason;
   const canSubmit =
@@ -356,13 +389,11 @@ export function InitiateReturnModal({
 
     try {
       const result = await createReturnMutation.mutateAsync(payload);
-      toast.success(
-        `Return ${result.ret?.reference_no ?? ""} processed successfully.`,
-      );
+      // Success toast is fired by useCreateReturn's onSuccess (uses formatCurrency).
       onOpenChange(false);
       onSuccess?.(result);
     } catch (err) {
-      toast.error(typeof err === "string" ? err : "Failed to process return");
+      // Error toast is fired by useCreateReturn's onError.
     }
   }
 
@@ -421,6 +452,7 @@ export function InitiateReturnModal({
                         notes: "",
                       }
                     }
+                    alreadyReturned={returnedQtyMap[item.item_id] ?? 0}
                     onChange={(patch) => updateItem(item.item_id, patch)}
                   />
                 ))}
@@ -536,6 +568,16 @@ export function InitiateReturnModal({
                 </span>
               )}
             </div>
+            {(() => {
+              const fullyReturnedCount = txItems.filter(
+                (it) => (returnedQtyMap[it.item_id] ?? 0) >= parseFloat(it.quantity ?? 1)
+              ).length;
+              return fullyReturnedCount > 0 ? (
+                <span className="text-[10px] text-muted-foreground">
+                  {fullyReturnedCount} item{fullyReturnedCount !== 1 ? "s" : ""} already fully returned
+                </span>
+              ) : null;
+            })()}
           </div>
           <DialogFooter className="flex gap-2">
             <Button

@@ -8,17 +8,20 @@ use crate::{
     error::AppResult,
     models::analytics::{
         AnalyticsFilters,
+        BusinessHealthSummary,
         CashierPerformance,
         CashierReturnStats,
         CategoryAnalytics,
         CategoryProfitAnalysis,
         CustomerAnalytics,
+        CustomerAnalyticsReport,
         DailySummary,
         DeadStockItem,
         DepartmentAnalytics,
         DepartmentProfitAnalysis,
         DiscountAnalytics,
         DiscountByCashier,
+        DiscountByItem,
         ItemAnalytics,
         LowMarginItem,
         PaymentMethodSummary,
@@ -31,16 +34,17 @@ use crate::{
         ProfitLossSummary,
         ReturnAnalysisItem,
         ReturnAnalysisReport,
+        ReturnSummary,
         RevenueByPeriod,
-        // existing
         SalesSummary,
-        // new
         SlowMovingItem,
         StockVelocityItem,
         SupplierAnalytics,
+        TaxReport,
         TaxReportRow,
         TopCategory,
         TopItem,
+        VatByCategoryRow,
     },
     state::AppState,
 };
@@ -1183,30 +1187,65 @@ pub async fn get_peak_hours(
 
 // ── 8. Customer analytics ─────────────────────────────────────────────────────
 
-/// Returns top customers ranked by lifetime spend, including
-/// days since last purchase (for lapsed-customer detection).
+// ── 8. Customer analytics ─────────────────────────────────────────────────────
+
+/// Returns aggregate customer KPIs plus top customers ranked by lifetime spend.
+/// `lapsed_days` (default 60) defines the cutoff between "active" and "lapsed".
 #[tauri::command]
 pub async fn get_customer_analytics(
     state: State<'_, AppState>,
     token: String,
     filters: AnalyticsFilters,
-) -> AppResult<Vec<CustomerAnalytics>> {
+) -> AppResult<CustomerAnalyticsReport> {
     guard_permission(&state, &token, "analytics.read").await?;
     let pool = state.pool().await?;
     let df = filters.date_from.as_deref();
     let dt = filters.date_to.as_deref();
-    let limit = filters.limit.unwrap_or(50).clamp(1, 500);
+    let limit      = filters.limit.unwrap_or(50).clamp(1, 500);
+    let lapsed_days = filters.lapsed_days.unwrap_or(60) as i32;
 
+    // — Aggregate KPIs: total / active / lapsed / avg LTV ─────────────────────
+    let agg = sqlx::query!(
+        r#"
+        SELECT
+            COUNT(c.id)                                                             AS "total!:   i64",
+            COUNT(CASE WHEN tx.last_purchase_date >= NOW() - ($2::int * INTERVAL '1 day')
+                       THEN 1 END)                                                  AS "active!:  i64",
+            COUNT(CASE WHEN tx.last_purchase_date <  NOW() - ($2::int * INTERVAL '1 day')
+                            AND tx.last_purchase_date >= NOW() - INTERVAL '365 days'
+                       THEN 1 END)                                                  AS "lapsed!:  i64",
+            COALESCE(AVG(NULLIF(tx.total_spent, 0)), 0)                            AS "avg_ltv!: Decimal"
+        FROM customers c
+        LEFT JOIN (
+            SELECT customer_id,
+                   SUM(total_amount) AS total_spent,
+                   MAX(created_at)   AS last_purchase_date
+            FROM   transactions
+            WHERE  status      = 'completed'
+              AND  customer_id IS NOT NULL
+              AND ($1::int IS NULL OR store_id = $1)
+            GROUP  BY customer_id
+        ) tx ON tx.customer_id = c.id
+        WHERE ($1::int IS NULL OR c.store_id = $1)
+          AND c.is_active = TRUE
+        "#,
+        filters.store_id,
+        lapsed_days,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    // — Top N customers by lifetime spend ─────────────────────────────────────
     let rows = sqlx::query!(
         r#"
         SELECT
             c.id                                                    AS "customer_id!",
             CONCAT(c.first_name, ' ', c.last_name)                 AS customer_name,
             c.phone,
-            COALESCE(stats.total_spent,       0)                   AS "total_spent!:   Decimal",
-            COALESCE(stats.transaction_count, 0)                   AS "transaction_count!: i64",
-            COALESCE(stats.avg_basket_size,   0)                   AS "avg_basket_size!: Decimal",
-            stats.last_purchase_date                                AS "last_purchase_date: Option<chrono::DateTime<chrono::Utc>>",
+            COALESCE(stats.total_spent,       0)                   AS "total_spent!:        Decimal",
+            COALESCE(stats.transaction_count, 0)                   AS "transaction_count!:  i64",
+            COALESCE(stats.avg_basket_size,   0)                   AS "avg_basket_size!:    Decimal",
+            stats.last_purchase_date                                AS "last_purchase_date:  Option<chrono::DateTime<chrono::Utc>>",
             CASE WHEN stats.last_purchase_date IS NOT NULL
                  THEN EXTRACT(DAY FROM NOW() - stats.last_purchase_date)::bigint
                  ELSE NULL
@@ -1239,20 +1278,26 @@ pub async fn get_customer_analytics(
     .fetch_all(&pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| CustomerAnalytics {
-            customer_id: r.customer_id,
-            customer_name: r.customer_name.unwrap_or_default(),
-            phone: r.phone,
-            total_spent: r.total_spent,
-            transaction_count: r.transaction_count,
-            avg_basket_size: r.avg_basket_size,
-            last_purchase_date: r.last_purchase_date.flatten(),
-            days_since_last_purchase: r.days_since_last_purchase.flatten(),
-            outstanding_balance: r.outstanding_balance,
-        })
-        .collect())
+    Ok(CustomerAnalyticsReport {
+        total_customers:     agg.total,
+        active_customers:    agg.active,
+        lapsed_customers:    agg.lapsed,
+        avg_lifetime_value:  agg.avg_ltv.to_string().parse::<f64>().unwrap_or(0.0),
+        top_customers: rows
+            .into_iter()
+            .map(|r| CustomerAnalytics {
+                customer_id:              r.customer_id,
+                customer_name:            r.customer_name.unwrap_or_default(),
+                phone:                    r.phone,
+                total_spent:              r.total_spent,
+                transaction_count:        r.transaction_count,
+                avg_basket_size:          r.avg_basket_size,
+                last_purchase_date:       r.last_purchase_date.flatten(),
+                days_since_last_purchase: r.days_since_last_purchase.flatten(),
+                outstanding_balance:      r.outstanding_balance,
+            })
+            .collect(),
+    })
 }
 
 // ── 9. Return analysis ────────────────────────────────────────────────────────
@@ -1411,10 +1456,19 @@ pub async fn get_return_analysis(
     .fetch_all(&pool)
     .await?;
 
+    let total_return_val = totals_row.total_return_value.unwrap_or_default();
+    let total_returns    = totals_row.total_returns.unwrap_or(0);
+
     Ok(ReturnAnalysisReport {
-        total_returns: totals_row.total_returns.unwrap_or(0),
-        total_return_value: totals_row.total_return_value.unwrap_or_default(),
+        total_returns,
+        total_return_value: total_return_val,
         overall_return_rate,
+        summary: ReturnSummary {
+            total_return_value: total_return_val,
+            return_count:       total_returns,
+            return_rate:        overall_return_rate,
+            items_returned:     total_returned_qty,
+        },
         by_item: item_rows
             .into_iter()
             .map(|r| ReturnAnalysisItem {
@@ -1664,17 +1718,56 @@ pub async fn get_discount_analytics(
     .fetch_all(&pool)
     .await?;
 
+    // — By item: items that had per-line discounts ─────────────────────────────
+    let item_rows = sqlx::query!(
+        r#"
+        SELECT
+            ti.item_id                                                      AS "item_id: uuid::Uuid",
+            ti.item_name                                                    AS "item_name!",
+            COUNT(DISTINCT t.id)                                            AS "tx_count!:           i64",
+            COALESCE(SUM(ti.quantity), 0)                                   AS "qty_sold!:           Decimal",
+            COALESCE(SUM(ti.discount), 0)                                   AS "total_discount!:     Decimal",
+            COALESCE(AVG(CASE WHEN ti.discount > 0 THEN ti.discount END), 0) AS "avg_discount_amount!: Decimal"
+        FROM   transaction_items ti
+        JOIN   transactions t ON t.id = ti.tx_id
+        WHERE  t.status    = 'completed'
+          AND  ti.discount > 0
+          AND ($1::int  IS NULL OR t.store_id   = $1)
+          AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
+          AND ($3::text IS NULL OR t.created_at <= $3::timestamptz)
+        GROUP  BY ti.item_id, ti.item_name
+        ORDER  BY 5 DESC
+        LIMIT  20
+        "#,
+        filters.store_id,
+        df,
+        dt,
+    )
+    .fetch_all(&pool)
+    .await?;
+
     Ok(DiscountAnalytics {
-        total_discounts_given: summary_row.total_discounts_given.unwrap_or_default(),
-        transactions_with_discounts: summary_row.transactions_with_discounts.unwrap_or(0),
+        total_discounts_given:        summary_row.total_discounts_given.unwrap_or_default(),
+        transactions_with_discounts:  summary_row.transactions_with_discounts.unwrap_or(0),
         avg_discount_per_transaction: summary_row.avg_discount.unwrap_or_default(),
         by_cashier: cashier_rows
             .into_iter()
             .map(|r| DiscountByCashier {
-                cashier_id: r.cashier_id,
-                cashier_name: r.cashier_name.unwrap_or_default(),
-                total_discounts: r.total_discounts,
-                discount_count: r.discount_count,
+                cashier_id:          r.cashier_id,
+                cashier_name:        r.cashier_name.unwrap_or_default(),
+                total_discounts:     r.total_discounts,
+                discount_count:      r.discount_count,
+                avg_discount_amount: r.avg_discount_amount,
+            })
+            .collect(),
+        by_item: item_rows
+            .into_iter()
+            .map(|r| DiscountByItem {
+                item_id:             Some(r.item_id),
+                item_name:           r.item_name,
+                tx_count:            r.tx_count,
+                qty_sold:            r.qty_sold,
+                total_discount:      r.total_discount,
                 avg_discount_amount: r.avg_discount_amount,
             })
             .collect(),
@@ -1825,7 +1918,7 @@ pub async fn get_tax_report(
     state: State<'_, AppState>,
     token: String,
     filters: AnalyticsFilters,
-) -> AppResult<Vec<TaxReportRow>> {
+) -> AppResult<TaxReport> {
     guard_permission(&state, &token, "analytics.read").await?;
     let pool = state.pool().await?;
     let df = filters.date_from.as_deref();
@@ -1862,16 +1955,63 @@ pub async fn get_tax_report(
     .fetch_all(&pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| TaxReportRow {
-            period: r.period,
-            gross_sales: r.gross_sales,
-            vat_collected: r.vat_collected,
-            net_sales_before_vat: r.net_sales_before_vat,
-            transaction_count: r.transaction_count,
-        })
-        .collect())
+    // — VAT breakdown by tax category ─────────────────────────────────────────
+    let cat_rows = sqlx::query!(
+        r#"
+        SELECT
+            COALESCE(tc.name, 'No Tax Category')       AS "category_name!",
+            COALESCE(tc.rate,  0)                       AS "rate!:          Decimal",
+            COALESCE(SUM(ti.net_amount),  0)            AS "taxable_sales!: Decimal",
+            COALESCE(SUM(ti.tax_amount),  0)            AS "vat_amount!:    Decimal"
+        FROM transaction_items ti
+        JOIN transactions    t  ON t.id  = ti.tx_id
+        JOIN items           i  ON i.id  = ti.item_id
+        LEFT JOIN tax_categories tc ON tc.id = i.tax_category_id
+        WHERE t.status = 'completed'
+          AND ($1::int  IS NULL OR t.store_id   = $1)
+          AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
+          AND ($3::text IS NULL OR t.created_at <= $3::timestamptz)
+        GROUP BY tc.name, tc.rate
+        ORDER BY 4 DESC
+        "#,
+        filters.store_id,
+        df,
+        dt,
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    // Compute totals from period rows
+    let total_vat:         Decimal = rows.iter().map(|r| r.vat_collected).sum();
+    let gross_sales:       Decimal = rows.iter().map(|r| r.gross_sales).sum();
+    let net_sales:         Decimal = rows.iter().map(|r| r.net_sales_before_vat).sum();
+    let transaction_count: i64     = rows.iter().map(|r| r.transaction_count).sum();
+
+    Ok(TaxReport {
+        total_vat,
+        gross_sales,
+        net_sales,
+        transaction_count,
+        period_rows: rows
+            .into_iter()
+            .map(|r| TaxReportRow {
+                period:               r.period,
+                gross_sales:          r.gross_sales,
+                vat_collected:        r.vat_collected,
+                net_sales_before_vat: r.net_sales_before_vat,
+                transaction_count:    r.transaction_count,
+            })
+            .collect(),
+        vat_by_category: cat_rows
+            .into_iter()
+            .map(|r| VatByCategoryRow {
+                category_name: r.category_name,
+                rate:          r.rate,
+                taxable_sales: r.taxable_sales,
+                vat_amount:    r.vat_amount,
+            })
+            .collect(),
+    })
 }
 
 // ── 15. Low-margin items ──────────────────────────────────────────────────────
@@ -1957,4 +2097,202 @@ pub async fn get_low_margin_items(
             revenue: r.revenue,
         })
         .collect())
+}
+
+// ── 16. Business health summary ───────────────────────────────────────────────
+
+/// Single-endpoint aggregate for the analytics landing page.
+/// Returns multi-window revenue, inventory health, credit exposure,
+/// pending work queues, and top performers — all in one RPC call.
+#[tauri::command]
+pub async fn get_business_health_summary(
+    state: State<'_, AppState>,
+    token: String,
+    store_id: Option<i32>,
+) -> AppResult<BusinessHealthSummary> {
+    guard_permission(&state, &token, "analytics.read").await?;
+    let pool = state.pool().await?;
+
+    // ── 1. Multi-window revenue (single pass over last 60 days) ──────────────
+    let rev = sqlx::query!(
+        r#"
+        SELECT
+            COALESCE(SUM(CASE WHEN created_at::date = CURRENT_DATE
+                              THEN total_amount ELSE 0 END), 0)                     AS "today_rev!:      Decimal",
+            COUNT(   CASE WHEN created_at::date = CURRENT_DATE
+                          THEN 1 END)                                               AS "today_txns!:     i64",
+            COALESCE(SUM(CASE WHEN created_at::date = CURRENT_DATE - 1
+                              THEN total_amount ELSE 0 END), 0)                     AS "yest_rev!:       Decimal",
+            COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '7 days'
+                              THEN total_amount ELSE 0 END), 0)                     AS "week_rev!:       Decimal",
+            COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '14 days'
+                               AND created_at <  NOW() - INTERVAL '7 days'
+                              THEN total_amount ELSE 0 END), 0)                     AS "prev_week_rev!:  Decimal",
+            COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days'
+                              THEN total_amount ELSE 0 END), 0)                     AS "month_rev!:      Decimal",
+            COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '60 days'
+                               AND created_at <  NOW() - INTERVAL '30 days'
+                              THEN total_amount ELSE 0 END), 0)                     AS "prev_month_rev!: Decimal"
+        FROM transactions
+        WHERE status = 'completed'
+          AND ($1::int IS NULL OR store_id = $1)
+          AND created_at >= NOW() - INTERVAL '60 days'
+        "#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    // ── 2. Gross profit margin for current calendar month ────────────────────
+    let margin = sqlx::query!(
+        r#"
+        SELECT
+            COALESCE(SUM(ti.line_total - ti.tax_amount), 0) AS "net_sales!: Decimal",
+            COALESCE(SUM(ti.quantity * i.cost_price),    0) AS "cogs!:      Decimal"
+        FROM transaction_items ti
+        JOIN transactions t ON t.id = ti.tx_id
+        JOIN items        i ON i.id = ti.item_id
+        WHERE t.status   = 'completed'
+          AND ($1::int IS NULL OR t.store_id = $1)
+          AND t.created_at >= DATE_TRUNC('month', NOW())
+        "#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    // ── 3. Stock health ──────────────────────────────────────────────────────
+    let stock = sqlx::query!(
+        r#"
+        SELECT
+            COUNT(CASE WHEN istock.available_quantity > 0
+                            AND ist.min_stock_level > 0
+                            AND istock.available_quantity <= ist.min_stock_level::numeric
+                       THEN 1 END)                          AS "low_stock!:     i64",
+            COUNT(CASE WHEN istock.available_quantity <= 0  THEN 1 END) AS "out_of_stock!:  i64"
+        FROM item_settings ist
+        JOIN item_stock    istock ON istock.item_id = ist.item_id
+        JOIN items         i      ON i.id           = ist.item_id
+        WHERE ist.is_active   = TRUE
+          AND ist.track_stock = TRUE
+          AND ($1::int IS NULL OR istock.store_id = $1)
+          AND ($1::int IS NULL OR i.store_id      = $1)
+        "#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    // ── 4. Credit health ────────────────────────────────────────────────────
+    let credit = sqlx::query!(
+        r#"
+        SELECT
+            COALESCE(SUM(c.outstanding_balance), 0) AS "open_credit_total!: Decimal",
+            COUNT(CASE WHEN cs.due_date < NOW() AND cs.status != 'paid' THEN 1 END) AS "overdue_count!: i64"
+        FROM customers c
+        LEFT JOIN credit_sales cs ON cs.customer_id = c.id
+        WHERE c.is_active = TRUE
+          AND ($1::int IS NULL OR c.store_id = $1)
+        "#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    // ── 5. Pending expenses ─────────────────────────────────────────────────
+    let pending_expenses: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) FROM expenses
+           WHERE approval_status = 'pending'
+             AND deleted_at IS NULL
+             AND ($1::int IS NULL OR store_id = $1)"#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
+
+    // ── 6. Pending purchase orders ──────────────────────────────────────────
+    let pending_pos: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) FROM purchase_orders
+           WHERE status IN ('pending', 'approved')
+             AND ($1::int IS NULL OR store_id = $1)"#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
+
+    // ── 7. Top item this month ───────────────────────────────────────────────
+    let top_item = sqlx::query!(
+        r#"
+        SELECT ti.item_name                        AS "item_name!",
+               COALESCE(SUM(ti.quantity), 0)        AS "qty_sold!: Decimal"
+        FROM transaction_items ti
+        JOIN transactions t ON t.id = ti.tx_id
+        WHERE t.status = 'completed'
+          AND t.created_at >= DATE_TRUNC('month', NOW())
+          AND ($1::int IS NULL OR t.store_id = $1)
+        GROUP BY ti.item_name
+        ORDER BY 2 DESC
+        LIMIT 1
+        "#,
+        store_id,
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    // ── 8. Top cashier this month ────────────────────────────────────────────
+    let top_cashier = sqlx::query!(
+        r#"
+        SELECT CONCAT(u.first_name, ' ', u.last_name)  AS "cashier_name!",
+               COALESCE(SUM(t.total_amount), 0)         AS "total_sales!: Decimal"
+        FROM transactions t
+        JOIN users u ON u.id = t.cashier_id
+        WHERE t.status = 'completed'
+          AND t.created_at >= DATE_TRUNC('month', NOW())
+          AND ($1::int IS NULL OR t.store_id = $1)
+        GROUP BY t.cashier_id, u.first_name, u.last_name
+        ORDER BY 2 DESC
+        LIMIT 1
+        "#,
+        store_id,
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    // ── Compute growth % helper ──────────────────────────────────────────────
+    let pct = |cur: Decimal, prev: Decimal| -> Decimal {
+        if prev == Decimal::ZERO {
+            if cur > Decimal::ZERO { Decimal::from(100) } else { Decimal::ZERO }
+        } else {
+            ((cur - prev) / prev * Decimal::from(100)).round_dp(1)
+        }
+    };
+
+    let gross_profit_margin = if margin.net_sales > Decimal::ZERO {
+        ((margin.net_sales - margin.cogs) / margin.net_sales * Decimal::from(100)).round_dp(1)
+    } else {
+        Decimal::ZERO
+    };
+
+    Ok(BusinessHealthSummary {
+        today_revenue:         rev.today_rev,
+        today_transactions:    rev.today_txns,
+        today_vs_yesterday:    pct(rev.today_rev,   rev.yest_rev),
+        week_revenue:          rev.week_rev,
+        week_vs_last_week:     pct(rev.week_rev,    rev.prev_week_rev),
+        month_revenue:         rev.month_rev,
+        month_vs_last_month:   pct(rev.month_rev,   rev.prev_month_rev),
+        gross_profit_margin,
+        low_stock_count:       stock.low_stock,
+        out_of_stock_count:    stock.out_of_stock,
+        open_credit_total:     credit.open_credit_total,
+        overdue_credit_count:  credit.overdue_count,
+        pending_expenses_count: pending_expenses,
+        pending_po_count:      pending_pos,
+        top_item_name:         top_item.as_ref().map(|r| r.item_name.clone()),
+        top_item_qty:          top_item.map(|r| r.qty_sold).unwrap_or_default(),
+        top_cashier_name:      top_cashier.as_ref().map(|r| r.cashier_name.clone()),
+        top_cashier_sales:     top_cashier.map(|r| r.total_sales).unwrap_or_default(),
+    })
 }

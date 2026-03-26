@@ -14,6 +14,7 @@ use crate::{
     error::{AppError, AppResult},
     models::transaction::{
         Transaction, TransactionItem, TransactionDetail, TransactionFilters,
+        TransactionStats, TransactionSearchResult,
         CreateTransactionDto, HeldTransaction, HoldTransactionDto,
         VoidTransactionDto, PartialRefundDto, FullRefundDto,
         RefundResult, FetchedItem,
@@ -95,45 +96,6 @@ async fn fetch_transaction_payments(pool: &sqlx::PgPool, tx_id: i32) -> AppResul
     .fetch_all(pool)
     .await
     .map_err(AppError::from)
-}
-
-// ── HTTP-compatible inner functions ───────────────────────────────────────────
-
-pub(crate) async fn create_transaction_inner(state: &AppState, token: String, payload: CreateTransactionDto) -> AppResult<TransactionDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    create_transaction(s, token, payload).await
-}
-pub(crate) async fn get_transactions_inner(state: &AppState, token: String, filters: TransactionFilters) -> AppResult<PagedResult<Transaction>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    get_transactions(s, token, filters).await
-}
-pub(crate) async fn get_transaction_inner(state: &AppState, token: String, id: i32) -> AppResult<TransactionDetail> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    get_transaction(s, token, id).await
-}
-pub(crate) async fn void_transaction_inner(state: &AppState, token: String, id: i32, payload: VoidTransactionDto) -> AppResult<Transaction> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    void_transaction(s, token, id, payload).await
-}
-pub(crate) async fn partial_refund_inner(state: &AppState, token: String, id: i32, payload: PartialRefundDto) -> AppResult<RefundResult> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    partial_refund(s, token, id, payload).await
-}
-pub(crate) async fn full_refund_inner(state: &AppState, token: String, id: i32, payload: FullRefundDto) -> AppResult<RefundResult> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    full_refund(s, token, id, payload).await
-}
-pub(crate) async fn hold_transaction_inner(state: &AppState, token: String, payload: HoldTransactionDto) -> AppResult<HeldTransaction> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    hold_transaction(s, token, payload).await
-}
-pub(crate) async fn get_held_transactions_inner(state: &AppState, token: String, store_id: i32) -> AppResult<Vec<HeldTransaction>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    get_held_transactions(s, token, store_id).await
-}
-pub(crate) async fn delete_held_transaction_inner(state: &AppState, token: String, id: i32) -> AppResult<()> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) };
-    delete_held_transaction(s, token, id).await
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -225,6 +187,8 @@ pub async fn create_transaction(
                 id:                   r.id,
                 item_name:            r.item_name,
                 sku:                  r.sku,
+                // cost_price fetched in the initial bulk query — no N+1 needed
+                cost_price:           r.cost_price,
                 selling_price:        r.selling_price,
                 discount_price:       r.discount_price,
                 is_active:            r.is_active,
@@ -244,6 +208,7 @@ pub async fn create_transaction(
         .collect();
 
     // ── STEP 5: Validate items and build line items ────────────────────────────
+    #[allow(dead_code)]
     struct LineItem {
         item_id:          Uuid,
         item_name:        String,
@@ -284,14 +249,9 @@ pub async fn create_transaction(
             )));
         }
 
-        let unit_price = item.discount_price.unwrap_or(item.selling_price);
-        // Retrieve cost_price from item — stored in rows above as r.cost_price
-        let cost_price_for_item: Decimal = sqlx::query_scalar!(
-            "SELECT cost_price FROM items WHERE id = $1", item.id
-        )
-        .fetch_optional(&pool)
-        .await?
-        .unwrap_or_default();
+        let unit_price          = item.discount_price.unwrap_or(item.selling_price);
+        // cost_price was fetched in the bulk item query — no extra round-trip needed
+        let cost_price_for_item = item.cost_price;
 
         // Fix 6a: warn_sell_below_cost check
         if let Some(ref s) = store_settings {
@@ -786,6 +746,8 @@ pub async fn get_transactions(
     let df = filters.date_from.as_deref();
     let dt = filters.date_to.as_deref();
 
+    let ps = filters.payment_status.as_deref();
+
     // ── COUNT (same WHERE conditions, no ORDER/LIMIT) ──────────────────────────
     // LEFT JOINs are required here too because the search touches joined columns.
     let total: i64 = sqlx::query_scalar!(
@@ -793,25 +755,27 @@ pub async fn get_transactions(
            FROM   transactions t
            LEFT JOIN users     u ON u.id = t.cashier_id
            LEFT JOIN customers c ON c.id = t.customer_id
-           WHERE  ($1::int  IS NULL OR t.store_id    = $1)
-             AND  ($2::int  IS NULL OR t.cashier_id  = $2)
-             AND  ($3::int  IS NULL OR t.customer_id = $3)
-             AND  ($4::text IS NULL OR t.status      = $4)
+           WHERE  ($1::int  IS NULL OR t.store_id       = $1)
+             AND  ($2::int  IS NULL OR t.cashier_id     = $2)
+             AND  ($3::int  IS NULL OR t.customer_id    = $3)
+             AND  ($4::text IS NULL OR t.status         = $4)
              AND  ($5::text IS NULL OR t.payment_method = $5)
-             AND  ($6::text IS NULL OR t.created_at >= $6::text::date::timestamptz)
-             AND  ($7::text IS NULL OR t.created_at <  ($7::text::date + INTERVAL '1 day')::timestamptz)
-             AND  ($8::text IS NULL OR (
-                    t.reference_no                         ILIKE $8
-                 OR CONCAT(c.first_name,' ',c.last_name)   ILIKE $8
-                 OR CONCAT(u.first_name,' ',u.last_name)   ILIKE $8
-                 OR t.notes                                ILIKE $8
-                 OR t.payment_method                       ILIKE $8
+             AND  ($6::text IS NULL OR t.payment_status = $6)
+             AND  ($7::text IS NULL OR t.created_at >= $7::text::date::timestamptz)
+             AND  ($8::text IS NULL OR t.created_at <  ($8::text::date + INTERVAL '1 day')::timestamptz)
+             AND  ($9::text IS NULL OR (
+                    t.reference_no                         ILIKE $9
+                 OR CONCAT(c.first_name,' ',c.last_name)   ILIKE $9
+                 OR CONCAT(u.first_name,' ',u.last_name)   ILIKE $9
+                 OR t.notes                                ILIKE $9
+                 OR t.payment_method                       ILIKE $9
              ))"#,
         filters.store_id,
         filters.cashier_id,
         filters.customer_id,
         filters.status,
         filters.payment_method.as_deref(),
+        ps,
         df,
         dt,
         search.as_deref(),
@@ -834,27 +798,29 @@ pub async fn get_transactions(
            FROM   transactions t
            LEFT JOIN users     u ON u.id = t.cashier_id
            LEFT JOIN customers c ON c.id = t.customer_id
-           WHERE  ($1::int  IS NULL OR t.store_id    = $1)
-             AND  ($2::int  IS NULL OR t.cashier_id  = $2)
-             AND  ($3::int  IS NULL OR t.customer_id = $3)
-             AND  ($4::text IS NULL OR t.status      = $4)
+           WHERE  ($1::int  IS NULL OR t.store_id       = $1)
+             AND  ($2::int  IS NULL OR t.cashier_id     = $2)
+             AND  ($3::int  IS NULL OR t.customer_id    = $3)
+             AND  ($4::text IS NULL OR t.status         = $4)
              AND  ($5::text IS NULL OR t.payment_method = $5)
-             AND  ($6::text IS NULL OR t.created_at >= $6::text::date::timestamptz)
-             AND  ($7::text IS NULL OR t.created_at <  ($7::text::date + INTERVAL '1 day')::timestamptz)
-             AND  ($8::text IS NULL OR (
-                    t.reference_no                         ILIKE $8
-                 OR CONCAT(c.first_name,' ',c.last_name)   ILIKE $8
-                 OR CONCAT(u.first_name,' ',u.last_name)   ILIKE $8
-                 OR t.notes                                ILIKE $8
-                 OR t.payment_method                       ILIKE $8
+             AND  ($6::text IS NULL OR t.payment_status = $6)
+             AND  ($7::text IS NULL OR t.created_at >= $7::text::date::timestamptz)
+             AND  ($8::text IS NULL OR t.created_at <  ($8::text::date + INTERVAL '1 day')::timestamptz)
+             AND  ($9::text IS NULL OR (
+                    t.reference_no                         ILIKE $9
+                 OR CONCAT(c.first_name,' ',c.last_name)   ILIKE $9
+                 OR CONCAT(u.first_name,' ',u.last_name)   ILIKE $9
+                 OR t.notes                                ILIKE $9
+                 OR t.payment_method                       ILIKE $9
              ))
            ORDER  BY t.created_at DESC, t.id DESC
-           LIMIT  $9 OFFSET $10"#,
+           LIMIT  $10 OFFSET $11"#,
         filters.store_id,
         filters.cashier_id,
         filters.customer_id,
         filters.status,
         filters.payment_method.as_deref(),
+        ps,
         df,
         dt,
         search.as_deref(),
@@ -865,6 +831,45 @@ pub async fn get_transactions(
     .await?;
 
     Ok(PagedResult::new(txns, total, page, limit))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_transaction_stats(
+    state:    State<'_, AppState>,
+    token:    String,
+    store_id: Option<i32>,
+) -> AppResult<TransactionStats> {
+    guard_permission(&state, &token, "transactions.read").await?;
+    let pool = state.pool().await?;
+
+    let row = sqlx::query!(
+        r#"SELECT
+               COUNT(*)                                                                               AS "total!: i64",
+               COUNT(*) FILTER (WHERE t.status = 'completed')                                        AS "completed!: i64",
+               COUNT(*) FILTER (WHERE t.status = 'voided')                                           AS "voided!: i64",
+               COUNT(*) FILTER (WHERE t.status IN ('refunded', 'partially_refunded'))                 AS "refunded!: i64",
+               COUNT(*) FILTER (WHERE DATE(t.created_at) = CURRENT_DATE AND t.status = 'completed')  AS "today_count!: i64",
+               COALESCE(
+                   SUM(t.total_amount) FILTER (WHERE DATE(t.created_at) = CURRENT_DATE AND t.status = 'completed'),
+                   0
+               )                                                                                      AS "today_revenue!: Decimal"
+           FROM transactions t
+           WHERE ($1::int IS NULL OR t.store_id = $1)"#,
+        store_id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    Ok(TransactionStats {
+        total:         row.total,
+        completed:     row.completed,
+        voided:        row.voided,
+        refunded:      row.refunded,
+        today_count:   row.today_count,
+        today_revenue: row.today_revenue,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1302,6 +1307,51 @@ pub async fn full_refund(
     })
 }
 
+// ── Transaction Search (command palette / global search) ────────────────────
+
+/// Fast text search returning slim result rows.
+/// Matches reference_no, customer name, cashier name, notes, and payment_method.
+/// Capped at `limit` (default 8, max 20) — designed for the command palette.
+pub(crate) async fn search_transactions_inner(
+    state:    &AppState,
+    token:    String,
+    query:    String,
+    store_id: Option<i32>,
+    limit:    Option<i64>,
+) -> AppResult<Vec<TransactionSearchResult>> {
+    guard_permission(state, &token, "transactions.read").await?;
+    let pool   = state.pool().await?;
+    let limit  = limit.unwrap_or(8).clamp(1, 20);
+    let search = format!("%{}%", query.trim());
+
+    sqlx::query_as!(
+        TransactionSearchResult,
+        r#"SELECT t.id, t.reference_no,
+                  CONCAT(c.first_name, ' ', c.last_name) AS "customer_name",
+                  CONCAT(u.first_name, ' ', u.last_name) AS "cashier_name",
+                  t.total_amount, t.status, t.payment_method, t.created_at
+           FROM   transactions t
+           LEFT JOIN customers c ON c.id = t.customer_id
+           LEFT JOIN users     u ON u.id = t.cashier_id
+           WHERE  ($1::int IS NULL OR t.store_id = $1)
+             AND  (
+                    t.reference_no                          ILIKE $2
+                 OR CONCAT(c.first_name, ' ', c.last_name)  ILIKE $2
+                 OR CONCAT(u.first_name, ' ', u.last_name)  ILIKE $2
+                 OR t.notes                                 ILIKE $2
+                 OR t.payment_method                        ILIKE $2
+             )
+           ORDER  BY t.created_at DESC
+           LIMIT  $3"#,
+        store_id,
+        search,
+        limit,
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
+}
+
 // ── Held Transactions ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1365,4 +1415,96 @@ pub async fn delete_held_transaction(
         .execute(&pool)
         .await?;
     Ok(())
+}
+
+// ── HTTP-server inner wrappers ────────────────────────────────────────────────
+// These thin wrappers allow http_server.rs to call Tauri commands directly
+// without going through the Tauri State<> machinery.
+
+#[inline]
+fn as_tauri_state(s: &AppState) -> tauri::State<'_, AppState> {
+    unsafe { std::mem::transmute(s) }
+}
+
+pub(crate) async fn create_transaction_inner(
+    state:   &AppState,
+    token:   String,
+    payload: CreateTransactionDto,
+) -> AppResult<TransactionDetail> {
+    create_transaction(as_tauri_state(state), token, payload).await
+}
+
+pub(crate) async fn get_transactions_inner(
+    state:   &AppState,
+    token:   String,
+    filters: TransactionFilters,
+) -> AppResult<PagedResult<Transaction>> {
+    get_transactions(as_tauri_state(state), token, filters).await
+}
+
+pub(crate) async fn get_transaction_inner(
+    state: &AppState,
+    token: String,
+    id:    i32,
+) -> AppResult<TransactionDetail> {
+    get_transaction(as_tauri_state(state), token, id).await
+}
+
+pub(crate) async fn get_transaction_stats_inner(
+    state:    &AppState,
+    token:    String,
+    store_id: Option<i32>,
+) -> AppResult<TransactionStats> {
+    get_transaction_stats(as_tauri_state(state), token, store_id).await
+}
+
+pub(crate) async fn void_transaction_inner(
+    state:   &AppState,
+    token:   String,
+    id:      i32,
+    payload: VoidTransactionDto,
+) -> AppResult<Transaction> {
+    void_transaction(as_tauri_state(state), token, id, payload).await
+}
+
+pub(crate) async fn partial_refund_inner(
+    state:   &AppState,
+    token:   String,
+    id:      i32,
+    payload: PartialRefundDto,
+) -> AppResult<RefundResult> {
+    partial_refund(as_tauri_state(state), token, id, payload).await
+}
+
+pub(crate) async fn full_refund_inner(
+    state:   &AppState,
+    token:   String,
+    id:      i32,
+    payload: FullRefundDto,
+) -> AppResult<RefundResult> {
+    full_refund(as_tauri_state(state), token, id, payload).await
+}
+
+pub(crate) async fn hold_transaction_inner(
+    state:   &AppState,
+    token:   String,
+    payload: HoldTransactionDto,
+) -> AppResult<HeldTransaction> {
+    hold_transaction(as_tauri_state(state), token, payload).await
+}
+
+pub(crate) async fn get_held_transactions_inner(
+    state:    &AppState,
+    token:    String,
+    store_id: i32,
+) -> AppResult<Vec<HeldTransaction>> {
+    get_held_transactions(as_tauri_state(state), token, store_id).await
+}
+
+pub(crate) async fn delete_held_transaction_inner(
+    state: &AppState,
+    token: String,
+    id:    i32,
+) -> AppResult<()> {
+    delete_held_transaction(as_tauri_state(state), token, id).await
 }

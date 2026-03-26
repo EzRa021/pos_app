@@ -80,4 +80,6 @@ pub struct TransferFilters {
     pub status:   Option<String>,
     pub limit:    Option<i64>,
     pub page:     Option<i64>,
+    /// Free-text search: transfer_number, from/to store name
+    pub search:   Option<String>,
 }

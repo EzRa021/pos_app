@@ -54,4 +54,6 @@ pub struct CreditSaleFilters {
     pub status:      Option<String>,
     pub date_from:   Option<String>,
     pub date_to:     Option<String>,
+    /// Free-text search: transaction reference_no, customer name
+    pub search:      Option<String>,
 }

@@ -4,7 +4,7 @@ import { useState } from "react";
 import {
   Mail, Phone, Shield, Store, Calendar, Clock,
   KeyRound, Power, PowerOff, Pencil, Eye, EyeOff, Loader2,
-  CheckCircle2, XCircle, LogIn, Hash,
+  CheckCircle2, XCircle, LogIn, Hash, Lock,
 } from "lucide-react";
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
@@ -14,6 +14,7 @@ import { Input }    from "@/components/ui/input";
 import { cn }       from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import { getRoleConfig, getInitials } from "./roleConfig";
+import { setPosPin } from "@/commands/security";
 
 export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, onDeactivate, onResetPassword, currentUserId, canUpdate }) {
   const [showResetForm, setShowResetForm]       = useState(false);
@@ -23,6 +24,31 @@ export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, 
   const [passError, setPassError]               = useState("");
   const [isResetting, setIsResetting]           = useState(false);
   const [isTogglingActive, setIsTogglingActive] = useState(false);
+
+  // ── POS PIN state (only for isSelf) ──────────────────────────────────────
+  const [showPinForm, setShowPinForm] = useState(false);
+  const [newPin,      setNewPin]      = useState("");
+  const [pinConfirm,  setPinConfirm]  = useState("");
+  const [pinError,    setPinError]    = useState("");
+  const [pinDone,     setPinDone]     = useState(false);
+  const [isSavingPin, setIsSavingPin] = useState(false);
+
+  const handlePinSave = async () => {
+    setPinError("");
+    if (!/^\d{4}$/.test(newPin))   { setPinError("PIN must be exactly 4 digits."); return; }
+    if (newPin !== pinConfirm)      { setPinError("PINs do not match."); return; }
+    setIsSavingPin(true);
+    try {
+      await setPosPin(newPin);
+      setPinDone(true);
+      setNewPin(""); setPinConfirm(""); setShowPinForm(false);
+      setTimeout(() => setPinDone(false), 3000);
+    } catch (e) {
+      setPinError(typeof e === "string" ? e : "Failed to set PIN.");
+    } finally {
+      setIsSavingPin(false);
+    }
+  };
 
   const rc       = user ? getRoleConfig(user.role_slug) : null;
   const initials = user ? getInitials(user)             : "";
@@ -188,6 +214,84 @@ export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, 
                   </div>
                 )}
               </div>
+            )}
+
+            {/* ── POS PIN section (self only) ──────────────────────── */}
+            {isSelf && (
+              <>
+                <div className="mx-5 border-t border-border/50" />
+                <div className="px-5 pt-4 pb-4">
+                  <button
+                    onClick={() => { setShowPinForm((p) => !p); setPinError(""); }}
+                    className="flex items-center justify-between w-full group"
+                  >
+                    <span className="flex items-center gap-2 text-[12px] font-semibold text-foreground/80 group-hover:text-foreground transition-colors">
+                      <Lock className="h-3.5 w-3.5 text-primary" />
+                      Set POS PIN
+                    </span>
+                    <span className={cn(
+                      "text-[10px] font-medium rounded-full px-2 py-0.5 transition-colors",
+                      showPinForm
+                        ? "bg-primary/15 text-primary"
+                        : "bg-muted text-muted-foreground group-hover:bg-primary/10 group-hover:text-primary",
+                    )}>
+                      {showPinForm ? "Cancel" : "Change"}
+                    </span>
+                  </button>
+
+                  {pinDone && !showPinForm && (
+                    <p className="mt-2 flex items-center gap-1.5 text-[11px] text-success">
+                      <CheckCircle2 className="h-3 w-3" /> PIN set successfully.
+                    </p>
+                  )}
+
+                  {showPinForm && (
+                    <div className="mt-3 space-y-2.5">
+                      <p className="text-[11px] text-muted-foreground">
+                        Set a 4-digit numeric PIN for quick POS screen unlock.
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">New PIN</label>
+                          <Input
+                            type="password"
+                            maxLength={4}
+                            placeholder="4 digits"
+                            value={newPin}
+                            onChange={(e) => { setNewPin(e.target.value.replace(/\D/g, "")); setPinError(""); }}
+                            className="h-9 text-[12px] tracking-widest bg-background/50"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Confirm</label>
+                          <Input
+                            type="password"
+                            maxLength={4}
+                            placeholder="4 digits"
+                            value={pinConfirm}
+                            onChange={(e) => { setPinConfirm(e.target.value.replace(/\D/g, "")); setPinError(""); }}
+                            className="h-9 text-[12px] tracking-widest bg-background/50"
+                          />
+                        </div>
+                      </div>
+                      {pinError && (
+                        <p className="text-[10px] text-destructive">{pinError}</p>
+                      )}
+                      <Button
+                        size="sm"
+                        className="w-full gap-1.5"
+                        onClick={handlePinSave}
+                        disabled={isSavingPin || newPin.length !== 4 || pinConfirm.length !== 4}
+                      >
+                        {isSavingPin
+                          ? <><Loader2 className="h-3 w-3 animate-spin" />Saving…</>
+                          : <><Lock    className="h-3 w-3" />Set PIN</>
+                        }
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </>
             )}
 
             <div className="mx-5 border-t border-border/50" />

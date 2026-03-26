@@ -5,11 +5,15 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Loader2, Shield, Monitor, LogOut, KeyRound,
-  CheckCircle2, AlertCircle, RefreshCw, Trash2,
+  CheckCircle2, AlertCircle, RefreshCw, Timer,
 } from "lucide-react";
-import { toast } from "sonner";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Input }  from "@/components/ui/input";
+import {
+  Select, SelectContent, SelectItem,
+  SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { cn }     from "@/lib/utils";
 import { setPosPin, getActiveSessions, revokeSession } from "@/commands/security";
 import { useBranchStore } from "@/stores/branch.store";
@@ -83,6 +87,86 @@ function PinSetterPanel() {
   );
 }
 
+// ── Auto-lock timeout ────────────────────────────────────────────────────────
+
+const AUTO_LOCK_KEY = "qpos_lock_timeout_min";
+
+/**
+ * Get the current auto-lock timeout value, seeding the default if the key
+ * doesn't exist yet. Called on PosPage startup AND here in the panel so
+ * they are always in sync from the first launch.
+ *
+ * Default is "0" (Never) — the safe choice on a fresh terminal where the
+ * cashier hasn't set a PIN yet.
+ */
+export function getAutoLockMinutes() {
+  const stored = localStorage.getItem(AUTO_LOCK_KEY);
+  if (stored === null) {
+    // Seed the default so PosPage and SecuritySettingsPanel always agree
+    localStorage.setItem(AUTO_LOCK_KEY, "0");
+    return 0;
+  }
+  return parseInt(stored, 10);
+}
+
+const TIMEOUT_OPTIONS = [
+  { value: "0",  label: "Never"      },
+  { value: "1",  label: "1 minute"   },
+  { value: "2",  label: "2 minutes"  },
+  { value: "5",  label: "5 minutes"  },
+  { value: "10", label: "10 minutes" },
+  { value: "15", label: "15 minutes" },
+  { value: "30", label: "30 minutes" },
+];
+
+function AutoLockPanel() {
+  // Read from localStorage, seeding the default on first call
+  const [timeoutVal, setTimeoutVal] = useState(
+    () => String(getAutoLockMinutes()),
+  );
+
+  const handleChange = (val) => {
+    localStorage.setItem(AUTO_LOCK_KEY, val);
+    setTimeoutVal(val);
+    const label = TIMEOUT_OPTIONS.find((o) => o.value === val)?.label;
+    if (val === "0") {
+      toastSuccess("Auto-lock Disabled", "The POS screen will stay open until manually locked.");
+    } else {
+      toastSuccess("Auto-lock Updated", `Screen will lock after ${label} of inactivity.`);
+    }
+  };
+
+  const selectedLabel = TIMEOUT_OPTIONS.find((o) => o.value === timeoutVal)?.label;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Automatically lock the POS screen after a period of inactivity.
+        Set to <strong className="text-foreground">Never</strong> to disable.
+      </p>
+      <div className="flex items-center gap-3">
+        <Select value={timeoutVal} onValueChange={handleChange}>
+          <SelectTrigger className="w-44 h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TIMEOUT_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="text-xs text-muted-foreground">of inactivity</span>
+      </div>
+      {timeoutVal !== "0" && (
+        <p className="text-[11px] text-muted-foreground/70 flex items-center gap-1.5">
+          <Timer className="h-3 w-3 shrink-0" />
+          Locks after <strong className="text-foreground">{selectedLabel}</strong> of no mouse, keyboard, or touch activity.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Active sessions ────────────────────────────────────────────────────────────
 function ActiveSessionsPanel() {
   const storeId  = useBranchStore((s) => s.activeStore?.id);
@@ -100,9 +184,9 @@ function ActiveSessionsPanel() {
     mutationFn: revokeSession,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["active-sessions"] });
-      toast.success("Session revoked.");
+      toastSuccess("Session Revoked", "The user has been signed out and their access removed.");
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => onMutationError("Couldn't Revoke Session", e),
   });
 
   if (isLoading) return (
@@ -165,6 +249,9 @@ export function SecuritySettingsPanel() {
     <div className="space-y-5">
       <SectionCard title="POS PIN (Quick Lock)" icon={KeyRound}>
         <PinSetterPanel />
+      </SectionCard>
+      <SectionCard title="Auto-Lock Timeout" icon={Timer}>
+        <AutoLockPanel />
       </SectionCard>
       <SectionCard title="Active Sessions" icon={Shield}>
         <ActiveSessionsPanel />

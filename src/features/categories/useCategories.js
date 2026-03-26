@@ -13,6 +13,7 @@ import {
   deactivateCategory,
   hardDeleteCategory,
 } from "@/commands/categories";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 
 export const categoriesQueryKey = (storeId) => ["categories", storeId];
 
@@ -36,28 +37,48 @@ export function useCategories(storeIdOverride) {
 
   const create = useMutation({
     mutationFn: (payload) => createCategory({ store_id: storeId, ...payload }),
-    onSuccess:  invalidate,
+    onSuccess: (c) => {
+      toastSuccess("Category Created", `"${c.name}" has been added to your catalog.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Create Category", e),
   });
 
   const update = useMutation({
     mutationFn: ({ id, ...payload }) => updateCategory(id, payload),
-    onSuccess:  invalidate,
+    onSuccess: (c) => {
+      toastSuccess("Category Updated", `Changes to "${c.name}" have been saved.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Update Category", e),
   });
 
   // Dedicated endpoints — no more update({ is_active }) workaround
   const activate = useMutation({
     mutationFn: (id) => activateCategory(id),
-    onSuccess:  invalidateAll,
+    onSuccess: (c) => {
+      toastSuccess("Category Activated", `"${c.name}" is now active.`);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Activate Category", e),
   });
 
   const deactivate = useMutation({
     mutationFn: (id) => deactivateCategory(id),
-    onSuccess:  invalidateAll,
+    onSuccess: (c) => {
+      toastSuccess("Category Deactivated", `"${c.name}" has been deactivated.`);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Deactivate Category", e),
   });
 
   const hardDelete = useMutation({
     mutationFn: (id) => hardDeleteCategory(id),
-    onSuccess:  invalidateAll,
+    onSuccess: () => {
+      toastSuccess("Category Deleted", "The category has been permanently removed.");
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Delete Category", e),
   });
 
   const getCategoryById = useCallback(

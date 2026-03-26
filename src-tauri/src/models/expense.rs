@@ -1,6 +1,7 @@
 // ============================================================================
 // EXPENSE MODELS
 // ============================================================================
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
@@ -85,4 +86,6 @@ pub struct ExpenseFilters {
     pub payment_status:  Option<String>,
     pub date_from:       Option<String>,
     pub date_to:         Option<String>,
+    /// Free-text search: description, paid_to, category
+    pub search:          Option<String>,
 }

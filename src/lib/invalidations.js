@@ -30,9 +30,10 @@
 //   ["pos-items"]              — POS item grid
 //   ["item", id]               — single item detail
 //   ["inventory"]              — inventory list
-//   ["inventory_item"]         — single inventory item detail panels
-//   ["inv_summary", storeId]   — inventory KPI stats
-//   ["low_stock", storeId]     — low-stock alert list
+//   ["inventory_item"]           — single inventory item detail panels
+//   ["inv_summary", storeId]     — inventory KPI stats
+//   ["low_stock", storeId]       — low-stock alert list
+//   ["inventory_for_count", storeId] — StockCountRunner full item list (no pagination)
 //   ["transactions"]           — transaction list, detail, stats
 //   ["shift-summary", shiftId] — shift KPI cards (total sales, cash, etc.)
 //   ["payments"]               — payments list
@@ -66,8 +67,9 @@ export function invalidateStock(storeId) {
   inv(["inventory"]);      // Inventory page list + counts
   inv(["inventory_item"]); // inventory detail panels
   if (storeId) {
-    inv(["inv_summary", storeId]);  // Inventory KPI stat cards
-    inv(["low_stock",   storeId]);  // Low-stock alert banner
+    inv(["inv_summary",        storeId]);  // Inventory KPI stat cards
+    inv(["low_stock",          storeId]);  // Low-stock alert banner
+    inv(["inventory_for_count",storeId]);  // StockCountRunner full item list
   }
 }
 
@@ -119,11 +121,17 @@ export function invalidateAfterSale({
     inv(["wallet-history", customerId]);
   }
 
-  // Loyalty redemption: points balance + history change
-  if (loyaltyUsed && customerId) {
+  // Loyalty: invalidate whenever a customer is attached so balance + history
+  // panels refresh after the charge() earn call and any redemption.
+  if (customerId) {
     inv(["loyalty-balance", customerId]);
     inv(["loyalty-history", customerId]);
   }
+
+  // NOTE: reorder alert check is NOT fired here.
+  // usePos.js fires it after charge() and also invalidates the notification
+  // bell cache keys — keeping both calls in one place avoids the duplicate
+  // DB query that previously ran on every sale.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -149,4 +149,9 @@ pub struct ShiftFilters {
     pub status:     Option<String>,
     pub date_from:  Option<String>,
     pub date_to:    Option<String>,
+    /// Free-text search: shift_number, cashier name
+    pub search:     Option<String>,
+    /// When true, exclude closed/cancelled shifts (show only in-progress)
+    #[serde(default)]
+    pub is_active_only: bool,
 }

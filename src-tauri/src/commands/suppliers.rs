@@ -17,34 +17,6 @@ fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
 }
 
-pub(crate) async fn get_suppliers_inner(state: &AppState, token: String, filters: SupplierFilters) -> AppResult<PagedResult<Supplier>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_suppliers(s, token, filters).await
-}
-pub(crate) async fn get_supplier_inner(state: &AppState, token: String, id: i32) -> AppResult<Supplier> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_supplier(s, token, id).await
-}
-pub(crate) async fn create_supplier_inner(state: &AppState, token: String, payload: CreateSupplierDto) -> AppResult<Supplier> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; create_supplier(s, token, payload).await
-}
-pub(crate) async fn update_supplier_inner(state: &AppState, token: String, id: i32, payload: UpdateSupplierDto) -> AppResult<Supplier> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; update_supplier(s, token, id, payload).await
-}
-pub(crate) async fn delete_supplier_inner(state: &AppState, token: String, id: i32) -> AppResult<()> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; delete_supplier(s, token, id).await
-}
-pub(crate) async fn activate_supplier_inner(state: &AppState, token: String, id: i32) -> AppResult<Supplier> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; activate_supplier(s, token, id).await
-}
-pub(crate) async fn deactivate_supplier_inner(state: &AppState, token: String, id: i32) -> AppResult<Supplier> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; deactivate_supplier(s, token, id).await
-}
-pub(crate) async fn get_supplier_stats_inner(state: &AppState, token: String, id: i32) -> AppResult<SupplierStats> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; get_supplier_stats(s, token, id).await
-}
-pub(crate) async fn search_suppliers_inner(state: &AppState, token: String, query: String, limit: Option<i64>) -> AppResult<Vec<Supplier>> {
-    let s: tauri::State<'_, AppState> = unsafe { std::mem::transmute(state) }; search_suppliers(s, token, query, limit).await
-}
-
 // ── Shared fetch ──────────────────────────────────────────────────────────────
 async fn fetch_supplier(pool: &sqlx::PgPool, id: i32) -> AppResult<Supplier> {
     sqlx::query_as!(
@@ -182,11 +154,22 @@ pub async fn get_supplier(
 
 #[derive(Debug, Serialize)]
 pub struct SupplierStats {
-    pub total_orders:     i64,
-    pub completed_orders: i64,
-    pub pending_orders:   i64,
-    pub total_spent:      Decimal,
-    pub avg_order_value:  Option<Decimal>,
+    pub total_orders:       i64,
+    pub completed_orders:   i64,
+    pub pending_orders:     i64,
+    pub cancelled_orders:   i64,
+    pub total_spent:        Decimal,
+    pub avg_order_value:    Option<Decimal>,
+    /// Average days from ordered_at → received_at across completed POs
+    pub avg_lead_time_days: Option<Decimal>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SupplierMonthlySpend {
+    /// "YYYY-MM"
+    pub month:       String,
+    pub total:       Decimal,
+    pub order_count: i64,
 }
 
 #[tauri::command]
@@ -200,11 +183,17 @@ pub async fn get_supplier_stats(
 
     let row = sqlx::query!(
         r#"SELECT
-               COUNT(*)                                                              AS total_orders,
-               COUNT(*) FILTER (WHERE status = 'received')                          AS completed_orders,
-               COUNT(*) FILTER (WHERE status IN ('pending','approved'))              AS pending_orders,
-               COALESCE(SUM(total_amount) FILTER (WHERE status = 'received'), 0)    AS total_spent,
-               AVG(total_amount)          FILTER (WHERE status = 'received')        AS avg_order_value
+               COUNT(*)                                                                   AS total_orders,
+               COUNT(*) FILTER (WHERE status = 'received')                               AS completed_orders,
+               COUNT(*) FILTER (WHERE status IN ('pending','approved'))                   AS pending_orders,
+               COUNT(*) FILTER (WHERE status = 'cancelled')                              AS cancelled_orders,
+               COALESCE(SUM(total_amount) FILTER (WHERE status = 'received'), 0)         AS total_spent,
+               AVG(total_amount) FILTER (WHERE status = 'received')                      AS avg_order_value,
+               AVG(
+                   CASE WHEN received_at IS NOT NULL
+                        THEN EXTRACT(EPOCH FROM received_at - ordered_at) / 86400.0
+                        ELSE NULL END
+               )                                                                          AS avg_lead_time_days
            FROM purchase_orders
            WHERE supplier_id = $1"#,
         id
@@ -213,12 +202,51 @@ pub async fn get_supplier_stats(
     .await?;
 
     Ok(SupplierStats {
-        total_orders:     row.total_orders.unwrap_or(0),
-        completed_orders: row.completed_orders.unwrap_or(0),
-        pending_orders:   row.pending_orders.unwrap_or(0),
-        total_spent:      row.total_spent.unwrap_or_default(),
-        avg_order_value:  row.avg_order_value,
+        total_orders:       row.total_orders.unwrap_or(0),
+        completed_orders:   row.completed_orders.unwrap_or(0),
+        pending_orders:     row.pending_orders.unwrap_or(0),
+        cancelled_orders:   row.cancelled_orders.unwrap_or(0),
+        total_spent:        row.total_spent.unwrap_or_default(),
+        avg_order_value:    row.avg_order_value,
+        avg_lead_time_days: row.avg_lead_time_days,
     })
+}
+
+/// Monthly spend breakdown for a single supplier — last 13 months.
+/// Used to render the "Spend over time" bar chart on the supplier detail page.
+#[tauri::command]
+pub async fn get_supplier_spend_timeline(
+    state: State<'_, AppState>,
+    token: String,
+    id:    i32,
+) -> AppResult<Vec<SupplierMonthlySpend>> {
+    guard_permission(&state, &token, "suppliers.read").await?;
+    let pool = state.pool().await?;
+
+    let rows = sqlx::query!(
+        r#"SELECT
+               TO_CHAR(DATE_TRUNC('month', ordered_at), 'YYYY-MM') AS "month!",
+               COALESCE(SUM(total_amount), 0)                       AS "total!: Decimal",
+               COUNT(*)                                             AS "order_count!: i64"
+           FROM   purchase_orders
+           WHERE  supplier_id = $1
+             AND  status IN ('received', 'pending', 'approved', 'partial')
+             AND  ordered_at >= NOW() - INTERVAL '13 months'
+           GROUP  BY DATE_TRUNC('month', ordered_at)
+           ORDER  BY 1 ASC"#,
+        id
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| SupplierMonthlySpend {
+            month:       r.month,
+            total:       r.total,
+            order_count: r.order_count,
+        })
+        .collect())
 }
 
 // ── Create / Update ───────────────────────────────────────────────────────────

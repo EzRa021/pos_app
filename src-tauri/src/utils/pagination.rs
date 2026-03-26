@@ -6,6 +6,7 @@ use crate::models::pagination::{PagedResult, PaginationParams};
 use serde::Serialize;
 
 /// Build a PagedResult from a vec of data + a total count.
+#[allow(dead_code)]
 pub fn build_page<T: Serialize>(
     data:  Vec<T>,
     total: i64,

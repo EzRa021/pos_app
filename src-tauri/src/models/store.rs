@@ -1,5 +1,5 @@
 // ============================================================================
-// STORE MODELS — matches migration 0002_stores.sql
+// STORE MODELS — matches migration 0002_stores.sql + 0057
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ pub struct Store {
     pub timezone:       String,
     pub tax_rate:       Decimal,
     pub receipt_footer: Option<String>,
+    pub logo_data:      Option<String>,
     pub is_active:      bool,
     pub created_at:     DateTime<Utc>,
     pub updated_at:     DateTime<Utc>,
@@ -38,6 +39,7 @@ pub struct CreateStoreDto {
     pub timezone:       Option<String>,
     pub tax_rate:       Option<f64>,
     pub receipt_footer: Option<String>,
+    pub logo_data:      Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,5 +55,6 @@ pub struct UpdateStoreDto {
     pub timezone:       Option<String>,
     pub tax_rate:       Option<f64>,
     pub receipt_footer: Option<String>,
+    pub logo_data:      Option<String>,
     pub is_active:      Option<bool>,
 }

@@ -3,10 +3,12 @@ import { rpc } from "@/lib/apiClient";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
 
-export const getDashboardSummary = (storeId, params = {}) =>
-  rpc("get_dashboard_summary", { store_id: storeId, ...params });
-// Returns: today_sales, today_transactions, total_revenue_week,
-//          low_stock_count, open_credit_sales, pending_expenses
+// Returns: today_revenue, today_transactions, week_revenue, month_revenue,
+//          gross_profit_margin, low_stock_count, out_of_stock_count,
+//          open_credit_total, overdue_credit_count, pending_expenses_count,
+//          pending_po_count, top_item_name, top_cashier_name, growth %s
+export const getBusinessHealthSummary = (storeId, params = {}) =>
+  rpc("get_business_health_summary", { store_id: storeId, ...params });
 
 export const getSalesByPeriod = (storeId, period, params = {}) =>
   rpc("get_sales_by_period", { store_id: storeId, period, ...params });
@@ -98,7 +100,7 @@ export const getCashierPerformance = (storeId, params = {}) =>
 
 // Returns: [{ hour_of_day, day_of_week, transaction_count, revenue, avg_basket }]
 export const getPeakHoursAnalysis = (storeId, params = {}) =>
-  rpc("get_peak_hours_analysis", { store_id: storeId, ...params });
+  rpc("get_peak_hours", { store_id: storeId, ...params });
 
 // Returns side-by-side current vs previous period with growth_amount + growth_percent
 // params: { metric: "revenue"|"transactions"|"profit", period: "week"|"month"|"year" }

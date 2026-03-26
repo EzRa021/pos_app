@@ -7,6 +7,7 @@ import {
   createCustomer, updateCustomer,
   activateCustomer, deactivateCustomer, deleteCustomer,
 } from "@/commands/customers";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 
 // ── List hook ─────────────────────────────────────────────────────────────────
 export function useCustomers({ storeIdOverride, search, isActive, customerType, page = 1, limit = 25 } = {}) {
@@ -37,11 +38,46 @@ export function useCustomers({ storeIdOverride, search, isActive, customerType, 
   const invalidate    = useCallback(() => qc.invalidateQueries({ queryKey: ["customers", storeId] }), [qc, storeId]);
   const invalidateAll = useCallback(() => qc.invalidateQueries({ queryKey: ["customers"] }),           [qc]);
 
-  const create     = useMutation({ mutationFn: (p) => createCustomer({ store_id: storeId, ...p }), onSuccess: invalidate    });
-  const update     = useMutation({ mutationFn: ({ id, ...p }) => updateCustomer(id, p),             onSuccess: invalidate    });
-  const activate   = useMutation({ mutationFn: (id) => activateCustomer(id),                        onSuccess: invalidateAll });
-  const deactivate = useMutation({ mutationFn: (id) => deactivateCustomer(id),                      onSuccess: invalidateAll });
-  const remove     = useMutation({ mutationFn: (id) => deleteCustomer(id),                          onSuccess: invalidateAll });
+  const create = useMutation({
+    mutationFn: (p) => createCustomer({ store_id: storeId, ...p }),
+    onSuccess: (c) => {
+      toastSuccess("Customer Added", `${c.first_name} ${c.last_name} is now in your customer directory.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Add Customer", e),
+  });
+  const update = useMutation({
+    mutationFn: ({ id, ...p }) => updateCustomer(id, p),
+    onSuccess: (c) => {
+      toastSuccess("Customer Updated", `Profile changes for ${c.first_name} ${c.last_name} have been saved.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Update Customer", e),
+  });
+  const activate = useMutation({
+    mutationFn: (id) => activateCustomer(id),
+    onSuccess: (c) => {
+      toastSuccess("Customer Activated", `${c.first_name}'s account is now active.`);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Activate Customer", e),
+  });
+  const deactivate = useMutation({
+    mutationFn: (id) => deactivateCustomer(id),
+    onSuccess: (c) => {
+      toastSuccess("Customer Deactivated", `${c.first_name}'s account has been suspended.`);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Deactivate Customer", e),
+  });
+  const remove = useMutation({
+    mutationFn: (id) => deleteCustomer(id),
+    onSuccess: () => {
+      toastSuccess("Customer Removed", "The customer record has been deleted.");
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Remove Customer", e),
+  });
 
   return { storeId, items, total, totalPages, isLoading, error: error ?? null, refetch,
            create, update, activate, deactivate, remove };
@@ -71,9 +107,30 @@ export function useCustomer(id) {
     qc.invalidateQueries({ queryKey: ["customers"] });
   }, [qc, id]);
 
-  const update     = useMutation({ mutationFn: (p) => updateCustomer(id, p),   onSuccess: invalidate });
-  const activate   = useMutation({ mutationFn: () => activateCustomer(id),     onSuccess: invalidate });
-  const deactivate = useMutation({ mutationFn: () => deactivateCustomer(id),   onSuccess: invalidate });
+  const update = useMutation({
+    mutationFn: (p) => updateCustomer(id, p),
+    onSuccess: (c) => {
+      toastSuccess("Customer Updated", `Profile changes for ${c.first_name} ${c.last_name} have been saved.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Update Customer", e),
+  });
+  const activate = useMutation({
+    mutationFn: () => activateCustomer(id),
+    onSuccess: (c) => {
+      toastSuccess("Customer Activated", `${c.first_name}'s account is now active.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Activate Customer", e),
+  });
+  const deactivate = useMutation({
+    mutationFn: () => deactivateCustomer(id),
+    onSuccess: (c) => {
+      toastSuccess("Customer Deactivated", `${c.first_name}'s account has been suspended.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Deactivate Customer", e),
+  });
 
   return {
     customer, stats,

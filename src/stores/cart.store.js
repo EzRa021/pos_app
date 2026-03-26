@@ -14,6 +14,7 @@
 // ============================================================================
 
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 import { rpc } from "@/lib/apiClient";
 
 const EMPTY_CART = {
@@ -27,23 +28,44 @@ const EMPTY_CART = {
 };
 
 // ── Derive totals from cartItems ──────────────────────────────────────────────
+// Prices from the backend are VAT-INCLUSIVE (Nigeria standard).
+// The tax component is EXTRACTED from the price for display — never added on top.
+//
+// Formula for inclusive VAT extraction:
+//   taxComponent = lineTotal × rate / (100 + rate)
+//
+// Example: item costs ₦107.50 at 7.5% VAT
+//   → taxComponent = 107.50 × 7.5 / 107.5 = ₦7.50 (already inside the price)
+//   → total = ₦107.50  (NOT ₦107.50 + ₦7.50 = ₦115.00)
 export function calcCartTotals(cartItems, cartDiscount = 0, cartDiscountPct = 0) {
+  // subtotal = gross line totals (VAT-inclusive, after per-line discounts)
   const subtotal = cartItems.reduce(
     (sum, item) => sum + (item.price * item.quantity) - (item.discount ?? 0),
-    0
+    0,
   );
+
+  // Extract the VAT component embedded in prices — for display only, NOT added to total
   const tax = cartItems.reduce((sum, item) => {
+    const rate = item.taxRate ?? 0;
+    if (rate <= 0) return sum;
     const lineTotal = item.price * item.quantity - (item.discount ?? 0);
-    return sum + lineTotal * ((item.taxRate ?? 0) / 100);
+    return sum + (lineTotal * rate) / (100 + rate);
   }, 0);
+
+  // Cart-level discount (percentage takes priority over flat amount)
   const discountAmt = cartDiscountPct > 0
     ? subtotal * (cartDiscountPct / 100)
     : cartDiscount;
-  const total = Math.max(0, subtotal + tax - discountAmt);
+
+  // Total = gross line totals − cart discount. Tax is already embedded in prices.
+  const total = Math.max(0, subtotal - discountAmt);
+
   return { subtotal, tax, discountAmt, total };
 }
 
-export const useCartStore = create((set, get) => ({
+export const useCartStore = create(
+  persist(
+    (set, get) => ({
   ...EMPTY_CART,
 
   // ── Add / update an item ──────────────────────────────────────────────────
@@ -174,4 +196,19 @@ export const useCartStore = create((set, get) => ({
     const { cartItems, cartDiscount, cartDiscountPct } = get();
     return calcCartTotals(cartItems, cartDiscount, cartDiscountPct);
   },
-}));
+    }),
+    {
+      name: "qpos_cart",
+      storage: createJSONStorage(() => sessionStorage),
+      // heldTransactions is transient server data — never persist it
+      partialize: (state) => ({
+        cartItems:       state.cartItems,
+        cartDiscount:    state.cartDiscount,
+        cartDiscountPct: state.cartDiscountPct,
+        activeCustomer:  state.activeCustomer,
+        note:            state.note,
+        heldTxId:        state.heldTxId,
+      }),
+    }
+  )
+);

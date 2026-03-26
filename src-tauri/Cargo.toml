@@ -76,6 +76,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # ── Network ───────────────────────────────────────────────────────────────────
 local-ip-address = "0.6"
 
+# ── Native Printing (Windows only) ────────────────────────────────────────────
+# winapi gives us direct access to the Windows print spooler so we can send
+# RAW ESC/POS byte streams silently — no browser print dialog.
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winspool", "minwindef", "winbase"] }
+
 # ── HTTP API Server ────────────────────────────────────────────────────────────
 axum       = { version = "0.7", features = ["json"] }
 tower-http = { version = "0.5", features = ["cors"] }

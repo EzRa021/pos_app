@@ -21,6 +21,7 @@ import {
 } from "@/commands/items";
 import { getInventorySummary } from "@/commands/inventory";
 import { invalidateStock } from "@/lib/invalidations";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 
 // ── Query key factories ────────────────────────────────────────────────────────
 export const itemListKey    = (filters) => ["items",        filters];
@@ -38,6 +39,7 @@ export function useItems({
   isActive,         // true | false | undefined (= no filter)
   availableForPos,
   lowStock,
+  measurementType,  // 'quantity' | 'weight' | 'volume' | 'length' | null/undefined
 } = {}) {
   const qc            = useQueryClient();
   const branchStoreId = useBranchStore((s) => s.activeStore?.id);
@@ -54,7 +56,8 @@ export function useItems({
     is_active:         isActive         ?? null,
     available_for_pos: availableForPos  ?? null,
     low_stock:         lowStock         ?? null,
-  }), [branchStoreId, page, limit, search, categoryId, departmentId, isActive, availableForPos, lowStock]);
+    measurement_type:  measurementType  ?? null,
+  }), [branchStoreId, page, limit, search, categoryId, departmentId, isActive, availableForPos, lowStock, measurementType]);
 
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey:        itemListKey(filters),
@@ -78,46 +81,70 @@ export function useItems({
 
   const create = useMutation({
     mutationFn: (payload) => createItem({ store_id: branchStoreId, ...payload }),
-    onSuccess:  invalidateAll,
+    onSuccess: (item) => {
+      toastSuccess("Item Added to Catalog", `"${item.name}" is live and ready for sale.`);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Add Item", e),
   });
 
   const update = useMutation({
     mutationFn: ({ id, ...payload }) => updateItem(id, payload),
     onSuccess: (updated) => {
+      toastSuccess("Item Updated", `Changes to "${updated.name}" have been saved.`);
       qc.setQueryData(itemKey(updated.id), updated);
       invalidateAll();
     },
+    onError: (e) => onMutationError("Couldn't Update Item", e),
   });
 
   const activate = useMutation({
     mutationFn: (id) => activateItem(id),
-    onSuccess: (updated) => { qc.setQueryData(itemKey(updated.id), updated); invalidateAll(); },
+    onSuccess: (updated) => {
+      toastSuccess("Item Activated", `"${updated.name}" is now visible on the POS.`);
+      qc.setQueryData(itemKey(updated.id), updated);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Activate Item", e),
   });
 
   const deactivate = useMutation({
     mutationFn: (id) => deactivateItem(id),
-    onSuccess: (updated) => { qc.setQueryData(itemKey(updated.id), updated); invalidateAll(); },
+    onSuccess: (updated) => {
+      toastSuccess("Item Deactivated", `"${updated.name}" is now hidden from the POS.`);
+      qc.setQueryData(itemKey(updated.id), updated);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Deactivate Item", e),
   });
 
   const archive = useMutation({
     mutationFn: (id) => archiveItem(id),
-    onSuccess:  invalidateAll,
+    onSuccess: (updated) => {
+      toastSuccess("Item Archived", `"${updated?.name ?? "Item"}" has been removed from your catalog.`);
+      invalidateAll();
+    },
+    onError: (e) => onMutationError("Couldn't Archive Item", e),
   });
 
   const stockAdjust = useMutation({
     mutationFn: (payload) => adjustStock({ store_id: branchStoreId, ...payload }),
     onSuccess: (updated) => {
+      toastSuccess("Stock Updated", `New stock level saved for "${updated.name}".`);
       qc.setQueryData(itemKey(updated.id), updated);
       invalidateAll();
     },
+    onError: (e) => onMutationError("Stock Adjustment Failed", e),
   });
 
   const removeImage = useMutation({
     mutationFn: (id) => removeItemImage(id),
     onSuccess: (updated) => {
+      toastSuccess("Image Removed", `Product photo cleared for "${updated.name}".`);
       qc.setQueryData(itemKey(updated.id), updated);
       invalidateAll();
     },
+    onError: (e) => onMutationError("Couldn't Remove Image", e),
   });
 
   return {
@@ -160,39 +187,62 @@ export function useItem(id) {
 
   const update = useMutation({
     mutationFn: (payload) => updateItem(id, payload),
-    onSuccess: (updated) => { qc.setQueryData(itemKey(id), updated); invalidate(); },
+    onSuccess: (updated) => {
+      toastSuccess("Item Updated", `Changes to "${updated.name}" have been saved.`);
+      qc.setQueryData(itemKey(id), updated);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Update Item", e),
   });
 
   const activate = useMutation({
     mutationFn: () => activateItem(id),
-    onSuccess: (updated) => { qc.setQueryData(itemKey(id), updated); invalidate(); },
+    onSuccess: (updated) => {
+      toastSuccess("Item Activated", `"${updated.name}" is now visible on the POS.`);
+      qc.setQueryData(itemKey(id), updated);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Activate Item", e),
   });
 
   const deactivate = useMutation({
     mutationFn: () => deactivateItem(id),
-    onSuccess: (updated) => { qc.setQueryData(itemKey(id), updated); invalidate(); },
+    onSuccess: (updated) => {
+      toastSuccess("Item Deactivated", `"${updated.name}" is now hidden from the POS.`);
+      qc.setQueryData(itemKey(id), updated);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Deactivate Item", e),
   });
 
   const archive = useMutation({
     mutationFn: () => archiveItem(id),
-    onSuccess:  invalidate,
+    onSuccess: (updated) => {
+      toastSuccess("Item Archived", `"${updated?.name ?? "Item"}" has been removed from your catalog.`);
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Archive Item", e),
   });
 
   const stockAdjust = useMutation({
     mutationFn: (payload) => adjustStock({ store_id: branchStoreId, ...payload }),
     onSuccess: (updated) => {
+      toastSuccess("Stock Updated", `New stock level saved for "${updated.name}".`);
       qc.setQueryData(itemKey(id), updated);
       qc.invalidateQueries({ queryKey: ["item_history", id] });
       invalidate();
     },
+    onError: (e) => onMutationError("Stock Adjustment Failed", e),
   });
 
   const removeImage = useMutation({
     mutationFn: () => removeItemImage(id),
     onSuccess: (updated) => {
+      toastSuccess("Image Removed", `Product photo cleared for "${updated.name}".`);
       qc.setQueryData(itemKey(id), updated);
       invalidate();
     },
+    onError: (e) => onMutationError("Couldn't Remove Image", e),
   });
 
   return {

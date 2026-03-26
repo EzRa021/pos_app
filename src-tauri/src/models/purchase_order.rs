@@ -78,4 +78,6 @@ pub struct PurchaseOrderFilters {
     pub status:      Option<String>,
     pub date_from:   Option<String>,
     pub date_to:     Option<String>,
+    /// Free-text search: po_number, supplier_name, notes
+    pub search:      Option<String>,
 }

@@ -37,13 +37,13 @@ export function useShift() {
   // or "suspended" — all three mean the shift is still in progress.
   const isShiftOpen = isActiveShiftStatus(activeShift?.status);
 
-  async function openShift(openingBalance = 0, notes = "") {
+  async function openShift(openingFloat = 0, notes = "") {
     if (!storeId) throw "No active store selected";
-    return openShiftAction({ storeId, openingBalance, notes });
+    return openShiftAction({ storeId, openingFloat, notes });
   }
 
-  async function closeShift(closingBalance, notes = "") {
-    return closeShiftAction({ closingBalance, notes });
+  async function closeShift(actualCash, notes = "") {
+    return closeShiftAction({ actualCash, notes });
   }
 
   async function reload() {
@@ -58,12 +58,12 @@ export function useShift() {
     storeId,
 
     // Derived — uses correct backend field names
-    shiftId:         activeShift?.id              ?? null,
-    shiftNumber:     computeShiftNumber(activeShift),
-    openedAt:        activeShift?.opened_at       ?? null,
-    cashierName:     activeShift?.cashier_name    ?? null,
-    openingBalance:  activeShift?.opening_balance ?? 0,
-    shiftNotes:      activeShift?.notes           ?? null,
+    shiftId:        activeShift?.id              ?? null,
+    shiftNumber:    computeShiftNumber(activeShift),
+    openedAt:       activeShift?.opened_at       ?? null,
+    cashierName:    activeShift?.cashier_name    ?? null,
+    openingFloat:   activeShift?.opening_float   != null ? parseFloat(activeShift.opening_float) : 0,
+    openingNotes:   activeShift?.opening_notes   ?? null,
 
     openShift,
     closeShift,

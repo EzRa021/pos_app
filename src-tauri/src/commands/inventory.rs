@@ -13,8 +13,8 @@ use crate::{
         LowStockItem, InventorySummary,
         MovementRecord, RestockDto, RestockResult,
         AdjustInventoryDto, AdjustInventoryResult,
-        StockCount, StockCountItem, CountSessionFilters,
-        StartCountSessionDto, RecordCountDto,
+        StockCount, StockCountItem, StockCountStats, CountableItem,
+        CountSessionFilters, StartCountSessionDto, RecordCountDto,
         VarianceReport, VarianceSummary, StockCountSession,
         StockDeductResult,
     },
@@ -306,18 +306,23 @@ pub(crate) async fn adjust_inventory_inner(
     let adj = to_dec(payload.adjustment_quantity);
     let mut tx = pool.begin().await?;
 
-    // Verify item and get allow_negative_stock flag and unit metadata
+    // Verify item and get allow_negative_stock flag and unit metadata.
+    // item_settings uses an INNER JOIN in the schema (every item has settings)
+    // but we LEFT JOIN here for safety. sqlx infers the NOT NULL columns
+    // (allow_negative_stock, measurement_type) as their non-Option base types
+    // when the column is declared NOT NULL in the schema.
+    #[allow(dead_code)]
     struct ItemInfo {
-        item_name: String,
-        allow_negative_stock: Option<bool>,
-        measurement_type: Option<String>,
-        unit_type: Option<String>,
+        item_name:            String,
+        allow_negative_stock: bool,
+        measurement_type:     String,
+        unit_type:            Option<String>,
     }
     let info = sqlx::query!(
         r#"SELECT i.item_name, ist.allow_negative_stock,
                   ist.measurement_type, ist.unit_type
            FROM items i
-           LEFT JOIN item_settings ist ON ist.item_id = i.id
+           JOIN item_settings ist ON ist.item_id = i.id
            WHERE i.id = $1 AND i.store_id = $2"#,
         payload.item_id, payload.store_id,
     )
@@ -325,11 +330,16 @@ pub(crate) async fn adjust_inventory_inner(
     .await?
     .ok_or_else(|| AppError::NotFound("Item not found or does not belong to this store".into()))?;
 
-    let item_name = info.item_name;
-    // allow_negative_stock is BOOLEAN NOT NULL in the schema → bool (not Option<bool>)
+    let item_name      = info.item_name;
+    // Non-nullable bool — use directly.
     let allow_negative = info.allow_negative_stock;
 
-    let adj = crate::utils::qty::validate_qty_signed_opt(adj, Some(info.measurement_type.as_str()), &item_name)?;
+    // Non-nullable String — wrap in Some() to match Option<&str> signature.
+    let adj = crate::utils::qty::validate_qty_signed_opt(
+        adj,
+        Some(info.measurement_type.as_str()),
+        &item_name,
+    )?;
 
     let qty_before: Decimal = sqlx::query_scalar!(
         "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2",
@@ -805,12 +815,15 @@ pub(crate) async fn get_count_session_inner(
                   s.total_items, s.items_counted, s.items_with_variance,
                   s.total_variance_value,
                   s.started_at, s.completed_at, s.created_at,
+                  s.cancelled_by, s.cancelled_at, s.cancel_reason,
                   CASE WHEN u1.id IS NOT NULL THEN u1.username END AS started_by_username,
                   CASE WHEN u2.id IS NOT NULL THEN u2.username END AS completed_by_username,
+                  CASE WHEN u3.id IS NOT NULL THEN u3.username END AS cancelled_by_username,
                   st.store_name
            FROM   stock_count_sessions s
            LEFT JOIN users  u1 ON u1.id = s.started_by
            LEFT JOIN users  u2 ON u2.id = s.completed_by
+           LEFT JOIN users  u3 ON u3.id = s.cancelled_by
            JOIN   stores st ON st.id = s.store_id
            WHERE  s.id = $1 AND s.store_id = $2"#,
         session_id, store_id
@@ -831,12 +844,26 @@ pub(crate) async fn get_count_sessions_inner(
     let limit  = filters.limit.unwrap_or(20).clamp(1, 100);
     let offset = (page - 1) * limit;
 
+    // Build optional search pattern
+    let search = filters
+        .search
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{s}%"));
+
     let total: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM stock_count_sessions s
+           LEFT JOIN users u1 ON u1.id = s.started_by
            WHERE ($1::int  IS NULL OR s.store_id   = $1)
              AND ($2::text IS NULL OR s.status     = $2)
-             AND ($3::text IS NULL OR s.count_type = $3)"#,
-        filters.store_id, filters.status, filters.count_type,
+             AND ($3::text IS NULL OR s.count_type = $3)
+             AND ($4::text IS NULL OR (
+                   s.session_number ILIKE $4
+                OR s.notes          ILIKE $4
+                OR u1.username      ILIKE $4
+             ))"#,
+        filters.store_id, filters.status, filters.count_type, search.as_deref(),
     )
     .fetch_one(&pool)
     .await?
@@ -849,19 +876,28 @@ pub(crate) async fn get_count_sessions_inner(
                   s.total_items, s.items_counted, s.items_with_variance,
                   s.total_variance_value,
                   s.started_at, s.completed_at, s.created_at,
+                  s.cancelled_by, s.cancelled_at, s.cancel_reason,
                   CASE WHEN u1.id IS NOT NULL THEN u1.username END AS started_by_username,
                   CASE WHEN u2.id IS NOT NULL THEN u2.username END AS completed_by_username,
+                  CASE WHEN u3.id IS NOT NULL THEN u3.username END AS cancelled_by_username,
                   st.store_name
            FROM   stock_count_sessions s
            LEFT JOIN users  u1 ON u1.id = s.started_by
            LEFT JOIN users  u2 ON u2.id = s.completed_by
+           LEFT JOIN users  u3 ON u3.id = s.cancelled_by
            JOIN   stores st ON st.id = s.store_id
            WHERE ($1::int  IS NULL OR s.store_id   = $1)
              AND ($2::text IS NULL OR s.status     = $2)
              AND ($3::text IS NULL OR s.count_type = $3)
+             AND ($4::text IS NULL OR (
+                   s.session_number ILIKE $4
+                OR s.notes          ILIKE $4
+                OR u1.username      ILIKE $4
+             ))
            ORDER  BY s.started_at DESC
-           LIMIT $4 OFFSET $5"#,
-        filters.store_id, filters.status, filters.count_type, limit, offset,
+           LIMIT $5 OFFSET $6"#,
+        filters.store_id, filters.status, filters.count_type,
+        search.as_deref(), limit, offset,
     )
     .fetch_all(&pool)
     .await?;
@@ -879,12 +915,15 @@ async fn fetch_stock_count(pool: &sqlx::PgPool, id: i32) -> AppResult<StockCount
                   s.total_items, s.items_counted, s.items_with_variance,
                   s.total_variance_value,
                   s.started_at, s.completed_at, s.created_at,
+                  s.cancelled_by, s.cancelled_at, s.cancel_reason,
                   CASE WHEN u1.id IS NOT NULL THEN u1.username END AS started_by_username,
                   CASE WHEN u2.id IS NOT NULL THEN u2.username END AS completed_by_username,
+                  CASE WHEN u3.id IS NOT NULL THEN u3.username END AS cancelled_by_username,
                   st.store_name
            FROM   stock_count_sessions s
            LEFT JOIN users  u1 ON u1.id = s.started_by
            LEFT JOIN users  u2 ON u2.id = s.completed_by
+           LEFT JOIN users  u3 ON u3.id = s.cancelled_by
            JOIN   stores st ON st.id = s.store_id
            WHERE  s.id = $1"#,
         id
@@ -995,6 +1034,7 @@ async fn apply_variances_tx(
 
 /// Deduct stock from a sale. Called from within an existing transaction context.
 /// Matches quantum-pos-app `inventoryService.deductStockFromSale(client, ...)`.
+#[allow(dead_code)]
 pub(crate) async fn deduct_stock_from_sale(
     tx:         &mut sqlx::Transaction<'_, sqlx::Postgres>,
     item_id:    Uuid,
@@ -1064,6 +1104,149 @@ pub(crate) async fn deduct_stock_from_sale(
     .await?;
 
     Ok(StockDeductResult { item_id, quantity_before: qty_before, quantity_after: qty_after })
+}
+
+// ── Stock count stats ─────────────────────────────────────────────────────────
+
+pub(crate) async fn get_stock_count_stats_inner(
+    state:    &AppState,
+    token:    String,
+    store_id: i32,
+) -> AppResult<StockCountStats> {
+    guard_permission(state, &token, "inventory.stock_count").await?;
+    let pool = state.pool().await?;
+
+    let row = sqlx::query_as!(
+        StockCountStats,
+        r#"SELECT
+               COALESCE(total_count,               0) AS "total_count!: i64",
+               COALESCE(in_progress_count,          0) AS "in_progress_count!: i64",
+               COALESCE(completed_count,            0) AS "completed_count!: i64",
+               COALESCE(cancelled_count,            0) AS "cancelled_count!: i64",
+               COALESCE(total_variance_value,       0) AS "total_variance_value!: Decimal",
+               COALESCE(total_items_with_variance,  0) AS "total_items_with_variance!: i64"
+           FROM v_stock_count_stats
+           WHERE store_id = $1"#,
+        store_id
+    )
+    .fetch_optional(&pool)
+    .await?
+    .unwrap_or(StockCountStats {
+        total_count:               0,
+        in_progress_count:         0,
+        completed_count:           0,
+        cancelled_count:           0,
+        total_variance_value:      Decimal::ZERO,
+        total_items_with_variance: 0,
+    });
+
+    Ok(row)
+}
+
+// ── Get items already counted in a session ────────────────────────────────────
+
+pub(crate) async fn get_session_count_items_inner(
+    state:      &AppState,
+    token:      String,
+    session_id: i32,
+    store_id:   i32,
+) -> AppResult<Vec<StockCountItem>> {
+    guard_permission(state, &token, "inventory.stock_count").await?;
+    let pool = state.pool().await?;
+
+    // Verify session belongs to this store
+    let belongs: Option<i32> = sqlx::query_scalar!(
+        "SELECT id FROM stock_count_sessions WHERE id = $1 AND store_id = $2",
+        session_id, store_id
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    if belongs.is_none() {
+        return Err(AppError::NotFound(
+            format!("Stock count session {session_id} not found for store {store_id}")
+        ));
+    }
+
+    sqlx::query_as!(
+        StockCountItem,
+        r#"SELECT ci.id, ci.session_id, ci.item_id, ci.store_id,
+                  ci.system_quantity, ci.counted_quantity,
+                  ci.variance_quantity, ci.variance_value, ci.variance_percentage,
+                  ci.cost_price, ci.counted_by, ci.counted_at, ci.notes,
+                  ci.is_adjusted, ci.adjustment_id,
+                  i.item_name, i.sku, i.barcode,
+                  c.category_name,
+                  ist.measurement_type,
+                  COALESCE(ci.unit_type, ist.unit_type) AS unit_type
+           FROM   stock_count_items ci
+           JOIN   items i ON i.id = ci.item_id
+           LEFT JOIN categories    c   ON c.id   = i.category_id
+           LEFT JOIN item_settings ist ON ist.item_id = ci.item_id
+           WHERE  ci.session_id = $1
+           ORDER  BY ci.counted_at DESC"#,
+        session_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
+}
+
+// ── Cancel a stock count session ──────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+pub struct CancelCountSessionDto {
+    pub reason: Option<String>,
+}
+
+pub(crate) async fn cancel_count_session_inner(
+    state:      &AppState,
+    token:      String,
+    session_id: i32,
+    store_id:   i32,
+    payload:    CancelCountSessionDto,
+) -> AppResult<StockCount> {
+    let claims = guard_permission(state, &token, "inventory.stock_count").await?;
+    let pool   = state.pool().await?;
+
+    let session = sqlx::query!(
+        "SELECT id, status, store_id FROM stock_count_sessions WHERE id = $1",
+        session_id
+    )
+    .fetch_optional(&pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Stock count session not found".into()))?;
+
+    if session.status == "completed" {
+        return Err(AppError::Validation(
+            "Cannot cancel a completed stock count session".into()
+        ));
+    }
+    if session.status == "cancelled" {
+        return Err(AppError::Validation(
+            "This session is already cancelled".into()
+        ));
+    }
+    if session.store_id != store_id {
+        return Err(AppError::Validation("Store ID mismatch".into()));
+    }
+
+    sqlx::query!(
+        r#"UPDATE stock_count_sessions
+           SET status        = 'cancelled',
+               cancelled_by  = $1,
+               cancelled_at  = CURRENT_TIMESTAMP,
+               cancel_reason = $2,
+               updated_at    = CURRENT_TIMESTAMP
+           WHERE id = $3"#,
+        claims.user_id,
+        payload.reason,
+        session_id,
+    )
+    .execute(&pool)
+    .await?;
+
+    fetch_stock_count(&pool, session_id).await
 }
 
 // ── Tauri Commands ────────────────────────────────────────────────────────────
@@ -1205,6 +1388,86 @@ pub async fn get_count_sessions(
     get_count_sessions_inner(&state, token, filters).await
 }
 
+#[tauri::command]
+pub async fn get_stock_count_stats(
+    state:    State<'_, AppState>,
+    token:    String,
+    store_id: i32,
+) -> AppResult<StockCountStats> {
+    get_stock_count_stats_inner(&state, token, store_id).await
+}
+
+#[tauri::command]
+pub async fn get_session_count_items(
+    state:      State<'_, AppState>,
+    token:      String,
+    session_id: i32,
+    store_id:   i32,
+) -> AppResult<Vec<StockCountItem>> {
+    get_session_count_items_inner(&state, token, session_id, store_id).await
+}
+
+#[tauri::command]
+pub async fn cancel_count_session(
+    state:      State<'_, AppState>,
+    token:      String,
+    session_id: i32,
+    store_id:   i32,
+    payload:    CancelCountSessionDto,
+) -> AppResult<StockCount> {
+    cancel_count_session_inner(&state, token, session_id, store_id, payload).await
+}
+
+/// `get_inventory_for_count` returns all active, tracked items for the
+/// StockCountRunner without pagination. This replaces the previous
+/// `useInventory({ limit: 200 })` workaround that silently missed items
+/// beyond 200 in large stores.
+pub(crate) async fn get_inventory_for_count_inner(
+    state:    &AppState,
+    token:    String,
+    store_id: i32,
+) -> AppResult<Vec<CountableItem>> {
+    guard_permission(state, &token, "inventory.stock_count").await?;
+    let pool = state.pool().await?;
+
+    sqlx::query_as!(
+        CountableItem,
+        r#"SELECT
+               i.id                              AS "item_id!",
+               i.item_name                       AS "item_name!",
+               i.sku                             AS "sku!",
+               i.barcode,
+               c.category_name,
+               COALESCE(istock.quantity, 0)      AS "quantity!: Decimal",
+               ist.measurement_type,
+               ist.unit_type,
+               ist.min_increment
+           FROM   items i
+           JOIN   item_settings  ist    ON ist.item_id = i.id
+           LEFT JOIN item_stock  istock ON istock.item_id = i.id
+                                       AND istock.store_id = $1
+           LEFT JOIN categories  c      ON c.id = i.category_id
+           WHERE  i.store_id       = $1
+             AND  ist.track_stock  = TRUE
+             AND  ist.is_active    = TRUE
+             AND  ist.archived_at  IS NULL
+           ORDER  BY i.item_name ASC"#,
+        store_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(AppError::from)
+}
+
+#[tauri::command]
+pub async fn get_inventory_for_count(
+    state:    State<'_, AppState>,
+    token:    String,
+    store_id: i32,
+) -> AppResult<Vec<CountableItem>> {
+    get_inventory_for_count_inner(&state, token, store_id).await
+}
+
 // Legacy name kept for backwards compatibility
 #[tauri::command]
 pub async fn get_stock_counts(
@@ -1217,7 +1480,10 @@ pub async fn get_stock_counts(
     get_count_sessions_inner(
         &state,
         token,
-        CountSessionFilters { page, limit, store_id, status: None, count_type: None },
+        CountSessionFilters {
+            page, limit, store_id,
+            status: None, count_type: None, search: None,
+        },
     )
     .await
 }

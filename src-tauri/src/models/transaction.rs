@@ -1,6 +1,7 @@
 // ============================================================================
 // TRANSACTION MODELS
 // ============================================================================
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
@@ -122,6 +123,22 @@ pub struct TransactionItem {
     pub unit_type:        Option<String>,
 }
 
+// ── Search Result (lightweight, for command palette) ─────────────────────────
+
+/// Slim read model returned by `search_transactions`.
+/// Only the fields needed to display a result row and navigate to the detail page.
+#[derive(Debug, Serialize, Clone, sqlx::FromRow)]
+pub struct TransactionSearchResult {
+    pub id:             i32,
+    pub reference_no:   String,
+    pub customer_name:  Option<String>,
+    pub cashier_name:   Option<String>,
+    pub total_amount:   Decimal,
+    pub status:         String,
+    pub payment_method: String,
+    pub created_at:     DateTime<Utc>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct TransactionDetail {
     pub transaction: Transaction,
@@ -153,6 +170,8 @@ pub struct TransactionFilters {
     pub customer_id:    Option<i32>,
     pub status:         Option<String>,
     pub payment_method: Option<String>,
+    /// Filter by payment_status: "paid" | "unpaid" | "partial" | "refunded"
+    pub payment_status: Option<String>,
     pub date_from:      Option<String>,
     pub date_to:        Option<String>,
     pub search:         Option<String>,
@@ -184,6 +203,7 @@ pub struct FetchedItem {
     pub id:                  Uuid,
     pub item_name:           String,
     pub sku:                 String,
+    pub cost_price:          Decimal,
     pub selling_price:       Decimal,
     pub discount_price:      Option<Decimal>,
     pub is_active:           bool,
@@ -197,4 +217,19 @@ pub struct FetchedItem {
     pub measurement_type:    String,
     pub unit_type:           Option<String>,
     pub requires_weight:     Option<bool>,
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+
+/// Aggregated stats for the Transactions page — returned by a single SQL query
+/// to avoid the 5-round-trip overhead of separate COUNT calls.
+#[derive(Debug, Serialize)]
+pub struct TransactionStats {
+    pub total:         i64,
+    pub completed:     i64,
+    pub voided:        i64,
+    /// Includes both "refunded" and "partially_refunded" statuses.
+    pub refunded:      i64,
+    pub today_count:   i64,
+    pub today_revenue: Decimal,
 }

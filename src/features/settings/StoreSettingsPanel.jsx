@@ -7,7 +7,7 @@ import {
   Loader2, CheckCircle2, AlertCircle, Settings2,
   DollarSign, ShieldCheck, Receipt, Package, CreditCard, Timer,
 } from "lucide-react";
-import { toast } from "sonner";
+import { toastSuccess, onMutationError } from "@/lib/toast";
 import { Button }        from "@/components/ui/button";
 import { Input }         from "@/components/ui/input";
 import { cn }            from "@/lib/utils";
@@ -136,9 +136,9 @@ export function StoreSettingsPanel() {
       qc.setQueryData(["store-settings", storeId], d);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-      toast.success("Business rules saved.");
+      toastSuccess("Business Rules Saved", "Your settings are active and apply to all new transactions immediately.");
     },
-    onError: (e) => toast.error(String(e)),
+    onError: (e) => onMutationError("Couldn't Save Settings", e),
   });
 
   const set = (key) => (val) => setForm((f) => ({ ...f, [key]: val }));

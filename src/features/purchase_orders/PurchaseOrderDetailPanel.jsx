@@ -7,12 +7,14 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   Package, Truck, ChevronLeft, AlertTriangle, CheckCircle2,
   Clock, Ban, ArrowUpRight, Edit3, Send, ThumbsUp, ThumbsDown,
-  ReceiptText, ShoppingCart,
+  ReceiptText, ShoppingCart, Banknote, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { usePurchaseOrder } from "./usePurchaseOrders";
+import { usePurchaseOrder }    from "./usePurchaseOrders";
+import { useSupplierPayments } from "../suppliers/useSuppliers";
 import { PageHeader }    from "@/components/shared/PageHeader";
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { Spinner }       from "@/components/shared/Spinner";
 import { EmptyState }    from "@/components/shared/EmptyState";
 import { Button }        from "@/components/ui/button";
@@ -312,6 +314,104 @@ function RejectModal({ open, onOpenChange, poNumber, onConfirm }) {
   );
 }
 
+// ── Record Payment Dialog ──────────────────────────────────────────────────────
+
+const PM_OPTIONS = ["bank_transfer", "cash", "cheque", "card", "mobile_money"];
+const PM_LABELS  = {
+  bank_transfer: "Bank Transfer", cash: "Cash",
+  cheque: "Cheque", card: "Card", mobile_money: "Mobile Money",
+};
+
+function RecordPaymentDialog({ open, onOpenChange, supplierName, suggestedAmount, outstanding, onRecord }) {
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState("bank_transfer");
+  const [ref,    setRef]    = useState("");
+  const [notes,  setNotes]  = useState("");
+  const [busy,   setBusy]   = useState(false);
+
+  const handleOpenChange = (val) => {
+    if (val && suggestedAmount > 0) setAmount(suggestedAmount.toFixed(2));
+    if (!val) { setAmount(""); setMethod("bank_transfer"); setRef(""); setNotes(""); setBusy(false); }
+    onOpenChange(val);
+  };
+
+  const handleSave = async () => {
+    const amt = parseFloat(amount);
+    if (!(amt > 0)) { toast.error("Enter a valid payment amount."); return; }
+    setBusy(true);
+    try {
+      await onRecord({ amount: amt, payment_method: method, reference: ref || undefined, notes: notes || undefined });
+      toast.success(`${formatCurrency(amt)} payment recorded.`);
+      handleOpenChange(false);
+    } catch (err) {
+      toast.error(err?.message ?? "Failed to record payment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="max-w-sm p-0 gap-0 overflow-hidden">
+        <div className="h-[3px] w-full bg-success" />
+        <div className="p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-success/25 bg-success/10">
+              <Banknote className="h-5 w-5 text-success" />
+            </div>
+            <div>
+              <DialogTitle className="text-base font-semibold">Record Payment</DialogTitle>
+              <DialogDescription className="text-xs text-muted-foreground mt-0.5">{supplierName}</DialogDescription>
+            </div>
+          </div>
+
+          {outstanding > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-warning/25 bg-warning/5 px-3 py-2">
+              <span className="text-xs text-muted-foreground">Supplier outstanding balance</span>
+              <span className="text-sm font-bold tabular-nums font-mono text-warning">{formatCurrency(outstanding)}</span>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+              Amount (₦) <span className="text-destructive">*</span>
+            </label>
+            <Input type="number" min="0" step="100" value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.00" className="h-8 text-sm" autoFocus />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Payment Method</label>
+            <select value={method} onChange={(e) => setMethod(e.target.value)}
+              className="h-8 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring">
+              {PM_OPTIONS.map((m) => <option key={m} value={m}>{PM_LABELS[m]}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Reference / Receipt #</label>
+            <Input value={ref} onChange={(e) => setRef(e.target.value)}
+              placeholder="Bank teller, cheque number…" className="h-8 text-sm" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Notes</label>
+            <Input value={notes} onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional notes" className="h-8 text-sm" />
+          </div>
+        </div>
+        <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
+          <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)} disabled={busy}>Cancel</Button>
+          <Button size="sm" onClick={handleSave} disabled={busy}
+            className="bg-success hover:bg-success/90 text-white gap-1.5">
+            {busy
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</>
+              : <><Banknote className="h-3.5 w-3.5" />Record Payment</>}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────────────
 
 export function PurchaseOrderDetailPanel() {
@@ -322,11 +422,21 @@ export function PurchaseOrderDetailPanel() {
   const canUpdate  = usePermission("purchase_orders.update");
   const canReceive = usePermission("purchase_orders.receive");
 
-  const [receiveOpen, setReceiveOpen] = useState(false);
-  const [rejectOpen,  setRejectOpen]  = useState(false);
+  const [receiveOpen,     setReceiveOpen]     = useState(false);
+  const [rejectOpen,      setRejectOpen]      = useState(false);
+  const [payOpen,         setPayOpen]         = useState(false);
+  const [cancelConfirm,   setCancelConfirm]   = useState(false);
+  const [deleteConfirm,   setDeleteConfirm]   = useState(false);
 
   const { order, items, isLoading, error, receive, cancel, submit, approve, reject, remove } =
     usePurchaseOrder(poId);
+
+  // Load supplier balance + payment history for this PO.
+  // supplierId stays 0 until the order loads; the hook's `enabled: !!supplierId`
+  // prevents any fetch until we have a real id.
+  const supplierId = order?.supplier_id ?? 0;
+  const { balance: supplierBalance, payments: allSupplierPayments, record: recordPayment } =
+    useSupplierPayments(supplierId);
 
   if (isLoading) return <Spinner />;
   if (error || !order) return (
@@ -344,12 +454,16 @@ export function PurchaseOrderDetailPanel() {
   const isClosed     = isReceived || status === "cancelled" || status === "rejected";
   const canReceiveNow = canReceive && (isPending || isApproved) && !isReceived;
 
-  const totalOrdered  = items.reduce((s, i) => s + parseFloat(i.quantity_ordered),           0);
-  const totalReceived = items.reduce((s, i) => s + parseFloat(i.quantity_received ?? 0),     0);
+  const totalOrdered  = items.reduce((s, i) => s + parseFloat(i.quantity_ordered),       0);
+  const totalReceived = items.reduce((s, i) => s + parseFloat(i.quantity_received ?? 0), 0);
   const totalValue    = parseFloat(order.total_amount ?? 0);
 
+  const outstanding = parseFloat(supplierBalance?.current_balance ?? 0);
+  const totalPaid   = parseFloat(supplierBalance?.total_paid      ?? 0);
+  // Payments linked specifically to this PO
+  const poPayments  = (allSupplierPayments ?? []).filter((p) => p.po_id === poId);
+
   const handleCancel = async () => {
-    if (!window.confirm("Cancel this purchase order?")) return;
     try {
       await cancel.mutateAsync();
       toast.success("Purchase order cancelled.");
@@ -377,7 +491,6 @@ export function PurchaseOrderDetailPanel() {
   };
 
   const handleDelete = async () => {
-    if (!window.confirm("Delete this draft purchase order permanently?")) return;
     try {
       await remove.mutateAsync();
       toast.success("Purchase order deleted.");
@@ -413,7 +526,7 @@ export function PurchaseOrderDetailPanel() {
             {canUpdate && isDraft && (
               <>
                 <Button variant="outline" size="sm" className="text-destructive border-destructive/30 hover:bg-destructive/10"
-                  onClick={handleDelete} disabled={remove.isPending}>
+                  onClick={() => setDeleteConfirm(true)} disabled={remove.isPending}>
                   Delete Draft
                 </Button>
                 <Button size="sm" onClick={handleSubmit} disabled={submit.isPending}>
@@ -445,10 +558,19 @@ export function PurchaseOrderDetailPanel() {
                 Receive Goods
               </Button>
             )}
+            {/* Record Payment — visible once the order is approved or received */}
+            {canUpdate && (isApproved || isReceived) && (
+              <Button variant="outline" size="sm"
+                className="border-success/30 text-success hover:bg-success/10 hover:border-success"
+                onClick={() => setPayOpen(true)}>
+                <Banknote className="h-3.5 w-3.5 mr-1.5" />
+                Record Payment
+              </Button>
+            )}
             {/* Cancel (non-received) */}
             {canUpdate && !isClosed && !isDraft && (
               <Button variant="outline" size="sm" className="text-warning border-warning/30 hover:bg-warning/10"
-                onClick={handleCancel} disabled={cancel.isPending}>
+                onClick={() => setCancelConfirm(true)} disabled={cancel.isPending}>
                 <Ban className="h-3.5 w-3.5 mr-1.5" />
                 Cancel
               </Button>
@@ -501,15 +623,38 @@ export function PurchaseOrderDetailPanel() {
               </Section>
 
               <Section title="Financial" icon={ShoppingCart}>
-                <Row label="Subtotal"  value={formatCurrency(parseFloat(order.subtotal     ?? 0))} mono />
-                <Row label="Tax"       value={formatCurrency(parseFloat(order.tax_amount   ?? 0))} mono />
-                <Row label="Shipping"  value={formatCurrency(parseFloat(order.shipping_cost ?? 0))} mono />
+                <Row label="Subtotal" value={formatCurrency(parseFloat(order.subtotal      ?? 0))} mono />
+                <Row label="Tax"      value={formatCurrency(parseFloat(order.tax_amount    ?? 0))} mono />
+                <Row label="Shipping" value={formatCurrency(parseFloat(order.shipping_cost ?? 0))} mono />
                 <div className="flex items-center justify-between pt-2 border-t border-border mt-1">
                   <span className="text-xs font-semibold text-foreground">Total</span>
                   <span className="text-sm font-bold font-mono text-primary tabular-nums">
                     {formatCurrency(totalValue)}
                   </span>
                 </div>
+                {supplierId > 0 && (
+                  <div className="mt-3 pt-3 border-t border-border/40 space-y-1">
+                    <Row
+                      label="Total Paid"
+                      value={formatCurrency(totalPaid)}
+                      mono
+                      valueClass="text-success"
+                    />
+                    <Row
+                      label="Amount Owed"
+                      value={formatCurrency(outstanding)}
+                      mono
+                      valueClass={outstanding > 0 ? "text-warning font-bold" : "text-muted-foreground"}
+                    />
+                    {outstanding > 0 && canUpdate && (
+                      <Button size="sm"
+                        className="mt-2 w-full gap-1.5 bg-success hover:bg-success/90 text-white"
+                        onClick={() => setPayOpen(true)}>
+                        <Banknote className="h-3.5 w-3.5" />Record Payment
+                      </Button>
+                    )}
+                  </div>
+                )}
               </Section>
             </div>
 
@@ -606,6 +751,51 @@ export function PurchaseOrderDetailPanel() {
             </div>
           </div>
 
+          {/* PO Payment History */}
+          {poPayments.length > 0 && (
+            <Section title="Payments for this PO" icon={Banknote}
+              action={
+                canUpdate && (isApproved || isReceived) && (
+                  <Button size="sm"
+                    className="h-7 gap-1 bg-success hover:bg-success/90 text-white text-xs px-2.5"
+                    onClick={() => setPayOpen(true)}>
+                    <Banknote className="h-3 w-3" />Record Payment
+                  </Button>
+                )
+              }
+            >
+              <div className="space-y-0">
+                <div className="grid grid-cols-[120px_1fr_120px_140px] gap-2 px-1 pb-2 border-b border-border/40">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Method</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Reference</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-right">Amount</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-right">Date</span>
+                </div>
+                {poPayments.map((p, idx) => (
+                  <div key={p.id ?? idx}
+                    className="grid grid-cols-[120px_1fr_120px_140px] gap-2 items-center py-2.5 border-b border-border/30 last:border-0">
+                    <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground w-fit">
+                      {PM_LABELS[p.payment_method] ?? p.payment_method ?? "—"}
+                    </span>
+                    <span className="text-xs font-mono text-muted-foreground truncate">{p.reference ?? "—"}</span>
+                    <span className="text-xs font-mono font-bold text-success text-right tabular-nums">
+                      {formatCurrency(parseFloat(p.amount ?? 0))}
+                    </span>
+                    <span className="text-xs text-muted-foreground text-right">
+                      {formatDateTime(p.created_at)}
+                    </span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between pt-3 border-t border-border mt-1">
+                  <span className="text-xs font-semibold text-foreground">Total Paid (this PO)</span>
+                  <span className="text-sm font-bold font-mono tabular-nums text-success">
+                    {formatCurrency(poPayments.reduce((s, p) => s + parseFloat(p.amount ?? 0), 0))}
+                  </span>
+                </div>
+              </div>
+            </Section>
+          )}
+
         </div>
       </div>
 
@@ -623,6 +813,38 @@ export function PurchaseOrderDetailPanel() {
         onOpenChange={setRejectOpen}
         poNumber={order.po_number}
         onConfirm={(reason) => reject.mutateAsync(reason)}
+      />
+
+      {/* Record Payment Modal */}
+      <RecordPaymentDialog
+        open={payOpen}
+        onOpenChange={setPayOpen}
+        supplierName={order.supplier_name}
+        suggestedAmount={totalValue}
+        outstanding={outstanding}
+        onRecord={(p) => recordPayment.mutateAsync({ po_id: poId, ...p })}
+      />
+
+      {/* Cancel PO confirmation */}
+      <ConfirmDialog
+        open={cancelConfirm}
+        onOpenChange={setCancelConfirm}
+        title="Cancel purchase order?"
+        description={`Cancel ${order.po_number}? This cannot be undone. The order will be marked as cancelled.`}
+        confirmLabel="Cancel Order"
+        variant="warning"
+        onConfirm={handleCancel}
+      />
+
+      {/* Delete draft PO confirmation */}
+      <ConfirmDialog
+        open={deleteConfirm}
+        onOpenChange={setDeleteConfirm}
+        title="Delete draft permanently?"
+        description={`Delete ${order.po_number}? This permanently removes the draft and cannot be undone.`}
+        confirmLabel="Delete Draft"
+        variant="destructive"
+        onConfirm={handleDelete}
       />
     </>
   );
