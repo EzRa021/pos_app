@@ -281,7 +281,74 @@ pub async fn queue_row(
     }
 }
 
+/// When a row fails with a FK violation, infer which parent table needs to be
+/// re-synced and return its name. Keyed on the FK constraint name suffix that
+/// PostgreSQL embeds in the error message.
+///
+/// Pattern: `"violates foreign key constraint \"items_category_id_fkey\""`
+/// → column name `category_id` → parent table `categories`.
+fn fk_parent_table(error_msg: &str) -> Option<&'static str> {
+    // Most specific matches first (avoid false positives)
+    if error_msg.contains("item_stock_item_id_fkey")         { return Some("items"); }
+    if error_msg.contains("item_stock_store_id_fkey")         { return Some("stores"); }
+    // Generic column-name inference — matches any table's FK to these parents
+    if error_msg.contains("_category_id_fkey")   { return Some("categories"); }
+    if error_msg.contains("_department_id_fkey")  { return Some("departments"); }
+    if error_msg.contains("_supplier_id_fkey")    { return Some("suppliers"); }
+    if error_msg.contains("_customer_id_fkey")    { return Some("customers"); }
+    if error_msg.contains("_store_id_fkey")       { return Some("stores"); }
+    if error_msg.contains("_business_id_fkey")    { return Some("businesses"); }
+    if error_msg.contains("_item_id_fkey")        { return Some("items"); }
+    if error_msg.contains("_shift_id_fkey")       { return Some("shifts"); }
+    if error_msg.contains("_transaction_id_fkey") { return Some("transactions"); }
+    if error_msg.contains("_user_id_fkey")        { return Some("users"); }
+    None
+}
+
+/// Re-queue all 'synced' rows for `parent_table` back to 'pending'.
+///
+/// This handles the case where a parent row was previously marked 'synced'
+/// but never actually landed in Supabase (e.g. cloud DB was reset, or an
+/// earlier session crashed mid-upsert). Without this, the backfill would
+/// never re-queue these rows (its NOT EXISTS guard excludes 'synced' rows),
+/// so child FK errors would loop forever.
+async fn requeue_stale_parent(pool: &PgPool, parent_table: &str) {
+    let result = sqlx::query!(
+        "UPDATE sync_queue
+         SET status = 'pending', retries = 0, error = NULL
+         WHERE table_name = $1 AND status = 'synced'",
+        parent_table,
+    )
+    .execute(pool)
+    .await;
+
+    match result {
+        Ok(r) if r.rows_affected() > 0 => {
+            tracing::info!(
+                "Sync: re-queued {} stale '{}' row(s) that may be missing from Supabase.",
+                r.rows_affected(), parent_table
+            );
+        }
+        Ok(_)  => {}
+        Err(e) => tracing::warn!("requeue_stale_parent({parent_table}) error: {e}"),
+    }
+}
+
 /// Spawn the background sync loop. Should be called once at app startup.
+///
+/// # Tier-gated processing
+/// Rows are fetched already ordered by FK-dependency tier (businesses=0 →
+/// stores=1 → categories=2 → items=3 → item_stock=4 → …). Within each poll
+/// cycle the loop groups rows by tier and processes them in strict order:
+///
+///   • If ALL rows in tier N succeed → proceed to tier N+1.
+///   • If ANY row in tier N fails    → release all unclaimed tier > N rows
+///     back to 'pending' and end the cycle. Children are never attempted
+///     when their parents failed.
+///
+/// Additionally, on any FK constraint failure the parent table's already-
+/// 'synced' rows are reset to 'pending' so a stale parent that never really
+/// landed in Supabase is automatically re-pushed on the next cycle.
 pub async fn run_sync_loop(state: AppState) {
     tracing::info!("Cloud sync worker started — polling every {POLL_SECS}s");
     loop {
@@ -332,7 +399,6 @@ pub async fn run_sync_loop(state: AppState) {
         let business_id = match state.get_business_id().await {
             Some(id) => id,
             None => {
-                // Try loading it from DB in case AppState cache is cold
                 load_biz_id(&local_pool).await.unwrap_or_else(|| {
                     tracing::debug!("Push worker: no business_id yet — skipping cycle");
                     Uuid::nil()
@@ -343,9 +409,9 @@ pub async fn run_sync_loop(state: AppState) {
             continue;
         }
 
-        // Fetch a batch of pending rows scoped to this business only.
-        // ORDER BY tier (via CASE) first so that even rows with identical
-        // created_at timestamps come out in FK-safe dependency order.
+        // Fetch a batch of pending rows, tier-ordered so parents come first.
+        // We fetch more than BATCH_SIZE here so that tier-gating doesn't
+        // accidentally leave parent rows out when a full batch is all one table.
         let rows = match sqlx::query!(
             r#"SELECT id, table_name, operation, row_id, row_data, store_id
                FROM sync_queue
@@ -354,28 +420,28 @@ pub async fn run_sync_loop(state: AppState) {
                  AND (business_id = $2 OR business_id IS NULL)
                ORDER BY
                  CASE table_name
-                   WHEN 'businesses'          THEN 0
-                   WHEN 'stores'              THEN 1
-                   WHEN 'users'               THEN 1
-                   WHEN 'departments'         THEN 2
-                   WHEN 'categories'          THEN 2
-                   WHEN 'suppliers'           THEN 2
-                   WHEN 'items'               THEN 3
-                   WHEN 'customers'           THEN 3
-                   WHEN 'item_stock'          THEN 4
-                   WHEN 'shifts'              THEN 5
-                   WHEN 'transactions'        THEN 6
-                   WHEN 'purchase_orders'     THEN 6
-                   WHEN 'credit_sales'        THEN 6
-                   WHEN 'expenses'            THEN 6
-                   WHEN 'transaction_items'   THEN 7
-                   WHEN 'payments'            THEN 7
-                   WHEN 'returns'             THEN 7
+                   WHEN 'businesses'           THEN 0
+                   WHEN 'stores'               THEN 1
+                   WHEN 'users'                THEN 1
+                   WHEN 'departments'          THEN 2
+                   WHEN 'categories'           THEN 2
+                   WHEN 'suppliers'            THEN 2
+                   WHEN 'items'                THEN 3
+                   WHEN 'customers'            THEN 3
+                   WHEN 'item_stock'           THEN 4
+                   WHEN 'shifts'               THEN 5
+                   WHEN 'transactions'         THEN 6
+                   WHEN 'purchase_orders'      THEN 6
+                   WHEN 'credit_sales'         THEN 6
+                   WHEN 'expenses'             THEN 6
+                   WHEN 'transaction_items'    THEN 7
+                   WHEN 'payments'             THEN 7
+                   WHEN 'returns'              THEN 7
                    WHEN 'purchase_order_items' THEN 7
-                   WHEN 'cash_movements'      THEN 7
-                   WHEN 'return_items'        THEN 8
-                   WHEN 'reorder_alerts'      THEN 9
-                   WHEN 'notifications'       THEN 9
+                   WHEN 'cash_movements'       THEN 7
+                   WHEN 'return_items'         THEN 8
+                   WHEN 'reorder_alerts'       THEN 9
+                   WHEN 'notifications'        THEN 9
                    ELSE 10
                  END ASC,
                  created_at ASC
@@ -385,34 +451,49 @@ pub async fn run_sync_loop(state: AppState) {
             BATCH_SIZE,
         )
         .fetch_all(&local_pool)
-        .await {
+        .await
+        {
             Ok(r)  => r,
-            Err(e) => {
-                tracing::warn!("sync_queue read failed: {e}");
-                continue;
-            }
+            Err(e) => { tracing::warn!("sync_queue read failed: {e}"); continue; }
         };
 
         if rows.is_empty() {
             continue;
         }
 
-        // Sort by FK-dependency tier so parent tables (businesses → stores →
-        // categories → items …) always arrive in Supabase before their children,
-        // regardless of how close their created_at timestamps are.
-        let mut rows = rows;
-        rows.sort_by_key(|r| table_tier(&r.table_name));
-
         tracing::debug!("Cloud sync: processing {} row(s)", rows.len());
 
-        for row in rows {
+        // ── Tier-gated processing ─────────────────────────────────────────────
+        // Group by tier, then process each tier completely before moving to the
+        // next. If any row fails in tier N, all rows from tiers > N are released
+        // back to 'pending' untouched — children are never attempted when their
+        // parents haven't landed yet.
+        //
+        // We collect into a Vec<(tier, row)> first so we can iterate tiers in
+        // order and know which rows belong to which tier.
+        let mut tier_rows: Vec<(u8, _)> = rows
+            .into_iter()
+            .map(|r| (table_tier(&r.table_name), r))
+            .collect();
+        tier_rows.sort_by_key(|(t, _)| *t);
+
+        // The highest tier that had at least one failure. Once set, all rows
+        // from higher tiers are skipped this cycle.
+        let mut failed_at_tier: Option<u8> = None;
+
+        for (tier, row) in tier_rows {
+            // If a lower tier failed, just leave this row as-is (still 'pending')
+            if failed_at_tier.map_or(false, |ft| tier > ft) {
+                continue;
+            }
+
             let id         = row.id;
             let table      = row.table_name.clone();
             let operation  = row.operation.clone();
             let row_id_str = row.row_id.clone();
             let data       = row.row_data.clone();
 
-            // Mark as syncing so a concurrent worker doesn't double-process
+            // Atomic claim: only one worker processes each row
             let claimed = sqlx::query!(
                 "UPDATE sync_queue SET status = 'syncing' WHERE id = $1 AND status = 'pending'",
                 id,
@@ -441,6 +522,22 @@ pub async fn run_sync_loop(state: AppState) {
                 Err(e) => {
                     let err_str = e.to_string();
                     tracing::warn!("Cloud sync failed for {table} row {row_id_str}: {err_str}");
+
+                    // Gate: don't attempt higher tiers this cycle
+                    if failed_at_tier.map_or(true, |ft| tier < ft) {
+                        failed_at_tier = Some(tier);
+                    }
+
+                    // If this is a FK violation, the parent table might have
+                    // rows that were marked 'synced' but never actually landed
+                    // in Supabase. Reset them so they are re-pushed next cycle.
+                    if err_str.contains("violates foreign key constraint") {
+                        if let Some(parent) = fk_parent_table(&err_str) {
+                            requeue_stale_parent(&local_pool, parent).await;
+                        }
+                    }
+
+                    // Update retry counter / mark failed if exhausted
                     let _ = sqlx::query!(
                         r#"UPDATE sync_queue
                            SET status  = CASE WHEN retries + 1 >= $1 THEN 'failed' ELSE 'pending' END,
