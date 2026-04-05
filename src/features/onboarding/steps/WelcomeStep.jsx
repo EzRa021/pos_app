@@ -1,12 +1,11 @@
 // ============================================================================
 // WelcomeStep — first screen of onboarding
 // ============================================================================
-// Two choices: create a new business, or link to an existing one by ID.
+// Two choices: create a new business, or restore an existing one from cloud.
 
-import { Store, Link } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Store, CloudDownload } from 'lucide-react';
 
-export function WelcomeStep({ onNew, onExisting }) {
+export function WelcomeStep({ onNew, onRestore }) {
   return (
     <div className="flex flex-col gap-6">
       {/* Brand */}
@@ -43,18 +42,18 @@ export function WelcomeStep({ onNew, onExisting }) {
           </div>
         </button>
 
-        {/* Existing business */}
+        {/* Restore from cloud */}
         <button
-          onClick={onExisting}
+          onClick={onRestore}
           className="group flex items-start gap-4 rounded-xl border border-border bg-card hover:border-primary/50 hover:bg-primary/5 p-4 text-left transition-all duration-150"
         >
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted group-hover:bg-muted/70 transition-colors">
-            <Link className="h-5 w-5 text-muted-foreground" />
+            <CloudDownload className="h-5 w-5 text-muted-foreground group-hover:text-foreground transition-colors" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-foreground">I have a Business ID</p>
+            <p className="text-sm font-semibold text-foreground">Restore from Cloud</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Already set up on another device? Link this terminal using your Business ID.
+              Setting up a new terminal? Enter your Business ID to pull data from the cloud.
             </p>
           </div>
         </button>

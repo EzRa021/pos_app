@@ -22,7 +22,8 @@ import {
 } from "@/components/ui/dialog";
 import { cn }             from "@/lib/utils";
 import { formatCurrency, formatDate, formatDateTime, formatRef } from "@/lib/format";
-import { usePermission }  from "@/hooks/usePermission";
+import { usePermission }       from "@/hooks/usePermission";
+import { usePaginationParams } from "@/hooks/usePaginationParams";
 import { toast }          from "sonner";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -520,12 +521,11 @@ export function CreditSalesPanel({ preFilterCustomerId } = {}) {
   const navigate   = useNavigate();
   const canManage  = usePermission("credit_sales.update");
 
-  const [search,      setSearch]      = useState("");
+  const { page, search, setPage, setSearch } = usePaginationParams({ defaultPageSize: 25 });
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [status,      setStatus]      = useState("");
   const [dateFrom,    setDateFrom]    = useState("");
   const [dateTo,      setDateTo]      = useState("");
-  const [page,        setPage]        = useState(1);
   const [detailId,    setDetailId]    = useState(null);
   const [payTarget,   setPayTarget]   = useState(null);
   const [cancelTarget,setCancelTarget]= useState(null);
@@ -547,7 +547,7 @@ export function CreditSalesPanel({ preFilterCustomerId } = {}) {
   const { summary, outstanding, overdue } = useCreditSummary();
 
   const hasFilters = search || status || dateFrom || dateTo;
-  const clearFilters = useCallback(() => { setSearch(""); setStatus(""); setDateFrom(""); setDateTo(""); setPage(1); }, []);
+  const clearFilters = useCallback(() => { setSearch(""); setStatus(""); setDateFrom(""); setDateTo(""); }, []);
 
   const handleRecordPayment = useCallback((p) => recordPayment.mutateAsync(p), [recordPayment]);
   const handleCancel        = useCallback((p) => cancel.mutateAsync(p),        [cancel]);
@@ -708,7 +708,7 @@ export function CreditSalesPanel({ preFilterCustomerId } = {}) {
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
                     <Input
                       value={search}
-                      onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                      onChange={(e) => setSearch(e.target.value)}
                       placeholder="Search reference, customer…"
                       className="pl-9 h-8 text-xs"
                     />

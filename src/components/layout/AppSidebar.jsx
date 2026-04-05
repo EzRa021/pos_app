@@ -1,34 +1,8 @@
 // ============================================================================
 // APP-SIDEBAR — Quantum POS navigation sidebar
 // ============================================================================
-//
-// Sections:
-//   Header  → Brand mark (Q logo) + Store Switcher
-//   Content → Five nav groups, filtered by the user's role_slug
-//   Footer  → Shift status banner + Logged-in user menu
-//
-// Role-based visibility:
-//   Each nav item has an optional `roles` array. If absent, all roles see it.
-//   Groups whose every item is filtered out are hidden entirely.
-//   Five built-in roles: super_admin, admin, manager, cashier, stock_keeper.
-//
-// Shift status banner:
-//   Reads from shiftStore. Shows "Shift Open" (green) or "No Active Shift"
-//   (amber warning) above the user footer. Cashiers must open a shift before
-//   using the POS — this makes the status always visible.
-//
-// Backend field names (src-tauri/src/models/):
-//   AuthUser  → first_name, last_name, username, email,
-//               role_name, role_slug, store_id, is_global
-//   Store     → id, store_name, address, city, state,
-//               phone, email, currency, timezone, is_active
-//   Shift     → id, store_id, cashier_id, status, opened_at, closed_at,
-//               opening_float, closing_float
-//
-// Collapse: collapsible="icon" shrinks sidebar to a 3rem icon-only strip.
-// ============================================================================
 
-import { useLocation, NavLink } from "react-router-dom";
+import { useLocation, NavLink, useNavigate } from "react-router-dom";
 
 import {
   ShoppingCart, Receipt, RotateCcw, Clock,
@@ -36,9 +10,10 @@ import {
   Users, CreditCard, Wallet, BarChart3,
   Tag, UserCog, Settings, Banknote,
   Store, ChevronsUpDown, Check,
-  LogOut, KeyRound, ChevronRight,
+  LogOut, KeyRound, ChevronRight, Lock,
   MapPin, Timer, AlertTriangle,
   Bell, FileText, ArrowLeftRight, ShieldCheck, LayoutDashboard,
+  Plus,
 } from "lucide-react";
 
 import {
@@ -73,18 +48,16 @@ import { useBusinessInfo } from "@/hooks/useBusinessInfo";
 import { isActiveShiftStatus } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
+// Quantum POS software logo (public folder — always available as fallback)
+const QUANTUM_LOGO = "/quantum-logo.svg";
+
 // ─── Role-based access helper ─────────────────────────────────────────────────
-// Returns true if the user's roleSlug is in the item's `roles` array.
-// If `roles` is undefined, the item is visible to every authenticated user.
 function canSee(roleSlug, allowedRoles) {
   if (!allowedRoles) return true;
   return allowedRoles.includes(roleSlug ?? "");
 }
 
 // ─── Navigation definition ────────────────────────────────────────────────────
-// `roles`: which role_slugs can see this item. Omit = visible to all roles.
-// `exact`: only mark active on exact path match (prevents /pos activating for /products).
-
 const NAV_GROUPS = [
   {
     label: "Operations",
@@ -94,32 +67,27 @@ const NAV_GROUPS = [
         path: "/analytics",
         icon: LayoutDashboard,
         exact: true,
-        // visible to every role — each role gets their own tailored view
       },
       {
         title: "Point of Sale",
         path: "/pos",
         icon: ShoppingCart,
         exact: true,
-        roles: ["super_admin", "admin", "manager", "cashier"],
       },
       {
         title: "Transactions",
         path: "/transactions",
         icon: Receipt,
-        roles: ["super_admin", "admin", "manager", "cashier"],
       },
       {
         title: "Returns",
         path: "/returns",
         icon: RotateCcw,
-        roles: ["super_admin", "admin", "manager", "cashier"],
       },
       {
         title: "Shifts",
         path: "/shifts",
         icon: Clock,
-        roles: ["super_admin", "admin", "manager", "cashier"],
       },
       {
         title: "EOD Reports",
@@ -248,12 +216,6 @@ const NAV_GROUPS = [
         roles: ["super_admin", "admin"],
       },
       {
-        title: "Stores",
-        path: "/stores",
-        icon: Store,
-        roles: ["super_admin", "admin"],
-      },
-      {
         title: "Audit Log",
         path: "/audit",
         icon: ShieldCheck,
@@ -312,7 +274,6 @@ function NavItem({ title, path, icon: Icon, exact }) {
 }
 
 // ─── NavGroup ─────────────────────────────────────────────────────────────────
-// Filters items by role before rendering. Hides the entire group if no items pass.
 function NavGroup({ label, items, roleSlug }) {
   const visibleItems = items.filter((item) => canSee(roleSlug, item.roles));
   if (visibleItems.length === 0) return null;
@@ -332,18 +293,12 @@ function NavGroup({ label, items, roleSlug }) {
 }
 
 // ─── ShiftStatusBanner ────────────────────────────────────────────────────────
-// Shows current shift state. Only visible to roles that operate shifts.
-// Collapses to a single icon dot in icon-only sidebar mode.
-//
-// Shift status values (from src-tauri/src/models/shift.rs): "open" | "closed"
 function ShiftStatusBanner({ roleSlug }) {
-  const activeShift = useShiftStore((s) => s.activeShift);
-  const shiftRoles  = ["super_admin", "admin", "manager", "cashier"];
-  if (!shiftRoles.includes(roleSlug ?? "")) return null;
+  const activeShift   = useShiftStore((s) => s.activeShift);
+  const isInitialized = useShiftStore((s) => s.isInitialized);
+  if (!roleSlug) return null;
+  if (!isInitialized) return null;
 
-  // Covers open, active, AND suspended — all mean shift is still in progress.
-  // A shift transitions from "open" → "active" after the first sale, so
-  // checking only === "open" wrongly shows "No Active Shift" after refresh.
   const isOpen = isActiveShiftStatus(activeShift?.status);
 
   return (
@@ -354,9 +309,7 @@ function ShiftStatusBanner({ roleSlug }) {
           tooltip={isOpen ? "Shift is open" : "No active shift — open one to use POS"}
           className="cursor-default hover:bg-transparent active:bg-transparent"
         >
-          {/* NavLink to /shifts so clicking navigates there */}
           <NavLink to="/shifts">
-            {/* Status dot — always visible in icon mode */}
             <div
               className={cn(
                 "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
@@ -372,7 +325,6 @@ function ShiftStatusBanner({ roleSlug }) {
               )}
             </div>
 
-            {/* Label — hidden in icon-collapsed mode */}
             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
               <span
                 className={cn(
@@ -401,13 +353,9 @@ function ShiftStatusBanner({ roleSlug }) {
 }
 
 // ─── StoreSwitcher ────────────────────────────────────────────────────────────
-// • Global users (is_global = true)  → dropdown to switch between all stores
-// • Store-bound users (is_global = false) → read-only chip showing THEIR store
-//
-// IMPORTANT: Never show "All Stores" for store-bound users. They can only
-// ever operate in their single assigned store.
 function StoreSwitcher() {
   const { isMobile } = useSidebar();
+  const navigate = useNavigate();
 
   const activeStore    = useBranchStore((s) => s.activeStore);
   const stores         = useBranchStore((s) => s.stores);
@@ -415,24 +363,17 @@ function StoreSwitcher() {
   const storeIsLoading = useBranchStore((s) => s.isLoading);
 
   const user     = useAuthStore((s) => s.user);
-  // Strict equality — is_global may be null/undefined for legacy tokens
   const isGlobal = user?.is_global === true;
+  const canAddStore = ["super_admin", "admin", "gm"].includes(user?.role_slug ?? "");
 
-  // ── Resolve the display name ───────────────────────────────────────────────
-  //  Global  + no store picked yet  → "Select a store"
-  //  Global  + store picked         → store name
-  //  Non-global + name available    → store name       ← the happy path
-  //  Non-global + still loading     → "Loading…"
-  //  Non-global + no store assigned → "No store assigned"  (misconfigured DB)
   const storeName = (() => {
     if (activeStore?.store_name) return activeStore.store_name;
     if (isGlobal) return "Select a store";
     if (storeIsLoading) return "Loading…";
-    if (activeStore?.id) return `Store #${activeStore.id}`; // name fetch in-progress
+    if (activeStore?.id) return `Store #${activeStore.id}`;
     return "No store assigned";
   })();
 
-  // Two-letter avatar derived from store name (letters only)
   const storeCode = storeName
     .replace(/[^a-zA-Z]/g, "")
     .slice(0, 2)
@@ -440,10 +381,8 @@ function StoreSwitcher() {
 
   const storeCount = stores.length;
 
-  // Subtitle line (shown below store name)
   const storeSubtitle = (() => {
     if (!isGlobal) {
-      // Show city/state if available, else the store ID
       const loc = [activeStore?.city, activeStore?.state].filter(Boolean).join(", ");
       if (loc) return loc;
       if (activeStore?.id) return `Store ID: ${activeStore.id}`;
@@ -454,7 +393,6 @@ function StoreSwitcher() {
   })();
 
   // ── Read-only badge for store-bound users ──────────────────────────────────
-  // No dropdown — these users cannot switch stores.
   if (!isGlobal) {
     const hasName = !!activeStore?.store_name;
     return (
@@ -465,16 +403,16 @@ function StoreSwitcher() {
             tooltip={storeName}
             className="cursor-default select-none hover:bg-transparent active:bg-transparent"
           >
-            {/* Avatar shows two-letter abbreviation once we have the real name */}
-            {hasName ? (
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-[11px] font-bold text-primary leading-none">
-                {storeCode}
-              </div>
-            ) : (
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10">
+            {/* Store avatar: logo → initials */}
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 overflow-hidden">
+              {activeStore?.logo_data ? (
+                <img src={activeStore.logo_data} alt={storeName} className="h-full w-full object-cover" />
+              ) : hasName ? (
+                <span className="text-[11px] font-bold text-primary leading-none">{storeCode}</span>
+              ) : (
                 <Store className={cn("h-4 w-4 text-primary", storeIsLoading && "animate-pulse")} />
-              </div>
-            )}
+              )}
+            </div>
 
             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
               <span className="truncate text-[13px] font-semibold text-sidebar-foreground">
@@ -505,8 +443,13 @@ function StoreSwitcher() {
                 "data-[state=open]:text-sidebar-accent-foreground",
               )}
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-[11px] font-bold text-primary">
-                {storeCode}
+              {/* Active store avatar: logo → initials */}
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 overflow-hidden">
+                {activeStore?.logo_data ? (
+                  <img src={activeStore.logo_data} alt={storeName} className="h-full w-full object-cover" />
+                ) : (
+                  <span className="text-[11px] font-bold text-primary">{storeCode}</span>
+                )}
               </div>
               <div className="grid min-w-0 flex-1 text-left leading-tight">
                 <span className="truncate text-[13px] font-semibold text-sidebar-foreground">
@@ -552,11 +495,16 @@ function StoreSwitcher() {
                     isActive && "bg-primary/10",
                   )}
                 >
+                  {/* Store logo in dropdown: logo → initials */}
                   <div className={cn(
-                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[10px] font-bold",
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-md overflow-hidden",
                     isActive ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
                   )}>
-                    {code}
+                    {store.logo_data ? (
+                      <img src={store.logo_data} alt={name} className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-[10px] font-bold">{code}</span>
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className={cn(
@@ -578,6 +526,30 @@ function StoreSwitcher() {
                 </DropdownMenuItem>
               );
             })}
+
+            {/* ── Add New Store CTA ── */}
+            {canAddStore && (
+              <>
+                <DropdownMenuSeparator className="my-1.5 bg-border/60" />
+                <DropdownMenuItem
+                  onClick={() => navigate("/store/new")}
+                  className={cn(
+                    "group cursor-pointer gap-2.5 rounded-lg px-2 py-2.5",
+                    "border border-dashed border-primary/30 bg-primary/[0.04]",
+                    "hover:bg-primary/10 hover:border-primary/50",
+                    "transition-all duration-150",
+                  )}
+                >
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10">
+                    <Plus className="h-3.5 w-3.5 text-primary" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-primary">Add New Store</p>
+                    <p className="text-[10px] text-primary/60">Create a new branch location</p>
+                  </div>
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>
@@ -587,8 +559,9 @@ function StoreSwitcher() {
 
 // ─── UserFooter ───────────────────────────────────────────────────────────────
 function UserFooter() {
-  const user   = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
+  const user     = useAuthStore((s) => s.user);
+  const logout   = useAuthStore((s) => s.logout);
+  const lockPos  = useAuthStore((s) => s.lockPos);
   const { isMobile } = useSidebar();
 
   if (!user) return null;
@@ -657,6 +630,14 @@ function UserFooter() {
               <span className="text-sm">Change Password</span>
             </DropdownMenuItem>
 
+            <DropdownMenuItem
+              onClick={lockPos}
+              className="cursor-pointer gap-2.5 rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground"
+            >
+              <Lock className="h-4 w-4 shrink-0" />
+              <span className="text-sm">Lock Screen</span>
+            </DropdownMenuItem>
+
             <DropdownMenuSeparator className="my-1 bg-border" />
 
             <DropdownMenuItem
@@ -676,9 +657,8 @@ function UserFooter() {
 // ─── AppSidebar (root export) ─────────────────────────────────────────────────
 export function AppSidebar({ ...props }) {
   const roleSlug   = useAuthStore((s) => s.user?.role_slug ?? null);
-  const { name: businessName, businessType } = useBusinessInfo();
+  const { name: businessName, businessType, logoData } = useBusinessInfo();
 
-  // Format business type for display: 'retail' → 'Retail'
   const typeLabel = businessType
     ? businessType.charAt(0).toUpperCase() + businessType.slice(1)
     : 'Point of Sale';
@@ -690,8 +670,23 @@ export function AppSidebar({ ...props }) {
       <SidebarHeader className="gap-0 p-0">
         {/* Brand row */}
         <div className="flex items-center gap-2.5 px-3 py-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary shadow-sm">
-            <span className="select-none text-sm font-black leading-none text-white">Q</span>
+          {/* Logo: business logo → quantum svg → Q chip fallback */}
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg overflow-hidden bg-primary shadow-sm">
+            {logoData ? (
+              <img src={logoData} alt={businessName ?? 'Quantum POS'} className="h-full w-full object-cover" />
+            ) : (
+              <img
+                src={QUANTUM_LOGO}
+                alt="Quantum POS"
+                className="h-full w-full object-cover"
+                onError={(e) => {
+                  // SVG failed to load — render the Q text fallback
+                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.parentElement.innerHTML =
+                    '<span class="select-none text-sm font-black leading-none text-white">Q</span>';
+                }}
+              />
+            )}
           </div>
           <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
             <p className="text-[13px] font-bold leading-none tracking-tight text-sidebar-foreground truncate">

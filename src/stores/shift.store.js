@@ -24,27 +24,28 @@ import { rpc }    from "@/lib/apiClient";
 import { SHIFT_STATUS, isActiveShiftStatus } from "@/lib/constants";
 
 export const useShiftStore = create((set, get) => ({
-  activeShift: null,
-  isLoading:   false,
-  error:       null,
+  activeShift:    null,
+  isLoading:      false,
+  isInitialized:  false,  // true after the first initForStore call completes
+  error:          null,
 
   // ── Load active shift for a store ─────────────────────────────────────────
   // Called by branch.store.initForUser and setActiveStore.
   // Clears the previous shift immediately so stale data never shows.
   async initForStore(storeId) {
     if (!storeId) {
-      set({ activeShift: null, isLoading: false, error: null });
+      set({ activeShift: null, isLoading: false, isInitialized: true, error: null });
       return;
     }
     // Clear previous shift while loading — don't leave stale data visible.
-    set({ activeShift: null, isLoading: true, error: null });
+    set({ activeShift: null, isLoading: true, isInitialized: false, error: null });
     try {
       const shift = await rpc("get_active_shift", { store_id: storeId });
-      set({ activeShift: shift ?? null, isLoading: false });
+      set({ activeShift: shift ?? null, isLoading: false, isInitialized: true });
     } catch (err) {
       const msg = typeof err === "string" ? err : "Failed to load active shift";
       console.error("[shift.store] initForStore failed:", err);
-      set({ activeShift: null, isLoading: false, error: msg });
+      set({ activeShift: null, isLoading: false, isInitialized: true, error: msg });
     }
   },
 
@@ -99,7 +100,7 @@ export const useShiftStore = create((set, get) => ({
   },
 
   reset() {
-    set({ activeShift: null, isLoading: false, error: null });
+    set({ activeShift: null, isLoading: false, isInitialized: false, error: null });
   },
 
   clearError() {

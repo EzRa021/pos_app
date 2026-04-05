@@ -15,6 +15,7 @@ use crate::{
         crypto::{verify_password, hash_password, validate_password},
     },
 };
+use super::audit::write_audit_log;
 
 // ── LOGIN ─────────────────────────────────────────────────────────────────────
 
@@ -125,22 +126,38 @@ pub(crate) async fn login_inner(state: &AppState, payload: LoginRequest) -> AppR
     .await
     .ok(); // non-fatal — table may not exist in older migrations
 
+    write_audit_log(&pool, row.id, row.store_id, "login", "auth",
+        &format!("User '{}' logged in", row.username), "info").await;
+
+    // Fetch the role's permission slugs so the frontend usePermission() hook works
+    let permissions: Vec<String> = sqlx::query_scalar!(
+        r#"SELECT p.permission_slug
+           FROM   role_permissions rp
+           JOIN   permissions p ON p.id = rp.permission_id
+           WHERE  rp.role_id = $1"#,
+        row.role_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
     Ok(TokenPair {
         access_token,
         refresh_token,
         expires_in,
         user: AuthUser {
-            id:         row.id,
-            username:   row.username,
-            email:      row.email,
-            first_name: row.first_name,
-            last_name:  row.last_name,
-            role_id:    row.role_id,
-            role_slug:  row.role_slug,
-            role_name:  row.role_name,
-            store_id:   row.store_id,
-            is_global:  row.is_global,
-            is_active:  row.is_active,
+            id:          row.id,
+            username:    row.username,
+            email:       row.email,
+            first_name:  row.first_name,
+            last_name:   row.last_name,
+            role_id:     row.role_id,
+            role_slug:   row.role_slug,
+            role_name:   row.role_name,
+            store_id:    row.store_id,
+            is_global:   row.is_global,
+            is_active:   row.is_active,
+            permissions,
         },
     })
 }
@@ -166,6 +183,8 @@ pub async fn logout(
 }
 
 pub(crate) async fn logout_inner(state: &AppState, token: String) -> AppResult<()> {
+    let session_info = state.sessions.read().await
+        .get(&token).map(|s| (s.user_id, s.store_id, s.username.clone()));
     state.sessions.write().await.remove(&token);
     let pool = state.pool().await?;
 
@@ -178,6 +197,11 @@ pub(crate) async fn logout_inner(state: &AppState, token: String) -> AppResult<(
         "UPDATE active_sessions SET expires_at = NOW() WHERE token_hash = $1",
         crate::utils::crypto::hash_string(&token),
     ).execute(&pool).await.ok();
+
+    if let Some((uid, sid, uname)) = session_info {
+        write_audit_log(&pool, uid, sid, "logout", "auth",
+            &format!("User '{}' logged out", uname), "info").await;
+    }
 
     Ok(())
 }
@@ -264,22 +288,35 @@ pub(crate) async fn refresh_token_inner(state: &AppState, payload: RefreshReques
     .await
     .ok();
 
+    // Fetch the role's permission slugs so the frontend usePermission() hook works
+    let permissions: Vec<String> = sqlx::query_scalar!(
+        r#"SELECT p.permission_slug
+           FROM   role_permissions rp
+           JOIN   permissions p ON p.id = rp.permission_id
+           WHERE  rp.role_id = $1"#,
+        row.role_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
     Ok(TokenPair {
         access_token,
         refresh_token,
         expires_in,
         user: AuthUser {
-            id:         row.id,
-            username:   row.username,
-            email:      row.email,
-            first_name: row.first_name,
-            last_name:  row.last_name,
-            role_id:    row.role_id,
-            role_slug:  row.role_slug,
-            role_name:  row.role_name,
-            store_id:   row.store_id,
-            is_global:  row.is_global,
-            is_active:  row.is_active,
+            id:          row.id,
+            username:    row.username,
+            email:       row.email,
+            first_name:  row.first_name,
+            last_name:   row.last_name,
+            role_id:     row.role_id,
+            role_slug:   row.role_slug,
+            role_name:   row.role_name,
+            store_id:    row.store_id,
+            is_global:   row.is_global,
+            is_active:   row.is_active,
+            permissions,
         },
     })
 }
@@ -329,6 +366,9 @@ pub(crate) async fn change_password_inner(
     )
     .execute(&pool)
     .await?;
+
+    write_audit_log(&pool, claims.user_id, claims.store_id, "change_password", "auth",
+        "Password changed", "warning").await;
 
     Ok(())
 }

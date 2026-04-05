@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useBranchStore } from "@/stores/branch.store";
 import {
   getPriceLists, createPriceList, updatePriceList, deletePriceList,
-  getPriceListItems, addPriceListItem,
+  getPriceListItems, addPriceListItem, removePriceListItem,
   getPriceChanges, requestPriceChange, approvePriceChange, rejectPriceChange,
   getPendingScheduledChanges, schedulePriceChange,
   cancelScheduledPriceChange, applyScheduledPrices,
@@ -115,7 +115,19 @@ export function usePriceListItems(priceListId) {
     onError: (e) => onMutationError("Couldn't Set Item Price", e),
   });
 
-  return { items, isLoading, addItem };
+  const removeItem = useMutation({
+    mutationFn: (itemId) => {
+      if (!priceListId) return Promise.reject("No price list selected.");
+      return removePriceListItem(priceListId, itemId);
+    },
+    onSuccess: () => {
+      toastSuccess("Item Removed", "The item has been removed from this price list.");
+      invalidate();
+    },
+    onError: (e) => onMutationError("Couldn't Remove Item", e),
+  });
+
+  return { items, isLoading, addItem, removeItem };
 }
 
 // ── Price Change Requests ─────────────────────────────────────────────────────

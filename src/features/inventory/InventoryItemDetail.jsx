@@ -6,7 +6,7 @@ import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Boxes, BarChart3, RefreshCw, History, AlertTriangle,
-  TrendingDown, CheckCircle2, XCircle, ArrowRight, Filter, X,
+  TrendingDown, CheckCircle2, XCircle, ArrowRight, Filter, X, ZoomIn, Star,
 } from "lucide-react";
 
 import { PageHeader }           from "@/components/shared/PageHeader";
@@ -16,6 +16,9 @@ import { DataTable }            from "@/components/shared/DataTable";
 import { EmptyState }           from "@/components/shared/EmptyState";
 import { Button }               from "@/components/ui/button";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
+import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
 import { Separator }            from "@/components/ui/separator";
@@ -24,6 +27,7 @@ import {
 } from "@/components/ui/select";
 
 import { useInventoryItem, useMovementHistory } from "@/features/inventory/useInventory";
+import { useFavourites }         from "@/features/pos/useFavourites";
 import { ItemImage }             from "@/components/shared/ItemImage";
 import { RestockDialog }         from "@/features/inventory/RestockDialog";
 import { AdjustInventoryDialog } from "@/features/inventory/AdjustInventoryDialog";
@@ -338,14 +342,18 @@ function MovementHistoryTable({ itemId, storeId, measurementType, unitType }) {
 export function InventoryItemDetail({ itemId }) {
   const navigate  = useNavigate();
   const storeId   = useBranchStore((s) => s.activeStore?.id);
-  const [restockOpen, setRestockOpen] = useState(false);
-  const [adjustOpen,  setAdjustOpen]  = useState(false);
+  const [restockOpen,    setRestockOpen]    = useState(false);
+  const [adjustOpen,     setAdjustOpen]     = useState(false);
+  const [imgPreviewOpen, setImgPreviewOpen] = useState(false);
 
   const { detail, isLoading, error, restock, adjust } = useInventoryItem(itemId, storeId);
+  const { isPinned, toggle: favToggle } = useFavourites();
 
   if (isLoading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
   if (error)     return <div className="p-6 text-sm text-destructive">{String(error)}</div>;
   if (!detail)   return <div className="p-6 text-sm text-muted-foreground">Item not found.</div>;
+
+  const pinned = isPinned(itemId);
 
   const item     = detail;
   const mt       = item.measurement_type ?? "quantity";
@@ -366,22 +374,43 @@ export function InventoryItemDetail({ itemId }) {
         title={item.item_name ?? "Item Detail"}
         description={`SKU: ${item.sku ?? "—"}${item.barcode ? ` · ${item.barcode}` : ""}`}
         badge={
-          isOut ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-400">
-              <XCircle className="h-2.5 w-2.5" /> Out of Stock
-            </span>
-          ) : isLow ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
-              <TrendingDown className="h-2.5 w-2.5" /> Low Stock
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
-              <CheckCircle2 className="h-2.5 w-2.5" /> Normal
-            </span>
-          )
+          <div className="flex items-center gap-1.5">
+            {pinned && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                <Star className="h-2.5 w-2.5 fill-amber-400" /> Quick Access
+              </span>
+            )}
+            {isOut ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-400">
+                <XCircle className="h-2.5 w-2.5" /> Out of Stock
+              </span>
+            ) : isLow ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                <TrendingDown className="h-2.5 w-2.5" /> Low Stock
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+                <CheckCircle2 className="h-2.5 w-2.5" /> Normal
+              </span>
+            )}
+          </div>
         }
         action={
           <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => favToggle(itemId)}
+              className={cn(
+                "gap-1.5 transition-colors",
+                pinned
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                  : "text-muted-foreground hover:text-amber-400 hover:border-amber-500/40",
+              )}
+            >
+              <Star className={cn("h-3.5 w-3.5", pinned && "fill-amber-400")} />
+              {pinned ? "In Quick Access" : "Quick Access"}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => navigate(`/products/${itemId}`)}>
               View Item <ArrowRight className="h-3.5 w-3.5" />
             </Button>
@@ -402,7 +431,18 @@ export function InventoryItemDetail({ itemId }) {
           <div className="rounded-xl border border-border bg-card p-5">
             {/* Header with image */}
             <div className="flex items-center gap-3 mb-4">
-              <ItemImage item={item} size="md" rounded="lg" />
+              <div className="relative group shrink-0">
+                <ItemImage item={item} size="lg" rounded="lg" />
+                {item.image_data && (
+                  <button
+                    type="button"
+                    onClick={() => setImgPreviewOpen(true)}
+                    className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/0 group-hover:bg-black/40 transition-colors"
+                  >
+                    <ZoomIn className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+                )}
+              </div>
               <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Stock Overview</h3>
             </div>
 
@@ -535,6 +575,30 @@ export function InventoryItemDetail({ itemId }) {
         item={item}
         mutation={adjust}
       />
+
+      {/* ── Image preview lightbox ────────────────────────────────────── */}
+      {item?.image_data && (
+        <Dialog open={imgPreviewOpen} onOpenChange={setImgPreviewOpen}>
+          <DialogContent className="max-w-lg border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/60">
+            <div className="h-[3px] w-full bg-primary" />
+            <div className="px-5 pt-4 pb-5">
+              <DialogHeader className="mb-4">
+                <DialogTitle className="text-sm font-bold">{item.item_name}</DialogTitle>
+                <DialogDescription className="text-[11px] text-muted-foreground">
+                  {item.sku} {item.barcode ? `· ${item.barcode}` : ""}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex items-center justify-center rounded-xl border border-border bg-muted/20 p-4">
+                <img
+                  src={item.image_data}
+                  alt={item.item_name}
+                  className="max-h-80 max-w-full rounded-lg object-contain"
+                />
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   );
 }

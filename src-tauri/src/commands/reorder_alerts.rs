@@ -60,6 +60,32 @@ pub async fn check_reorder_alerts(
     .await?
     .unwrap_or(0);
 
+    // Queue any newly inserted alert rows to cloud sync
+    if new_alerts > 0 {
+        let new_rows = sqlx::query!(
+            "SELECT id, item_id, store_id, current_qty, min_stock_level
+             FROM reorder_alerts WHERE store_id = $1 AND status = 'pending'
+             ORDER BY created_at DESC LIMIT $2",
+            store_id,
+            new_alerts as i64,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        for row in new_rows {
+            crate::database::sync::queue_row(
+                &pool, "reorder_alerts", "INSERT", &row.id.to_string(),
+                serde_json::json!({ "id": row.id, "item_id": row.item_id,
+                                    "store_id": row.store_id,
+                                    "current_qty": row.current_qty,
+                                    "min_stock_level": row.min_stock_level,
+                                    "status": "pending" }),
+                Some(store_id),
+            ).await;
+        }
+    }
+
     Ok(CheckAlertsResult { new_alerts: new_alerts as i32, total_pending })
 }
 

@@ -2,12 +2,12 @@
 // features/inventory/InventoryDashboard.jsx — Main inventory page
 // ============================================================================
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Boxes, Search, X, TrendingDown, AlertTriangle, DollarSign,
   BarChart3, Package, RefreshCw, Filter, ArrowUpDown, Plus,
-  CheckCircle2, ClipboardList,
+  CheckCircle2, ClipboardList, Star,
 } from "lucide-react";
 
 import { DataTable }  from "@/components/shared/DataTable";
@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 
 import { useInventory }          from "@/features/inventory/useInventory";
+import { useFavourites }         from "@/features/pos/useFavourites";
 import { ItemImage }             from "@/components/shared/ItemImage";
 import { RestockDialog }         from "@/features/inventory/RestockDialog";
 import { AdjustInventoryDialog } from "@/features/inventory/AdjustInventoryDialog";
@@ -79,6 +80,8 @@ export function InventoryDashboard() {
   const [restockItem, setRestockItem] = useState(null);
   const [adjustItem,  setAdjustItem]  = useState(null);
 
+  const { isPinned, toggle: favToggle } = useFavourites();
+
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
@@ -103,13 +106,14 @@ export function InventoryDashboard() {
       sortable: true,
       render:   (row) => (
         <div className="flex items-center gap-2.5">
-          <ItemImage
-            item={row}
-            size="sm"
-            rounded="md"
-          />
+          <ItemImage item={row} size="md" rounded="md" />
           <div>
-            <div className="text-xs font-semibold text-foreground">{row.item_name}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-semibold text-foreground">{row.item_name}</span>
+              {isPinned?.(row.item_id) && (
+                <Star className="h-2.5 w-2.5 text-amber-400 fill-amber-400 shrink-0" title="POS Quick Access" />
+              )}
+            </div>
             <div className="text-[10px] font-mono text-muted-foreground">{row.sku}</div>
           </div>
         </div>
@@ -175,20 +179,33 @@ export function InventoryDashboard() {
       key:    "actions",
       header: "",
       align:  "right",
-      render: (row) => (
-        <div className="flex items-center justify-end gap-0.5">
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
-            onClick={(e) => { e.stopPropagation(); setRestockItem(row); }}>
-            + Restock
-          </Button>
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
-            onClick={(e) => { e.stopPropagation(); setAdjustItem(row); }}>
-            Adjust
-          </Button>
-        </div>
-      ),
+      render: (row) => {
+        const pinned = isPinned?.(row.item_id) ?? false;
+        return (
+          <div className="flex items-center justify-end gap-0.5">
+            <Button
+              variant="ghost" size="icon" className="h-7 w-7"
+              title={pinned ? "Remove from POS Quick Access" : "Add to POS Quick Access"}
+              onClick={(e) => { e.stopPropagation(); favToggle?.(row.item_id); }}
+            >
+              <Star className={cn(
+                "h-3.5 w-3.5 transition-colors",
+                pinned ? "text-amber-400 fill-amber-400" : "text-muted-foreground/40 hover:text-amber-400",
+              )} />
+            </Button>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+              onClick={(e) => { e.stopPropagation(); setRestockItem(row); }}>
+              + Restock
+            </Button>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+              onClick={(e) => { e.stopPropagation(); setAdjustItem(row); }}>
+              Adjust
+            </Button>
+          </div>
+        );
+      },
     },
-  ], []);
+  ], [isPinned, favToggle]);
 
   if (!storeId) return (
     <div className="p-8 text-center text-sm text-muted-foreground">Select a store to view inventory.</div>

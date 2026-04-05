@@ -20,7 +20,7 @@
 import {
   useState, useRef, useMemo, useEffect, useCallback,
 } from "react";
-import { useQuery }    from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -53,13 +53,14 @@ import { useShiftStore }   from "@/stores/shift.store";
 import { useAuthStore }    from "@/stores/auth.store";
 
 import { usePos }               from "@/features/pos/usePos";
+import { useFavourites }        from "@/features/pos/useFavourites";
 import { HoldDrawer }           from "@/features/pos/HoldDrawer";
 import { CustomerSearchBar }    from "@/features/pos/CustomerSearchBar";
 import { ReceiptModal }         from "@/features/pos/ReceiptModal";
-import { PinLockScreen }        from "@/components/shared/PinLockScreen";
 import { deleteHeldTransaction } from "@/commands/transactions";
 import { getWalletBalance }     from "@/commands/customer_wallet";
 import { getLoyaltyBalance }    from "@/commands/loyalty";
+import { getStoreSettings }     from "@/commands/store_settings";
 
 import { formatCurrency, formatName }  from "@/lib/format";
 import { getAutoLockMinutes }          from "@/features/settings/SecuritySettingsPanel";
@@ -143,7 +144,8 @@ export default function PosPage() {
   const isPosLocked = useAuthStore((s) => s.isPosLocked);
   const lockPos     = useAuthStore((s) => s.lockPos);
   const unlockPos   = useAuthStore((s) => s.unlockPos);
-  const activeShift = useShiftStore((s) => s.activeShift);
+  const activeShift      = useShiftStore((s) => s.activeShift);
+  const isShiftInitialized = useShiftStore((s) => s.isInitialized);
   // Use isActiveShiftStatus so "active" and "suspended" shifts are also
   // recognised — the status moves from "open" → "active" after the first sale.
   const isShiftOpen = isActiveShiftStatus(activeShift?.status);
@@ -243,6 +245,27 @@ export default function PosPage() {
     };
   }, [lockPos, isPosLocked]);
 
+  // ── Store settings (tax_inclusive + quick-access config) ─────────────────
+  const { data: storeSettings } = useQuery({
+    queryKey: ["store-settings", storeId],
+    queryFn:  () => getStoreSettings(storeId),
+    enabled:  !!storeId,
+    staleTime: 5 * 60_000,
+  });
+  const taxInclusive = storeSettings?.tax_inclusive ?? true;
+
+  // ── Quick-access favourites (DB per store) ───────────────────────────────
+  const {
+    favourites,
+    isPinned:  isFavPinned,
+    pinItem:   pinFavItem,
+    unpinItem: unpinFavItem,
+  } = useFavourites();
+
+  const pinItem   = useCallback((item)   => pinFavItem(item.id),   [pinFavItem]);
+  const unpinItem = useCallback((itemId) => unpinFavItem(itemId),  [unpinFavItem]);
+  const isPinned  = useCallback((item)   => isFavPinned(item.id),  [isFavPinned]);
+
   // ── POS data hook ─────────────────────────────────────────────────────────
   const { items, itemsTotal, totalPages, itemsLoading, categories, charge, lookupBarcode } = usePos({
     search: debSearch,
@@ -288,8 +311,8 @@ export default function PosPage() {
 
   // ── Totals ────────────────────────────────────────────────────────────────
   const { subtotal, tax, discountAmt, total } = useMemo(
-    () => calcCartTotals(cartItems, cartDiscount, cartDiscountPct),
-    [cartItems, cartDiscount, cartDiscountPct],
+    () => calcCartTotals(cartItems, cartDiscount, cartDiscountPct, taxInclusive),
+    [cartItems, cartDiscount, cartDiscountPct, taxInclusive],
   );
 
   // Loyalty applied as a pre-payment reduction
@@ -328,7 +351,7 @@ export default function PosPage() {
 
   // ── Cart action handlers ──────────────────────────────────────────────────
   const handleAddToCart = useCallback((item) => {
-    const effectivePrice = item.discount_price
+    const effectivePrice = item.discount_price_enabled && item.discount_price
       ? parseFloat(item.discount_price)
       : parseFloat(item.selling_price);
 
@@ -344,7 +367,7 @@ export default function PosPage() {
           name:          item.item_name,
           price:         effectivePrice,
           originalPrice: parseFloat(item.selling_price),
-          hasDiscount:   !!item.discount_price && parseFloat(item.discount_price) < parseFloat(item.selling_price),
+          hasDiscount:   !!item.discount_price_enabled && !!item.discount_price && parseFloat(item.discount_price) < parseFloat(item.selling_price),
           taxRate:       item.taxable ? parseFloat(item.tax_rate ?? "7.5") : 0,
           unitLabel,
           measurementType,
@@ -372,7 +395,7 @@ export default function PosPage() {
       name:          item.item_name,
       price:         effectivePrice,
       originalPrice: parseFloat(item.selling_price),
-      hasDiscount:   !!item.discount_price && parseFloat(item.discount_price) < parseFloat(item.selling_price),
+      hasDiscount:   !!item.discount_price_enabled && !!item.discount_price && parseFloat(item.discount_price) < parseFloat(item.selling_price),
       quantity:      initialQty,
       taxRate:       item.taxable ? parseFloat(item.tax_rate ?? "7.5") : 0,
       discount:      0,
@@ -550,23 +573,63 @@ export default function PosPage() {
     }
   }, [loadHeld, storeId]);
 
-  // ── Barcode / keyboard shortcut ───────────────────────────────────────────
-  // Focus search on any alphanumeric keypress
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  // F1 = Cash · F2 = Card · F3 = Transfer · F10 = Charge · Escape = cancel
+  // Any alphanumeric key (no modifier) when not in an input → focus search.
   useEffect(() => {
+    const inInput = () => ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+    const modalOpen = () => showReceipt || showHoldDrawer || showCustomerSearch || !!weighModal.item;
+
     const onKey = (e) => {
-      if (
-        /^[a-zA-Z0-9]$/.test(e.key) &&
-        !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) &&
-        !e.ctrlKey && !e.altKey && !e.metaKey
-      ) {
+      // Escape: close popover first, then blur search
+      if (e.key === "Escape") {
+        if (popover.open) {
+          e.preventDefault();
+          setPopover({ open: false, type: null, amount: "" });
+          return;
+        }
+        if (inInput()) {
+          document.activeElement.blur();
+          return;
+        }
+        return;
+      }
+
+      // Skip all other shortcuts when a modal is open or modifier key held
+      if (modalOpen() || e.ctrlKey || e.altKey || e.metaKey) return;
+
+      if (e.key === "F1") { e.preventDefault(); handlePaymentClick(PAYMENT_METHODS.CASH);     return; }
+      if (e.key === "F2") { e.preventDefault(); handlePaymentClick(PAYMENT_METHODS.CARD);     return; }
+      if (e.key === "F3") { e.preventDefault(); handlePaymentClick(PAYMENT_METHODS.TRANSFER); return; }
+      if (e.key === "F10") {
+        e.preventDefault();
+        if (isBalanced && !isCharging) handleCharge();
+        return;
+      }
+
+      // Alphanumeric → focus product search
+      if (/^[a-zA-Z0-9]$/.test(e.key) && !inInput()) {
         searchRef.current?.focus();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popover.open, showReceipt, showHoldDrawer, showCustomerSearch, weighModal.item,
+      isBalanced, isCharging, handlePaymentClick, handleCharge]);
 
   // ── Shift guard ───────────────────────────────────────────────────────────
+  // Show a spinner while the shift store is still initialising (async fetch
+  // after login). Without this check, activeShift=null during init would
+  // show a false "No Active Shift" screen for ~300 ms on every page load.
+  if (!isShiftInitialized) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/40" />
+      </div>
+    );
+  }
+
   if (!isShiftOpen) {
     return (
       <div className="flex flex-1 items-center justify-center flex-col gap-6 text-center py-20">
@@ -680,6 +743,42 @@ export default function PosPage() {
             </Select>
           </div>
 
+          {/* Quick-access panel */}
+          {favourites.length > 0 && (
+            <div className="shrink-0 border-b border-border bg-muted/10">
+              <div className="flex items-center gap-2 px-3 pt-2 pb-1">
+                <Star className="h-3 w-3 text-amber-400" />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Quick Access</span>
+              </div>
+              <div className="flex gap-2 overflow-x-auto px-3 pb-2 scrollbar-none">
+                {favourites.map((fav) => {
+                  const favPrice = fav.discount_price_enabled && fav.discount_price
+                    ? parseFloat(fav.discount_price)
+                    : parseFloat(fav.selling_price ?? "0");
+                  return (
+                    <button
+                      key={fav.id}
+                      type="button"
+                      onClick={() => handleAddToCart(fav)}
+                      className="relative flex-shrink-0 flex flex-col gap-0.5 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/10 active:scale-95 transition-all duration-100 px-3 py-2 text-left min-w-[90px] max-w-[120px]"
+                    >
+                      <span className="text-[11px] font-semibold text-foreground truncate w-full">{fav.item_name}</span>
+                      <span className="text-[10px] font-mono text-amber-400 tabular-nums">{formatCurrency(favPrice)}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); unpinItem(fav.id); }}
+                        className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-muted border border-border/60 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                        title="Remove from quick access"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Items area */}
           <div className="flex-1 overflow-auto min-h-0">
             {itemsLoading ? (
@@ -719,7 +818,14 @@ export default function PosPage() {
             ) : viewMode === "grid" ? (
               <div className="grid grid-cols-3 gap-2.5 p-3">
                 {items.map((item) => (
-                  <ItemCard key={item.id} item={item} onAdd={handleAddToCart} />
+                  <ItemCard
+                    key={item.id}
+                    item={item}
+                    onAdd={handleAddToCart}
+                    pinned={isPinned(item)}
+                    onPin={() => pinItem(item)}
+                    onUnpin={() => unpinItem(item.id)}
+                  />
                 ))}
               </div>
             ) : (
@@ -730,6 +836,9 @@ export default function PosPage() {
                     item={item}
                     index={(currentPage - 1) * ITEMS_PER_PAGE + idx + 1}
                     onAdd={handleAddToCart}
+                    pinned={isPinned(item)}
+                    onPin={() => pinItem(item)}
+                    onUnpin={() => unpinItem(item.id)}
                   />
                 ))}
               </div>
@@ -842,6 +951,7 @@ export default function PosPage() {
                   item={item}
                   onRemove={removeItem}
                   onSetQty={setQuantity}
+                  taxInclusive={taxInclusive}
                 />
               ))}
             </div>
@@ -917,15 +1027,10 @@ export default function PosPage() {
         loyaltyApplied={!!payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY)}
         onWalletPay={handleWalletPay}
         onLoyaltyToggle={handleLoyaltyToggle}
+        taxInclusive={taxInclusive}
       />
 
-      {/* ── POS Lock overlay ────────────────────────────────────────────── */}
-      {isPosLocked && (
-        <PinLockScreen
-        onUnlock={unlockPos}
-        userName={formatName(user)}
-      />
-      )}
+      {/* POS lock overlay is rendered globally in App.jsx */}
 
       {/* ── Modals / sheets ──────────────────────────────────────────────── */}
       <HoldDrawer
@@ -969,10 +1074,10 @@ export default function PosPage() {
 // ─────────────────────────────────────────────────────────────────────────────
 // ItemCard — grid tile
 // ─────────────────────────────────────────────────────────────────────────────
-function ItemCard({ item, onAdd }) {
-  const price       = parseFloat(item.discount_price ?? item.selling_price ?? "0");
+function ItemCard({ item, onAdd, pinned, onPin, onUnpin }) {
   const origPrice   = parseFloat(item.selling_price ?? "0");
-  const hasDiscount = !!item.discount_price && price < origPrice;
+  const hasDiscount = !!item.discount_price_enabled && !!item.discount_price && parseFloat(item.discount_price) < origPrice;
+  const price       = hasDiscount ? parseFloat(item.discount_price) : origPrice;
   const stock       = parseFloat(item.available_quantity ?? "0");
   const unitLabel   = item.unit_type ?? null;
   const minStock    = item.min_stock_level ?? 5;
@@ -1013,6 +1118,20 @@ function ItemCard({ item, onAdd }) {
             <Tag className="h-2.5 w-2.5 text-success" />
           </div>
         )}
+        {/* Pin / Quick-access button */}
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); pinned ? onUnpin() : onPin(); }}
+          className={cn(
+            "absolute top-1.5 left-1.5 flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-150",
+            pinned
+              ? "bg-amber-500/25 border-amber-500/40 opacity-100"
+              : "bg-black/20 border-transparent opacity-0 group-hover:opacity-100"
+          )}
+          title={pinned ? "Remove from Quick Access" : "Add to Quick Access"}
+        >
+          <Star className={cn("h-2.5 w-2.5", pinned ? "text-amber-400 fill-amber-400" : "text-white")} />
+        </button>
       </div>
 
       <div className="px-2.5 pt-2 pb-2.5 flex flex-col gap-1 flex-1">
@@ -1061,10 +1180,10 @@ function ItemCard({ item, onAdd }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ItemRow — list view
 // ─────────────────────────────────────────────────────────────────────────────
-function ItemRow({ item, index, onAdd }) {
-  const price       = parseFloat(item.discount_price ?? item.selling_price ?? "0");
+function ItemRow({ item, index, onAdd, pinned, onPin, onUnpin }) {
   const origPrice   = parseFloat(item.selling_price ?? "0");
-  const hasDiscount = !!item.discount_price && price < origPrice;
+  const hasDiscount = !!item.discount_price_enabled && !!item.discount_price && parseFloat(item.discount_price) < origPrice;
+  const price       = hasDiscount ? parseFloat(item.discount_price) : origPrice;
   const stock       = parseFloat(item.available_quantity ?? "0");
   const unitLabel   = item.unit_type ?? null;
   const isOut       = item.track_stock && stock <= 0;
@@ -1127,7 +1246,22 @@ function ItemRow({ item, index, onAdd }) {
           <span className="text-[10px] text-muted-foreground/25">—</span>
         )}
       </div>
-      <div className="col-span-1 flex justify-end">
+      <div className="col-span-1 flex justify-end items-center gap-1">
+        {/* Pin button */}
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); pinned ? onUnpin() : onPin(); }}
+          className={cn(
+            "h-6 w-6 rounded-md border flex items-center justify-center transition-all duration-150",
+            pinned
+              ? "border-amber-500/40 bg-amber-500/15 text-amber-400 opacity-100"
+              : "border-transparent text-transparent group-hover:border-amber-500/30 group-hover:bg-amber-500/10 group-hover:text-amber-400",
+          )}
+          title={pinned ? "Remove from Quick Access" : "Add to Quick Access"}
+        >
+          <Star className={cn("h-3 w-3", pinned && "fill-amber-400")} />
+        </button>
+        {/* Add button */}
         <div className={cn(
           "h-6 w-6 rounded-md border flex items-center justify-center transition-all duration-150",
           "border-transparent text-transparent",
@@ -1143,7 +1277,7 @@ function ItemRow({ item, index, onAdd }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CartItemRow
 // ─────────────────────────────────────────────────────────────────────────────
-function CartItemRow({ item, onRemove, onSetQty }) {
+function CartItemRow({ item, onRemove, onSetQty, taxInclusive = true }) {
   const lineTotal = Math.max(0, item.price * item.quantity - (item.discount ?? 0));
   const measurementType = item.measurementType ?? "quantity";
   const isWeighted = measurementType === "weight" || measurementType === "volume" || measurementType === "length";
@@ -1189,24 +1323,24 @@ function CartItemRow({ item, onRemove, onSetQty }) {
       <div className="flex items-center gap-0.5 shrink-0">
         <button
           onClick={() => onSetQty(item.itemId, Math.max(0, parseQty(item.quantity - step)))}
-          className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
         >
-          <Minus className="h-2.5 w-2.5" />
+          <Minus className="h-3 w-3" />
         </button>
         <Input
           type="number"
           value={item.quantity}
           onChange={(e) => onSetQty(item.itemId, parseQty(e.target.value))}
           onFocus={(e) => e.target.select()}
-          className="h-6 w-14 text-center text-[12px] px-1 tabular-nums font-mono border-border bg-background/50"
+          className="h-8 w-14 text-center text-[12px] px-1 tabular-nums font-mono border-border bg-background/50"
           min="0"
           step={step}
         />
         <button
           onClick={() => onSetQty(item.itemId, parseQty(item.quantity + step))}
-          className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background/50 text-muted-foreground hover:text-foreground hover:border-primary/30 hover:bg-primary/10 transition-all"
         >
-          <Plus className="h-2.5 w-2.5" />
+          <Plus className="h-3 w-3" />
         </button>
       </div>
 
@@ -1217,7 +1351,9 @@ function CartItemRow({ item, onRemove, onSetQty }) {
         </p>
         {hasTax && (
           <p className="text-[9px] text-muted-foreground/50 tabular-nums font-mono italic">
-            incl. {formatCurrency(lineTotal * item.taxRate / (100 + item.taxRate))} VAT
+            {taxInclusive
+              ? `incl. ${formatCurrency(lineTotal * item.taxRate / (100 + item.taxRate))} VAT`
+              : `+ ${formatCurrency(lineTotal * item.taxRate / 100)} VAT`}
           </p>
         )}
       </div>
@@ -1225,7 +1361,7 @@ function CartItemRow({ item, onRemove, onSetQty }) {
       {/* Remove */}
       <button
         onClick={() => onRemove(item.itemId)}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-destructive/25 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-all"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-destructive/25 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-all"
         title="Remove item"
       >
         <Trash2 className="h-3 w-3" />
@@ -1326,6 +1462,7 @@ function BottomBar({
   isBalanced, isCharging,
   walletBalance, loyaltyPoints, loyaltyNaira, loyaltyApplied,
   onWalletPay, onLoyaltyToggle,
+  taxInclusive,
 }) {
   const hasCart = cartItems.length > 0;
   const popCfg  = popover.type ? PM_CONFIG[popover.type] : null;
@@ -1623,7 +1760,9 @@ function BottomBar({
 
             {tax > 0.001 && (
               <div className="flex items-center justify-between py-0.5">
-                <span className="text-muted-foreground/60 text-[10px] italic">Incl. VAT</span>
+                <span className="text-muted-foreground/60 text-[10px] italic">
+                  {taxInclusive ? "Incl. VAT" : "+ VAT"}
+                </span>
                 <span className="tabular-nums font-mono text-muted-foreground/60 text-[10px] italic">{formatCurrency(tax)}</span>
               </div>
             )}

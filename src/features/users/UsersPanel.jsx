@@ -22,7 +22,8 @@ import {
 
 import { useAuthStore }   from "@/stores/auth.store";
 import { useBranchStore } from "@/stores/branch.store";
-import { usePermission }  from "@/hooks/usePermission";
+import { usePermission }       from "@/hooks/usePermission";
+import { usePaginationParams } from "@/hooks/usePaginationParams";
 import { formatDateTime } from "@/lib/format";
 import { cn }             from "@/lib/utils";
 
@@ -47,11 +48,10 @@ export function UsersPanel() {
   const canUpdate = usePermission("users.update");
 
   // ── Filters ───────────────────────────────────────────────────────────────
-  const [search,       setSearch]       = useState("");
+  const { page, search, setPage, setSearch } = usePaginationParams({ defaultPageSize: PAGE_SIZE });
   const [roleFilter,   setRoleFilter]   = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [storeFilter,  setStoreFilter]  = useState("all");
-  const [page,         setPage]         = useState(1);
 
   // ── UI state ──────────────────────────────────────────────────────────────
   const [selectedUser,    setSelectedUser]    = useState(null);
@@ -194,7 +194,7 @@ export function UsersPanel() {
                     <Input
                       placeholder="Search…"
                       value={search}
-                      onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                      onChange={(e) => setSearch(e.target.value)}
                       className="pl-7 h-7 w-44 text-[11px] bg-background/50"
                     />
                   </div>

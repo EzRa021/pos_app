@@ -11,7 +11,7 @@
 //   onRowClick  (row) => void — optional: makes rows interactive
 //   rowKey      string        — field used as React key (default: "id")
 //   stickyHeader boolean      — sticky first column (default: true)
-//   pagination  object        — { page, pageSize, total, onPageChange }
+//   pagination  object        — { page, pageSize, total, onPageChange, onPageSizeChange? }
 //   className   string
 //
 // Column shape:
@@ -67,19 +67,34 @@ function SortIcon({ column, sortKey, sortDir }) {
     : <ChevronDown className="h-3 w-3 text-primary ml-1 shrink-0" />;
 }
 
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+
 // ── Pagination bar ────────────────────────────────────────────────────────────
 function PaginationBar({ pagination }) {
   if (!pagination) return null;
-  const { page, pageSize, total, onPageChange } = pagination;
+  const { page, pageSize, total, onPageChange, onPageSizeChange } = pagination;
   const totalPages  = Math.max(1, Math.ceil(total / pageSize));
   const from        = Math.min((page - 1) * pageSize + 1, total);
   const to          = Math.min(page * pageSize, total);
 
   return (
     <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
-      <span className="text-[11px] text-muted-foreground tabular-nums">
-        {total === 0 ? "No results" : `${from}–${to} of ${total}`}
-      </span>
+      <div className="flex items-center gap-3">
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {total === 0 ? "No results" : `${from}–${to} of ${total}`}
+        </span>
+        {onPageSizeChange && (
+          <select
+            value={pageSize}
+            onChange={(e) => { onPageSizeChange(Number(e.target.value)); onPageChange(1); }}
+            className="h-6 rounded border border-border bg-background px-1.5 text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {PAGE_SIZE_OPTIONS.map((s) => (
+              <option key={s} value={s}>{s} / page</option>
+            ))}
+          </select>
+        )}
+      </div>
 
       <div className="flex items-center gap-1">
         <Button
@@ -87,7 +102,7 @@ function PaginationBar({ pagination }) {
           size="xs"
           disabled={page <= 1}
           onClick={() => onPageChange(page - 1)}
-          className="h-7 w-7 p-0"
+          className="h-8 w-8 p-0"
         >
           <ChevronLeft className="h-3.5 w-3.5" />
         </Button>
@@ -127,7 +142,7 @@ function PaginationBar({ pagination }) {
           size="xs"
           disabled={page >= totalPages}
           onClick={() => onPageChange(page + 1)}
-          className="h-7 w-7 p-0"
+          className="h-8 w-8 p-0"
         >
           <ChevronRight className="h-3.5 w-3.5" />
         </Button>

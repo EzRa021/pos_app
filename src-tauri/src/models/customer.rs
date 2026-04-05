@@ -17,6 +17,7 @@ pub struct Customer {
     pub address:             Option<String>,
     pub city:                Option<String>,
     pub loyalty_points:      Option<i32>,
+    pub wallet_balance:      Decimal,
     pub credit_limit:        Option<Decimal>,
     pub outstanding_balance: Option<Decimal>,
     pub customer_type:       Option<String>,

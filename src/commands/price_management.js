@@ -27,6 +27,9 @@ export const addPriceListItem = (payload) =>
 export const getPriceListItems = (priceListId) =>
   rpc("get_price_list_items", { price_list_id: priceListId });
 
+export const removePriceListItem = (priceListId, itemId) =>
+  rpc("remove_price_list_item", { price_list_id: priceListId, item_id: itemId });
+
 // ── Price Change Requests ─────────────────────────────────────────────────────
 
 // RequestPriceChangeDto: { item_id, store_id, new_price, reason, change_type, effective_at? }

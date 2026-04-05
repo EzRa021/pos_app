@@ -7,9 +7,9 @@
 // Shift fields used: opening_float, actual_cash, cash_difference
 // ============================================================================
 
-import { useState }              from "react";
+import { useState, useMemo }        from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { XCircle, Loader2, AlertTriangle, Hash } from "lucide-react";
+import { XCircle, Loader2, AlertTriangle, Hash, ChevronDown, ChevronUp, Calculator } from "lucide-react";
 
 import {
   Dialog, DialogContent,
@@ -23,6 +23,20 @@ import { getShiftSummary } from "@/commands/cash_movements";
 import { queryClient }    from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/format";
 import { cn }             from "@/lib/utils";
+import { toast }          from "sonner";
+
+// Nigerian Naira denominations (notes + coins)
+const DENOMINATIONS = [
+  { value: 1000, label: "₦1,000" },
+  { value:  500, label:   "₦500" },
+  { value:  200, label:   "₦200" },
+  { value:  100, label:   "₦100" },
+  { value:   50, label:    "₦50" },
+  { value:   20, label:    "₦20" },
+  { value:   10, label:    "₦10" },
+  { value:    5, label:     "₦5" },
+  { value:    1, label:     "₦1" },
+];
 
 function StatRow({ label, value, valueClass, borderTop }) {
   return (
@@ -46,8 +60,12 @@ function computeShiftNumber(shift) {
 }
 
 export function CloseShiftModal({ open, onOpenChange }) {
-  const [closingBalance, setClosingBalance] = useState("");
-  const [notes,          setNotes]          = useState("");
+  const [notes,           setNotes]           = useState("");
+  const [showDenom,       setShowDenom]       = useState(false);
+  // Denomination counts — keyed by note value
+  const [denomCounts,     setDenomCounts]     = useState({});
+  // Manual override: when the user types directly into "Actual Cash" input
+  const [manualOverride,  setManualOverride]  = useState(null);
 
   const activeShift  = useShiftStore((s) => s.activeShift);
   const closeShiftFn = useShiftStore((s) => s.closeShift);
@@ -59,10 +77,19 @@ export function CloseShiftModal({ open, onOpenChange }) {
     staleTime: 0,
   });
 
-  const closingNum      = parseFloat(closingBalance) || 0;
+  // Total computed from denomination counts
+  const denomTotal = useMemo(() => {
+    return DENOMINATIONS.reduce((sum, d) => {
+      const count = parseInt(denomCounts[d.value] ?? 0, 10);
+      return sum + (isNaN(count) ? 0 : count * d.value);
+    }, 0);
+  }, [denomCounts]);
+
+  // Actual cash = manual override if set, otherwise denomination total (or 0)
+  const closingNum      = manualOverride !== null ? (parseFloat(manualOverride) || 0) : denomTotal;
   const expectedBalance = parseFloat(summary?.expected_balance ?? "0");
   const variance        = closingNum - expectedBalance;
-  const hasClosing      = closingBalance !== "";
+  const hasClosing      = showDenom ? true : (manualOverride !== null && manualOverride !== "");
 
   const totalSales       = parseFloat(summary?.total_sales       ?? "0");
   const totalRefunds     = parseFloat(summary?.total_returns     ?? "0");
@@ -70,17 +97,33 @@ export function CloseShiftModal({ open, onOpenChange }) {
   const totalWithdrawals = parseFloat(summary?.total_withdrawals ?? "0");
   const totalPayouts     = parseFloat(summary?.total_payouts     ?? "0");
 
+  function handleDenomChange(value, count) {
+    setDenomCounts((prev) => ({ ...prev, [value]: count }));
+    setManualOverride(null); // denomination entry takes priority
+  }
+
+  function handleManualChange(e) {
+    setManualOverride(e.target.value);
+    // Clear denominations if the cashier overrides manually
+    setDenomCounts({});
+  }
+
   const mutation = useMutation({
     mutationFn: () =>
       closeShiftFn({ actualCash: closingNum, notes: notes.trim() }),
     onSuccess: () => {
-      // Refresh history table and clear summary cache
+      toast.success("Shift closed successfully.");
       queryClient.invalidateQueries({ queryKey: ["shifts"] });
       queryClient.invalidateQueries({ queryKey: ["shift-summary"] });
       queryClient.invalidateQueries({ queryKey: ["cash-movements"] });
-      setClosingBalance("");
       setNotes("");
+      setDenomCounts({});
+      setManualOverride(null);
+      setShowDenom(false);
       onOpenChange(false);
+    },
+    onError: (err) => {
+      toast.error(typeof err === "string" ? err : "Failed to close shift.");
     },
   });
 
@@ -179,29 +222,75 @@ export function CloseShiftModal({ open, onOpenChange }) {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Denomination count toggle */}
             <div>
-              <label className="block text-xs font-semibold text-foreground mb-1.5">
-                Actual Cash Counted
-              </label>
-              <div className="relative">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-muted-foreground">
-                  ₦
-                </span>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={closingBalance}
-                  onChange={(e) => setClosingBalance(e.target.value)}
-                  className="pl-7 tabular-nums font-mono"
-                  autoFocus
-                />
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-foreground">
+                  Actual Cash Counted
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowDenom((v) => !v)}
+                  className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80 transition-colors"
+                >
+                  <Calculator className="h-3 w-3" />
+                  {showDenom ? "Hide" : "Count by denomination"}
+                  {showDenom
+                    ? <ChevronUp   className="h-3 w-3" />
+                    : <ChevronDown className="h-3 w-3" />}
+                </button>
               </div>
+
+              {/* Denomination count grid */}
+              {showDenom ? (
+                <div className="rounded-lg border border-border bg-background/60 p-3 space-y-1.5">
+                  {DENOMINATIONS.map((d) => (
+                    <div key={d.value} className="flex items-center gap-2">
+                      <span className="w-14 text-xs font-semibold tabular-nums text-muted-foreground shrink-0">
+                        {d.label}
+                      </span>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="0"
+                        value={denomCounts[d.value] ?? ""}
+                        onChange={(e) => handleDenomChange(d.value, e.target.value)}
+                        className="h-7 text-xs tabular-nums font-mono w-20"
+                      />
+                      <span className="text-xs text-muted-foreground tabular-nums font-mono ml-auto">
+                        = {formatCurrency((parseInt(denomCounts[d.value] ?? 0, 10) || 0) * d.value)}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between pt-2 border-t border-border/60 mt-1">
+                    <span className="text-xs font-bold text-foreground">Total</span>
+                    <span className="text-sm font-bold tabular-nums font-mono text-foreground">
+                      {formatCurrency(denomTotal)}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-muted-foreground">
+                    ₦
+                  </span>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={manualOverride ?? ""}
+                    onChange={handleManualChange}
+                    className="pl-7 tabular-nums font-mono"
+                    autoFocus
+                  />
+                </div>
+              )}
             </div>
 
             {/* Live variance */}
-            {hasClosing && !summaryLoading && (
+            {(showDenom || (manualOverride !== null && manualOverride !== "")) && !summaryLoading && (
               <div className={cn(
                 "flex items-center justify-between rounded-lg border px-4 py-2.5",
                 variance >= 0
@@ -256,7 +345,7 @@ export function CloseShiftModal({ open, onOpenChange }) {
               <Button
                 type="submit"
                 variant="destructive"
-                disabled={mutation.isPending || !hasClosing}
+                disabled={mutation.isPending || (!showDenom && manualOverride === null)}
                 className="flex-1"
               >
                 {mutation.isPending ? (

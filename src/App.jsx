@@ -21,8 +21,12 @@ import { getCurrentWindow }    from '@tauri-apps/api/window';
 import { RouterProvider }      from 'react-router-dom';
 import { AlertCircle, Loader2, LogIn, Eye, EyeOff, RefreshCw, Settings } from 'lucide-react';
 
-import SetupWizard, { CONFIG_KEY } from './screens/setup/SetupWizard';
-import StorePicker                 from './components/store-picker';
+import SetupWizard, { CONFIG_KEY } from './features/setup/SetupWizard';
+import { PinLockScreen }           from './features/auth/PinLockScreen';
+import { RealtimeProvider }        from './providers/RealtimeProvider';
+
+const ONBOARDING_CACHE_KEY = 'qpos_onboarding_done';
+import StorePicker                 from './features/auth/StorePicker';
 import router                      from './router';
 import { OnboardingFlow }          from './features/onboarding/OnboardingFlow';
 import { useAuthStore }  from './stores/auth.store';
@@ -75,22 +79,11 @@ function Brand({ iconClassName = "bg-primary/15 border-primary/20", iconContent,
 }
 
 // ── Splash ────────────────────────────────────────────────────────────────────
-function Splash({ message = 'Starting Quantum POS…' }) {
+function Splash() {
   return (
-    <ScreenShell className="w-full">
-      <div className="flex flex-col items-center gap-5">
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/15 border border-primary/20">
-          <span className="text-3xl font-bold text-primary spinning">Q</span>
-        </div>
-        <div className="text-center space-y-1">
-          <p className="text-sm font-medium text-foreground">{message}</p>
-          <div className="flex items-center justify-center gap-1.5">
-            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Please wait…</span>
-          </div>
-        </div>
-      </div>
-    </ScreenShell>
+    <div className="h-full w-full bg-background flex items-center justify-center">
+      <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
+    </div>
   );
 }
 
@@ -232,6 +225,7 @@ export default function App() {
   const [connectFailed,      setConnectFailed]      = useState(false);
   const [isChecking,         setIsChecking]         = useState(true);
   const [onboardingComplete, setOnboardingComplete] = useState(null); // null = not yet checked
+  const [onboardingStatus,   setOnboardingStatus]   = useState(null); // full status object
   // Prevents React Strict Mode’s double-invoke of useEffect from starting two
   // concurrent initConnection calls, which would race and could leave the app
   // on the login screen even with a valid refresh token.
@@ -243,6 +237,8 @@ export default function App() {
   const user                = useAuthStore(s => s.user);
   const isInitialized       = useAuthStore(s => s.isInitialized);
   const restoreSession      = useAuthStore(s => s.restoreSession);
+  const isPosLocked         = useAuthStore(s => s.isPosLocked);
+  const unlockPos           = useAuthStore(s => s.unlockPos);
   const isBranchInitialized = useBranchStore(s => s.isBranchInitialized);
   const needsPicker         = useBranchStore(s => s.needsPicker);
 
@@ -307,35 +303,44 @@ export default function App() {
       // ── Wait for HTTP server to be truly ready ──────────────────────────────
       // get_api_port() returns as soon as the port number is assigned, but the
       // Axum server is started in a separate async task and may not be accepting
-      // TCP connections yet. Poll /health until it responds (up to 5 s) before
+      // TCP connections yet. Poll /health until it responds (up to 10 s) before
       // making any RPC calls.
       const baseUrl = apiClient.defaults.baseURL;
       let serverReady = false;
-      for (let attempt = 0; attempt < 25 && !serverReady; attempt++) {
+      for (let attempt = 0; attempt < 20 && !serverReady; attempt++) {
         try {
           const res = await fetch(`${baseUrl}/health`, {
-            signal: AbortSignal.timeout(300),
+            signal: AbortSignal.timeout(1000),
           });
           if (res.ok) serverReady = true;
         } catch { /* not ready yet */ }
-        if (!serverReady) await new Promise(r => setTimeout(r, 200));
+        if (!serverReady) await new Promise(r => setTimeout(r, 100));
       }
+
+      if (!serverReady) throw new Error('API server did not respond in time');
 
       // ── Run onboarding check + session restore in parallel ──────────────────
       // Both resolve before we clear isChecking so the user sees one clean
       // transition: splash → onboarding | login | dashboard.
+      //
+      // Onboarding status is cached in localStorage so a transient API error
+      // never incorrectly shows the OnboardingFlow to a user who already
+      // completed setup (which would require a Ctrl+R to recover from).
+      const cachedOnboardingDone = localStorage.getItem(ONBOARDING_CACHE_KEY) === 'true';
       const [onboardingResult] = await Promise.all([
-        // 1. Onboarding status — MUST return false on error (safe default).
-        //    Returning true on error would silently skip onboarding every time
-        //    the HTTP server has a hiccup, which is exactly the bug we're fixing.
+        // 1. Onboarding status — fall back to the cached value on error so a
+        //    transient HTTP failure doesn't send the user back to onboarding.
         apiClient.post('/api/rpc', { method: 'check_onboarding_status', params: {} })
-          .then(({ data }) => data?.complete === true)
-          .catch(() => false),
+          .then(({ data }) => data)
+          .catch(() => ({ complete: cachedOnboardingDone, needs_super_admin: false })),
         // 2. Session restore (sets user in auth store if token is valid)
         restoreSession().catch(() => {}),
       ]);
 
-      setOnboardingComplete(onboardingResult);
+      const isComplete = onboardingResult?.complete === true;
+      if (isComplete) localStorage.setItem(ONBOARDING_CACHE_KEY, 'true');
+      setOnboardingComplete(isComplete);
+      setOnboardingStatus(onboardingResult);
       setIsChecking(false);
     } catch {
       setConnectFailed(true);
@@ -397,7 +402,11 @@ export default function App() {
   else if (!apiReady || !isInitialized) content = <Splash message="Connecting…" />;
   else if (onboardingComplete === false)  content = (
     <OnboardingFlow
+      resumeBusinessName={onboardingStatus?.business_name ?? ''}
+      resumeBusinessId={  onboardingStatus?.business_id   ?? ''}
+      resumeAtSuperAdmin={onboardingStatus?.needs_super_admin === true}
       onComplete={() => {
+        localStorage.setItem(ONBOARDING_CACHE_KEY, 'true');
         setOnboardingComplete(true);
         // Immediately refresh the business info query so the sidebar
         // and SyncStatusBadge show the new business name without waiting.
@@ -410,14 +419,24 @@ export default function App() {
   else if (needsPicker)                 content = <StorePicker />;
   else                                  content = <RouterProvider router={router} />;
 
+  const userName = user
+    ? [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username
+    : undefined;
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
-      {/* Custom title bar — always visible, always on top */}
-      <TitleBar />
-      {/* Main content area fills remaining height */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {content}
+    <RealtimeProvider>
+      <div className="flex flex-col h-screen overflow-hidden">
+        {/* Custom title bar — always visible, always on top */}
+        <TitleBar />
+        {/* Main content area fills remaining height */}
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          {content}
+        </div>
+        {/* Global PIN lock overlay — covers every page when screen is locked */}
+        {user && isPosLocked && (
+          <PinLockScreen onUnlock={unlockPos} userName={userName} />
+        )}
       </div>
-    </div>
+    </RealtimeProvider>
   );
 }

@@ -1,12 +1,15 @@
 // pages/EodPage.jsx — End-of-Day Reports (full breakdown edition)
 import { useState, useRef, useMemo } from "react";
 import {
-  FileText, Printer, Lock, RefreshCw, Loader2,
+  FileText, Download, Lock, RefreshCw, Loader2,
   DollarSign, ShoppingCart, RotateCcw, TrendingUp,
   Package, Users, Clock, Award, Tag,
   BarChart3, Star, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { toast }           from "sonner";
+import { save }            from "@tauri-apps/plugin-dialog";
+import { writeFile }       from "@tauri-apps/plugin-fs";
+import { openPath }        from "@tauri-apps/plugin-opener";
 import { PageHeader }      from "@/components/shared/PageHeader";
 import { DataTable }       from "@/components/shared/DataTable";
 import { EmptyState }      from "@/components/shared/EmptyState";
@@ -14,9 +17,11 @@ import { StatusBadge }     from "@/components/shared/StatusBadge";
 import { Button }          from "@/components/ui/button";
 import { Input }           from "@/components/ui/input";
 import { cn }              from "@/lib/utils";
-import { useEodReport, useEodBreakdown, useEodHistory } from "@/features/eod/useEod";
+import { useEodReport, useEodBreakdown, useEodHistory } from "@/features/shifts/useEod";
 import { formatCurrency, formatDate }                  from "@/lib/format";
 import { PAYMENT_METHOD_LABELS }                       from "@/lib/constants";
+import { generateEodPdf }  from "@/lib/eodPdf";
+import { useBranchStore }  from "@/stores/branch.store";
 
 // ── Shared atoms ──────────────────────────────────────────────────────────────
 
@@ -544,29 +549,49 @@ const REPORT_TABS = [
   { id: "timeline", label: "Timeline", icon: Clock     },
 ];
 
-function EodReportView({ report, breakdown, breakdownLoading, onLock, locking }) {
-  const printRef = useRef(null);
-  const [subTab, setSubTab] = useState("summary");
+function EodReportView({ report, breakdown, breakdownLoading, onLock, locking, store }) {
+  const printRef   = useRef(null);
+  const [subTab,   setSubTab]   = useState("summary");
+  const [exporting, setExporting] = useState(false);
 
-  const r      = report;
-  const avgTx  = (r.transactions_count ?? 0) > 0
+  const r       = report;
+  const avgTx   = (r.transactions_count ?? 0) > 0
     ? parseFloat(r.gross_sales) / r.transactions_count
     : 0;
   const topItem = breakdown?.top_items?.[0];
 
-  const handlePrint = () => {
-    const el = printRef.current;
-    if (!el) return;
-    const win = window.open("", "_blank");
-    win.document.write(`<html><head><title>EOD Report — ${r.report_date}</title><style>
-      body { font-family: monospace; font-size: 12px; padding: 20px; color: #000; }
-      h2 { font-size: 16px; margin-bottom: 4px; }
-      hr { border: 1px solid #ccc; margin: 8px 0; }
-      .row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dotted #ddd; }
-      .row span:last-child { font-weight: bold; }
-    </style></head><body>${el.innerHTML}</body></html>`);
-    win.document.close();
-    win.print();
+  const handleExportPdf = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      // Build PDF bytes
+      const pdfBytes = generateEodPdf(r, breakdown ?? null, store);
+
+      // Ask user where to save
+      const defaultName = `EOD_${r.report_date ?? "report"}_${(store?.store_name ?? "store").replace(/\s+/g, "_")}.pdf`;
+      const filePath = await save({
+        defaultPath: defaultName,
+        filters: [{ name: "PDF Document", extensions: ["pdf"] }],
+      });
+
+      if (!filePath) { setExporting(false); return; } // user cancelled
+
+      // Write file
+      await writeFile(filePath, new Uint8Array(pdfBytes));
+
+      toast.success("PDF saved", {
+        description: filePath.split(/[\\/]/).pop(),
+        action: {
+          label: "Open",
+          onClick: () => openPath(filePath).catch(() => {}),
+        },
+        duration: 8000,
+      });
+    } catch (e) {
+      toast.error("Export failed", { description: String(e) });
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -592,8 +617,11 @@ function EodReportView({ report, breakdown, breakdownLoading, onLock, locking })
       <div className="flex items-center justify-between">
         <SubTabs tabs={REPORT_TABS} active={subTab} onChange={setSubTab} />
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={handlePrint} className="gap-1.5 h-8 text-xs">
-            <Printer className="h-3.5 w-3.5" />Print
+          <Button size="sm" variant="outline" onClick={handleExportPdf} disabled={exporting}
+            className="gap-1.5 h-8 text-xs border-primary/30 text-primary hover:bg-primary/10">
+            {exporting
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Exporting…</>
+              : <><Download className="h-3.5 w-3.5" />Export PDF</>}
           </Button>
           {!r.is_locked && (
             <Button size="sm" variant="outline" onClick={() => onLock(r.id)} disabled={locking}
@@ -659,6 +687,8 @@ function EodHistoryTable({ onSelect }) {
 export default function EodPage() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
   const [tab,          setTab]          = useState("report");
+
+  const activeStore = useBranchStore((s) => s.activeStore);
 
   const { report, isLoading, error, generate, lock } = useEodReport(selectedDate);
   const { breakdown, isLoading: breakdownLoading }   = useEodBreakdown(selectedDate, !!report);
@@ -742,6 +772,7 @@ export default function EodPage() {
                 breakdownLoading={breakdownLoading}
                 onLock={handleLock}
                 locking={lock.isPending}
+                store={activeStore}
               />
             )
           ) : (

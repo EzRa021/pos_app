@@ -17,6 +17,7 @@
 import { create } from "zustand";
 import { rpc } from "@/lib/apiClient";
 import { useShiftStore } from "@/stores/shift.store";
+import { applyTheme } from "@/lib/theme";
 
 const ACTIVE_STORE_KEY = "qpos_active_store";
 
@@ -39,6 +40,7 @@ export const useBranchStore = create((set, get) => ({
   isLoading:           false,
   isBranchInitialized: false,
   needsPicker:         false,
+  needsStoreCreation:  false,
 
   // ── Init for logged-in user ───────────────────────────────────────────────
   // Called by auth.store after login / restoreSession.
@@ -106,6 +108,8 @@ export const useBranchStore = create((set, get) => ({
         stores:              activeStore ? [activeStore] : [],
       });
 
+      applyTheme(activeStore?.theme ?? "dark", activeStore?.accent_color ?? "blue");
+
       if (activeStore?.id) {
         useShiftStore.getState().initForStore(activeStore.id);
       }
@@ -125,6 +129,13 @@ export const useBranchStore = create((set, get) => ({
       const result = await rpc("get_stores", { is_active: true });
       // get_stores may return an array directly or a paged result
       stores = Array.isArray(result) ? result : (result?.data ?? []);
+
+      if (stores.length === 0) {
+        // No stores exist at all — first-time user after onboarding.
+        // The router will catch this and redirect to /store/new.
+        set({ stores: [], activeStore: null, needsPicker: false, needsStoreCreation: true, isLoading: false, isBranchInitialized: true });
+        return;
+      }
 
       const savedIsValid = saved != null && stores.some((s) => s.id === saved.id);
 
@@ -149,7 +160,9 @@ export const useBranchStore = create((set, get) => ({
     }
 
     // ── set #2: commit final state ─────────────────────────────────────────
-    set({ stores, activeStore, needsPicker, isLoading: false, isBranchInitialized: true });
+    set({ stores, activeStore, needsPicker, needsStoreCreation: false, isLoading: false, isBranchInitialized: true });
+
+    applyTheme(activeStore?.theme ?? "dark", activeStore?.accent_color ?? "blue");
 
     if (activeStore?.id) {
       useShiftStore.getState().initForStore(activeStore.id);
@@ -171,6 +184,7 @@ export const useBranchStore = create((set, get) => ({
           activeStore: state.activeStore?.id === storeId ? store : state.activeStore,
           stores:      state.stores.map((s) => s.id === storeId ? store : s),
         }));
+        applyTheme(store.theme ?? "dark", store.accent_color ?? "blue");
       } else {
         throw new Error("empty");
       }
@@ -190,6 +204,7 @@ export const useBranchStore = create((set, get) => ({
         ? state.stores
         : [...state.stores, store],
     }));
+    applyTheme(store?.theme ?? "dark", store?.accent_color ?? "blue");
     useShiftStore.getState().initForStore(store.id);
   },
 
@@ -212,13 +227,38 @@ export const useBranchStore = create((set, get) => ({
     } catch { /* ignore */ }
   },
 
+  // ── Re-validate the active store (called on window focus / visibility) ───
+  // Catches the scenario where an admin deactivates the store while a cashier
+  // is logged in. On next focus the store is re-fetched; if it's gone or
+  // inactive, activeStore is cleared so queries stop using a stale store_id.
+  async validateActiveStore() {
+    const { activeStore } = get();
+    if (!activeStore?.id) return;
+    try {
+      const fresh = await rpc("get_store", { id: activeStore.id });
+      if (!fresh || !fresh.is_active) {
+        // Store deactivated — clear it so the UI shows StorePicker / error.
+        clearSavedStore();
+        set({ activeStore: null, needsPicker: true });
+      } else {
+        // Refresh in-place (name/theme may have changed).
+        saveActiveStore(fresh);
+        set((s) => ({
+          activeStore: fresh,
+          stores: s.stores.map((st) => st.id === fresh.id ? fresh : st),
+        }));
+        applyTheme(fresh.theme ?? "dark", fresh.accent_color ?? "blue");
+      }
+    } catch { /* network error — keep stale state, try again next focus */ }
+  },
+
   // ── Reset helpers ──────────────────────────────────────────────────────────
   reset() {
-    set({ activeStore: null, stores: [], isLoading: false, isBranchInitialized: false, needsPicker: false });
+    set({ activeStore: null, stores: [], isLoading: false, isBranchInitialized: false, needsPicker: false, needsStoreCreation: false });
   },
 
   resetForLogout() {
     clearSavedStore();
-    set({ activeStore: null, stores: [], isLoading: false, isBranchInitialized: false, needsPicker: false });
+    set({ activeStore: null, stores: [], isLoading: false, isBranchInitialized: false, needsPicker: false, needsStoreCreation: false });
   },
 }));

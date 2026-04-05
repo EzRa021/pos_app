@@ -10,11 +10,6 @@ import { rpc } from "@/lib/apiClient";
 export const getBusinessHealthSummary = (storeId, params = {}) =>
   rpc("get_business_health_summary", { store_id: storeId, ...params });
 
-export const getSalesByPeriod = (storeId, period, params = {}) =>
-  rpc("get_sales_by_period", { store_id: storeId, period, ...params });
-// period: "day" | "week" | "month" | "year"
-// params: { date_from?, date_to? }
-
 export const getTopItems = (storeId, params = {}) =>
   rpc("get_top_items", { store_id: storeId, ...params });
 // params: { limit?, date_from?, date_to? }

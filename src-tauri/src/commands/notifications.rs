@@ -167,6 +167,15 @@ async fn insert_notification(
     .fetch_one(pool)
     .await?;
 
+    crate::database::sync::queue_row(
+        pool, "notifications", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": payload.store_id,
+                            "user_id": payload.user_id, "type": payload.r#type,
+                            "title": payload.title, "message": payload.message,
+                            "is_read": false }),
+        Some(payload.store_id),
+    ).await;
+
     sqlx::query_as!(
         Notification,
         r#"SELECT id, store_id, user_id, type, title, message,

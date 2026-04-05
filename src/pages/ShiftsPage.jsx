@@ -22,6 +22,7 @@ import {
   User, CalendarDays, StickyNote, Hash,
   Users, ShoppingCart, TrendingUp, Eye,
   AlertCircle, AlertTriangle,
+  PauseCircle, PlayCircle,
 } from "lucide-react";
 
 import { PageHeader }          from "@/components/shared/PageHeader";
@@ -41,7 +42,7 @@ import { useShiftStore }         from "@/stores/shift.store";
 import { useAuthStore }          from "@/stores/auth.store";
 import { useStoreActiveShifts }  from "@/features/shifts/useShifts";
 import { getShiftSummary }       from "@/commands/cash_movements";
-import { cancelShift }           from "@/commands/shifts";
+import { cancelShift, suspendShift, resumeShift } from "@/commands/shifts";
 import { toast }                 from "sonner";
 import { formatDateTime, formatDuration, formatCurrency } from "@/lib/format";
 import { cn }                  from "@/lib/utils";
@@ -371,17 +372,28 @@ function NoShiftState({ onOpen }) {
   );
 }
 
-function ActiveShiftPanel({ activeShift, shiftNumber, summary, summaryLoading, onClose, onCashMove }) {
+function ActiveShiftPanel({
+  activeShift, shiftNumber, summary, summaryLoading,
+  onClose, onCashMove, onSuspend, onResume, isSuspending, isResuming,
+}) {
+  const isSuspended = activeShift?.status === "suspended";
+
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="h-[3px] w-full bg-success" />
+      <div className={cn("h-[3px] w-full", isSuspended ? "bg-warning" : "bg-success")} />
       <div className="p-5">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
             <div className="flex items-center gap-2 mb-2.5">
-              <div className="flex h-2 w-2 rounded-full bg-success pulse-dot" />
-              <span className="text-xs font-bold uppercase tracking-wider text-success">
-                Shift Active
+              <div className={cn(
+                "flex h-2 w-2 rounded-full",
+                isSuspended ? "bg-warning" : "bg-success pulse-dot",
+              )} />
+              <span className={cn(
+                "text-xs font-bold uppercase tracking-wider",
+                isSuspended ? "text-warning" : "text-success",
+              )}>
+                {isSuspended ? "Shift Suspended" : "Shift Active"}
               </span>
               {shiftNumber && (
                 <span className="flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[10px] font-mono font-semibold text-muted-foreground">
@@ -391,24 +403,65 @@ function ActiveShiftPanel({ activeShift, shiftNumber, summary, summaryLoading, o
               )}
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-              <ShiftMeta icon={User}        label="Cashier" value={activeShift.cashier_name ?? "—"} />
+              <ShiftMeta icon={User}         label="Cashier" value={activeShift.cashier_name ?? "—"} />
               <ShiftMeta icon={CalendarDays} label="Started" value={formatDateTime(activeShift.opened_at)} />
               {activeShift.opening_notes && (
                 <ShiftMeta icon={StickyNote} label="Note" value={activeShift.opening_notes} />
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <Button variant="outline" size="sm" onClick={onCashMove}>
-              <Plus className="h-3.5 w-3.5" />
-              Cash Movement
-            </Button>
-            <Button variant="outline-destructive" size="sm" onClick={onClose}>
+          <div className="flex items-center gap-2 shrink-0flex-wrap">
+            {!isSuspended && (
+              <Button variant="outline" size="sm" onClick={onCashMove}>
+                <Plus className="h-3.5 w-3.5" />
+                Cash Movement
+              </Button>
+            )}
+            {isSuspended ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-success/40 text-success hover:bg-success/10"
+                onClick={onResume}
+                disabled={isResuming}
+              >
+                <PlayCircle className="h-3.5 w-3.5" />
+                {isResuming ? "Resuming…" : "Resume Shift"}
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-warning/40 text-warning hover:bg-warning/10"
+                onClick={onSuspend}
+                disabled={isSuspending}
+              >
+                <PauseCircle className="h-3.5 w-3.5" />
+                {isSuspending ? "Suspending…" : "Suspend"}
+              </Button>
+            )}
+            <Button
+              variant="outline-destructive"
+              size="sm"
+              onClick={onClose}
+              disabled={isSuspended}
+              title={isSuspended ? "Resume shift before closing" : undefined}
+            >
               <XCircle className="h-3.5 w-3.5" />
               Close Shift
             </Button>
           </div>
         </div>
+
+        {isSuspended && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5">
+            <PauseCircle className="h-3.5 w-3.5 text-warning shrink-0" />
+            <p className="text-[11px] text-warning leading-relaxed">
+              Shift is suspended — sales are paused. Resume to accept payments or close the shift.
+            </p>
+          </div>
+        )}
+
         <ShiftSummaryCards
           summary={summary}
           activeShift={activeShift}
@@ -429,10 +482,33 @@ export default function ShiftsPage() {
 
   const user       = useAuthStore((s) => s.user);
   const isGlobal   = user?.is_global === true;
+  const initForStore = useShiftStore((s) => s.initForStore);
 
   // initForStore is called by branch.store when the active store changes — never from useEffect
   // (calling it from useEffect caused the forceStoreRerender crash; see CLAUDE.md)
   const { activeShift, isShiftOpen, isLoading: shiftLoading, shiftNumber, shiftId, storeId } = useShift();
+
+  const qc = useQueryClient();
+
+  const suspendMutation = useMutation({
+    mutationFn: () => suspendShift(shiftId),
+    onSuccess: async (updated) => {
+      toast.success("Shift suspended.");
+      if (updated?.store_id) await initForStore(updated.store_id).catch(() => {});
+      qc.invalidateQueries({ queryKey: ["shift-summary", shiftId] });
+    },
+    onError: (err) => toast.error(typeof err === "string" ? err : "Failed to suspend shift."),
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeShift(shiftId),
+    onSuccess: async (updated) => {
+      toast.success("Shift resumed.");
+      if (updated?.store_id) await initForStore(updated.store_id).catch(() => {});
+      qc.invalidateQueries({ queryKey: ["shift-summary", shiftId] });
+    },
+    onError: (err) => toast.error(typeof err === "string" ? err : "Failed to resume shift."),
+  });
 
   const { data: summary, isLoading: summaryLoading } = useQuery({
     queryKey:        ["shift-summary", shiftId],
@@ -460,8 +536,7 @@ export default function ShiftsPage() {
               : undefined
         }
         action={
-          // Only cashiers get the "Open Shift" header button — never global users
-          !isGlobal && !isShiftOpen && !shiftLoading ? (
+          !isShiftOpen && !shiftLoading ? (
             <Button variant="success" size="sm" onClick={() => setOpenShiftOpen(true)}>
               <Timer className="h-3.5 w-3.5" />
               Open Shift
@@ -473,43 +548,43 @@ export default function ShiftsPage() {
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-5xl px-6 py-5 space-y-5">
 
-          {/* ── GLOBAL USER VIEW ─────────────────────────────────────────── */}
-          {isGlobal && (
-            <GlobalShiftsView storeId={storeId} currentUserId={user?.id} />
+          {/* ── PERSONAL SHIFT PANEL — shown for every user ──────────────── */}
+          {!shiftLoading && !isShiftOpen && (
+            <NoShiftState onOpen={() => setOpenShiftOpen(true)} />
           )}
 
-          {/* ── CASHIER VIEW ─────────────────────────────────────────────── */}
-          {!isGlobal && (
-            <>
-              {!isShiftOpen && !shiftLoading && (
-                <NoShiftState onOpen={() => setOpenShiftOpen(true)} />
-              )}
+          {isShiftOpen && (
+            <ActiveShiftPanel
+              activeShift={activeShift}
+              shiftNumber={shiftNumber}
+              summary={summary}
+              summaryLoading={summaryLoading}
+              onClose={() => setCloseShiftOpen(true)}
+              onCashMove={() => setCashMoveOpen(true)}
+              onSuspend={() => suspendMutation.mutate()}
+              onResume={() => resumeMutation.mutate()}
+              isSuspending={suspendMutation.isPending}
+              isResuming={resumeMutation.isPending}
+            />
+          )}
 
-              {isShiftOpen && (
-                <ActiveShiftPanel
-                  activeShift={activeShift}
-                  shiftNumber={shiftNumber}
-                  summary={summary}
-                  summaryLoading={summaryLoading}
-                  onClose={() => setCloseShiftOpen(true)}
-                  onCashMove={() => setCashMoveOpen(true)}
-                />
-              )}
+          {isShiftOpen && (
+            <Section
+              title="Cash Movements"
+              action={
+                <Button variant="ghost" size="xs" onClick={() => setCashMoveOpen(true)} className="h-7 gap-1">
+                  <Plus className="h-3 w-3" />
+                  Add
+                </Button>
+              }
+            >
+              <CashMovementsList shiftId={shiftId} />
+            </Section>
+          )}
 
-              {isShiftOpen && (
-                <Section
-                  title="Cash Movements"
-                  action={
-                    <Button variant="ghost" size="xs" onClick={() => setCashMoveOpen(true)} className="h-7 gap-1">
-                      <Plus className="h-3 w-3" />
-                      Add
-                    </Button>
-                  }
-                >
-                  <CashMovementsList shiftId={shiftId} />
-                </Section>
-              )}
-            </>
+          {/* ── GLOBAL USER — store-wide monitoring view ─────────────────── */}
+          {isGlobal && (
+            <GlobalShiftsView storeId={storeId} currentUserId={user?.id} />
           )}
 
           {/* ── Shift history — always visible for everyone ───────────────── */}

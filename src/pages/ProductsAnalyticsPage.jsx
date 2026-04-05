@@ -367,7 +367,7 @@ export default function ProductsAnalyticsPage() {
               ) : topChartData.length === 0 ? (
                 <EmptyState icon={Package} title="No product data" compact />
               ) : (
-                <ChartContainer config={BAR_CHART_CONFIG} className={`h-[${Math.max(280, topChartData.length * 22)}px]`}>
+                <ChartContainer config={BAR_CHART_CONFIG} style={{ height: Math.max(280, topChartData.length * 22) }}>
                   <BarChart data={topChartData} layout="vertical">
                     <CartesianGrid horizontal={false} />
                     <XAxis type="number" tickFormatter={(v) => formatCurrencyCompact(v)} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />

@@ -4,6 +4,7 @@
 
 use tauri::State;
 use serde::Deserialize;
+use sqlx::PgPool;
 use crate::{
     error::{AppError, AppResult},
     models::audit::{AuditLog, AuditFilters},
@@ -11,6 +12,30 @@ use crate::{
     state::AppState,
 };
 use super::auth::{guard, guard_permission};
+
+// ── Internal helper — fire-and-forget, never fails the caller ─────────────────
+pub(crate) async fn write_audit_log(
+    pool:        &PgPool,
+    user_id:     i32,
+    store_id:    Option<i32>,
+    action:      &str,
+    resource:    &str,
+    description: &str,
+    severity:    &str,
+) {
+    let _ = sqlx::query!(
+        r#"INSERT INTO audit_logs (user_id, store_id, action, resource, description, severity)
+           VALUES ($1, $2, $3, $4, $5, $6)"#,
+        user_id,
+        store_id,
+        action,
+        resource,
+        description,
+        severity,
+    )
+    .execute(pool)
+    .await;
+}
 
 #[tauri::command]
 pub async fn get_audit_logs(

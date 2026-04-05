@@ -5,8 +5,28 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Quantum POS</title>
-    <!-- Prevent white flash before CSS loads -->
-    <style>html,body,#root{background:#09090b;margin:0}</style>
+    <!-- Apply saved theme before first paint to avoid flash -->
+    <script>
+      (function () {
+        try {
+          var s = localStorage.getItem('qpos_active_store');
+          if (s) {
+            var store = JSON.parse(s);
+            if (store && store.theme === 'light') {
+              document.documentElement.classList.remove('dark');
+              document.documentElement.style.background = '#f8f8fa';
+            } else {
+              document.documentElement.style.background = '#09090b';
+            }
+          } else {
+            document.documentElement.style.background = '#09090b';
+          }
+        } catch (e) {
+          document.documentElement.style.background = '#09090b';
+        }
+      })();
+    </script>
+    <style>body,#root{margin:0}</style>
   </head>
 
   <body>

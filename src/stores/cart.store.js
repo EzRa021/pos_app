@@ -13,6 +13,7 @@
 //   hasDiscount (bool), categoryName (string)
 // ============================================================================
 
+import Big from "big.js";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { rpc } from "@/lib/apiClient";
@@ -28,39 +29,62 @@ const EMPTY_CART = {
 };
 
 // ── Derive totals from cartItems ──────────────────────────────────────────────
-// Prices from the backend are VAT-INCLUSIVE (Nigeria standard).
-// The tax component is EXTRACTED from the price for display — never added on top.
 //
-// Formula for inclusive VAT extraction:
-//   taxComponent = lineTotal × rate / (100 + rate)
+// taxInclusive = true  (default, Nigeria standard):
+//   Prices already include VAT. Tax is EXTRACTED for display only, never added.
+//   Formula: taxComponent = lineTotal × rate / (100 + rate)
+//   Example: ₦107.50 at 7.5% → tax = ₦7.50 (inside price) → total = ₦107.50
 //
-// Example: item costs ₦107.50 at 7.5% VAT
-//   → taxComponent = 107.50 × 7.5 / 107.5 = ₦7.50 (already inside the price)
-//   → total = ₦107.50  (NOT ₦107.50 + ₦7.50 = ₦115.00)
-export function calcCartTotals(cartItems, cartDiscount = 0, cartDiscountPct = 0) {
-  // subtotal = gross line totals (VAT-inclusive, after per-line discounts)
-  const subtotal = cartItems.reduce(
-    (sum, item) => sum + (item.price * item.quantity) - (item.discount ?? 0),
-    0,
-  );
+// taxInclusive = false:
+//   Prices exclude VAT. Tax is ADDED on top at checkout.
+//   Formula: taxComponent = baseLineTotal × rate / 100
+//   Example: ₦100.00 at 7.5% → tax = ₦7.50 → total = ₦107.50
+//
+export function calcCartTotals(cartItems, cartDiscount = 0, cartDiscountPct = 0, taxInclusive = true) {
+  let subtotal = new Big(0);  // pre-discount line totals (excl. tax when taxInclusive=false)
+  let tax      = new Big(0);
 
-  // Extract the VAT component embedded in prices — for display only, NOT added to total
-  const tax = cartItems.reduce((sum, item) => {
+  for (const item of cartItems) {
+    const price    = new Big(item.price    ?? 0);
+    const qty      = new Big(item.quantity ?? 0);
+    const discount = new Big(item.discount ?? 0);
+    const lineTotal = price.times(qty).minus(discount);
+    subtotal = subtotal.plus(lineTotal);
+
     const rate = item.taxRate ?? 0;
-    if (rate <= 0) return sum;
-    const lineTotal = item.price * item.quantity - (item.discount ?? 0);
-    return sum + (lineTotal * rate) / (100 + rate);
-  }, 0);
+    if (rate > 0) {
+      const r = new Big(rate);
+      if (taxInclusive) {
+        // Extract VAT already embedded: lineTotal × rate / (100 + rate)
+        tax = tax.plus(lineTotal.times(r).div(new Big(100).plus(r)));
+      } else {
+        // Add VAT on top: lineTotal × rate / 100
+        tax = tax.plus(lineTotal.times(r).div(100));
+      }
+    }
+  }
 
   // Cart-level discount (percentage takes priority over flat amount)
-  const discountAmt = cartDiscountPct > 0
-    ? subtotal * (cartDiscountPct / 100)
-    : cartDiscount;
+  let discountAmt;
+  if (cartDiscountPct > 0) {
+    discountAmt = subtotal.times(new Big(cartDiscountPct)).div(100);
+  } else {
+    discountAmt = new Big(cartDiscount ?? 0);
+  }
 
-  // Total = gross line totals − cart discount. Tax is already embedded in prices.
-  const total = Math.max(0, subtotal - discountAmt);
+  const afterDiscount = subtotal.minus(discountAmt);
+  const base          = afterDiscount.lt(0) ? new Big(0) : afterDiscount;
 
-  return { subtotal, tax, discountAmt, total };
+  // Tax-exclusive: total = base + tax. Tax-inclusive: total = base (tax already embedded).
+  const total = taxInclusive ? base : base.plus(tax);
+
+  return {
+    subtotal:     Number(subtotal.toFixed(4)),
+    tax:          Number(tax.toFixed(4)),
+    discountAmt:  Number(discountAmt.toFixed(4)),
+    total:        Number(total.toFixed(4)),
+    taxInclusive,
+  };
 }
 
 export const useCartStore = create(

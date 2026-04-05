@@ -23,6 +23,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use crate::utils::ref_no::{next_item_sku, store_slug};
 
 fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
@@ -68,8 +69,9 @@ pub struct ImportItemRow {
     // ── Identity ─────────────────────────────────────────────────────────────
     /// "create" | "update" | absent → auto-detected from whether SKU already exists
     pub action:            Option<String>,
-    /// Primary key for matching.  Required on every row.
-    pub sku:               String,
+    /// Used for UPDATE row matching and batch duplicate detection.
+    /// May be null/absent on CREATE rows — the system auto-generates the SKU.
+    pub sku:               Option<String>,
 
     // ── Core ─────────────────────────────────────────────────────────────────
     pub item_name:         Option<String>,
@@ -276,6 +278,18 @@ pub async fn import_items(
     let pool    = state.pool().await?;
     let dry_run = dry_run.unwrap_or(false);
 
+    // ── Resolve store slug once — used to auto-generate SKUs for new rows ──────
+    let store_row = sqlx::query!(
+        "SELECT store_name, store_code FROM stores WHERE id = $1",
+        store_id
+    )
+    .fetch_optional(&pool)
+    .await?
+    .ok_or_else(|| crate::error::AppError::Validation(
+        format!("Store {} not found", store_id)
+    ))?;
+    let slug = store_slug(store_row.store_code.as_deref(), &store_row.store_name);
+
     // ── Pre-load existing SKUs ────────────────────────────────────────────────
     let mut sku_map: HashMap<String, Uuid> = {
         let rows = sqlx::query!(
@@ -324,7 +338,14 @@ pub async fn import_items(
 
     for (idx, row) in rows.iter().enumerate() {
         let row_num = idx + 2;
-        let sku     = row.sku.trim().to_string();
+        // SKU is optional — null/blank is fine for creates (auto-generated)
+        let sku = row.sku.as_deref().unwrap_or("").trim().to_string();
+        // Unique key for batch dedup: use sku if present, else a positional sentinel
+        let batch_key = if sku.is_empty() {
+            format!("__row_{}", row_num)
+        } else {
+            sku.to_lowercase()
+        };
 
         macro_rules! fail {
             ($action:expr, $msg:expr) => {{
@@ -337,9 +358,16 @@ pub async fn import_items(
             }};
         }
 
-        // ── Basic validation ─────────────────────────────────────────────────
-        if sku.is_empty() {
-            fail!("unknown", "SKU is required and cannot be empty");
+        let action_hint = row.action.as_deref().map(|s| s.trim().to_lowercase());
+
+        // UPDATE rows must supply a SKU so we can look up the existing item
+        if action_hint.as_deref() == Some("update") && sku.is_empty() {
+            errors.push(ImportError {
+                row: row_num, sku: String::new(),
+                action: "update".into(),
+                message: "SKU is required for update rows".into(),
+            });
+            continue;
         }
 
         if let Some(ref mt) = row.measurement_type {
@@ -349,17 +377,17 @@ pub async fn import_items(
             }
         }
 
-        // ── Duplicate SKU within same batch ───────────────────────────────────
+        // ── Duplicate SKU within same batch (only for rows that carry a SKU) ──
         let sku_lower = sku.to_lowercase();
-        if batch_seen.contains(&sku_lower) {
+        if !sku.is_empty() && batch_seen.contains(&sku_lower) {
             fail!("unknown",
                 format!("SKU '{}' appears more than once in this file. Each SKU may only appear once per import.", sku));
         }
-        batch_seen.insert(sku_lower.clone());
+        batch_seen.insert(batch_key);
 
         // ── Detect action ────────────────────────────────────────────────────
-        let existing_id = sku_map.get(&sku_lower).copied();
-        let action = match row.action.as_deref().map(|s| s.trim().to_lowercase()).as_deref() {
+        let existing_id = if sku.is_empty() { None } else { sku_map.get(&sku_lower).copied() };
+        let action = match action_hint.as_deref() {
             Some("create") => "create",
             Some("update") => "update",
             _              => if existing_id.is_some() { "update" } else { "create" },
@@ -425,21 +453,38 @@ pub async fn import_items(
         let real_dept = dept_id.filter(|&id| id > 0);
         let real_cat  = cat_id.filter(|&id| id > 0);
 
-        let row_result: Result<(), String> = if action == "create" {
-            create_item_from_row(&pool, row, &sku, store_id, real_cat, real_dept, claims.user_id).await
-        } else {
-            let item_id = existing_id.unwrap();
-            update_item_from_row(&pool, row, &sku, item_id, store_id, real_cat, real_dept, claims.user_id).await
-        };
+        // For CREATE: auto-generate the SKU — user's sku column is only used
+        // for batch duplicate detection and error reporting, not stored.
+        let (row_result, generated_sku): (Result<(), String>, Option<String>) =
+            if action == "create" {
+                match create_item_from_row(
+                    &pool, row, store_id, real_cat, real_dept, claims.user_id, &slug,
+                ).await {
+                    Ok(gen_sku) => (Ok(()), Some(gen_sku)),
+                    Err(e)      => (Err(e), None),
+                }
+            } else {
+                let item_id = existing_id.unwrap();
+                (
+                    update_item_from_row(
+                        &pool, row, &sku, item_id, store_id, real_cat, real_dept, claims.user_id,
+                    ).await,
+                    None,
+                )
+            };
 
         match row_result {
-            Ok(_) => {
+            Ok(()) => {
                 if action == "create" {
-                    if let Ok(new_id) = sqlx::query_scalar!(
-                        "SELECT id FROM items WHERE store_id = $1 AND sku = $2",
-                        store_id, &sku
-                    ).fetch_one(&pool).await {
-                        sku_map.insert(sku_lower, new_id);
+                    // Register the generated SKU in sku_map so it can be found
+                    // if referenced later in the same batch.
+                    if let Some(ref gen_sku) = generated_sku {
+                        if let Ok(new_id) = sqlx::query_scalar!(
+                            "SELECT id FROM items WHERE store_id = $1 AND sku = $2",
+                            store_id, gen_sku
+                        ).fetch_one(&pool).await {
+                            sku_map.insert(gen_sku.to_lowercase(), new_id);
+                        }
                     }
                     created += 1;
                 } else {
@@ -471,12 +516,16 @@ pub async fn import_items(
 async fn create_item_from_row(
     pool:     &sqlx::PgPool,
     row:      &ImportItemRow,
-    sku:      &str,
     store_id: i32,
     cat_id:   Option<i32>,
     dept_id:  Option<i32>,
     user_id:  i32,
-) -> Result<(), String> {
+    slug:     &str,
+) -> Result<String, String> {
+    // Auto-generate the unique SKU — user-supplied SKU in the spreadsheet is
+    // only used as a row identifier; the system always assigns the real SKU.
+    let sku = next_item_sku(pool, store_id, slug).await;
+
     // Barcode uniqueness — scoped to this store only
     if let Some(ref bc) = row.barcode {
         let bc = bc.trim();
@@ -547,7 +596,8 @@ async fn create_item_from_row(
     .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(())
+    // Return the generated SKU so the caller can register it in sku_map
+    Ok(sku)
 }
 
 async fn update_item_from_row(

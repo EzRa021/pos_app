@@ -163,7 +163,16 @@ export async function parseExcelFile(file) {
       try {
         const wb   = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-        resolve(rows);
+        // Normalise column headers to lowercase + trimmed so that files with
+        // "SKU", "Sku", "sku " etc. all map correctly to the expected keys.
+        const normalised = rows.map((row) => {
+          const out = {};
+          for (const [k, v] of Object.entries(row)) {
+            out[k.toLowerCase().trim()] = v;
+          }
+          return out;
+        });
+        resolve(normalised);
       } catch (err) { reject(err); }
     };
     reader.onerror = () => reject(new Error("Could not read file"));
@@ -268,7 +277,12 @@ export function useExcelImport(storeId) {
     setParseError(null);
     try {
       const raw  = await parseExcelFile(selectedFile);
-      const norm = raw.map(normaliseItemRow).filter((r) => r.sku);
+      // Keep any row that has at least one non-null field — don't require SKU
+      // here; the backend will report per-row errors for missing / empty SKUs.
+      // This prevents silent row-drops when SKU cells happen to be empty.
+      const norm = raw
+        .map(normaliseItemRow)
+        .filter((r) => ITEM_COLUMNS.some((col) => r[col.key] !== null));
       setRawRows(raw);
       setNormalisedRows(norm);
     } catch (err) {
@@ -365,7 +379,7 @@ export function useStockCountImport(storeId) {
     setParseError(null);
     try {
       const raw  = await parseExcelFile(selectedFile);
-      const norm = raw.map(normaliseStockCountRow).filter((r) => r.sku);
+      const norm = raw.map(normaliseStockCountRow).filter((r) => r.sku || r.quantity);
       setRawRows(raw);
       setNormalisedRows(norm);
     } catch (err) {

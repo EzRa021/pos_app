@@ -347,7 +347,7 @@ export default function ProfitabilityPage() {
                 title="Top 10 Profit Contributors"
                 description="Items generating the most absolute gross profit — bar colour reflects margin quality"
               >
-                <ChartContainer config={PROFIT_CHART_CONFIG} className={`h-[${Math.max(220, top10.length * 26)}px]`}>
+                <ChartContainer config={PROFIT_CHART_CONFIG} style={{ height: Math.max(220, top10.length * 26) }}>
                   <BarChart data={top10} layout="vertical">
                     <CartesianGrid horizontal={false} />
                     <XAxis type="number" tickFormatter={(v) => formatCurrencyCompact(v)} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />

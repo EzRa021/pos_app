@@ -11,6 +11,7 @@ use crate::{
     utils::crypto::{hash_password, validate_password},
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 #[tauri::command]
 pub async fn get_users(
@@ -102,7 +103,7 @@ pub async fn create_user(
     token:   String,
     payload: CreateUserDto,
 ) -> AppResult<User> {
-    guard_permission(&state, &token, "users.create").await?;
+    let claims = guard_permission(&state, &token, "users.create").await?;
     validate_password(&payload.password).map_err(AppError::Validation)?;
     let pool = state.pool().await?;
     let hash = hash_password(&payload.password)?;
@@ -118,6 +119,21 @@ pub async fn create_user(
     .fetch_one(&pool)
     .await?;
 
+    write_audit_log(&pool, claims.user_id, claims.store_id, "create", "user",
+        &format!("Created user '{}'", payload.username), "info").await;
+
+    crate::database::sync::queue_row(
+        &pool, "users", "INSERT", &id.to_string(),
+        serde_json::json!({
+            "id": id, "username": payload.username, "email": payload.email,
+            "password_hash": hash, "first_name": payload.first_name,
+            "last_name": payload.last_name, "phone": payload.phone,
+            "role_id": payload.role_id, "store_id": payload.store_id,
+            "is_active": true,
+        }),
+        payload.store_id,
+    ).await;
+
     get_user(state, token, id).await
 }
 
@@ -128,7 +144,7 @@ pub async fn update_user(
     id:      i32,
     payload: UpdateUserDto,
 ) -> AppResult<User> {
-    guard_permission(&state, &token, "users.update").await?;
+    let claims = guard_permission(&state, &token, "users.update").await?;
     let pool = state.pool().await?;
 
     sqlx::query!(
@@ -149,6 +165,20 @@ pub async fn update_user(
     .execute(&pool)
     .await?;
 
+    write_audit_log(&pool, claims.user_id, claims.store_id, "update", "user",
+        &format!("Updated user id {id}"), "info").await;
+
+    crate::database::sync::queue_row(
+        &pool, "users", "UPDATE", &id.to_string(),
+        serde_json::json!({
+            "id": id, "email": payload.email, "first_name": payload.first_name,
+            "last_name": payload.last_name, "phone": payload.phone,
+            "role_id": payload.role_id, "store_id": payload.store_id,
+            "is_active": payload.is_active,
+        }),
+        payload.store_id,
+    ).await;
+
     get_user(state, token, id).await
 }
 
@@ -158,12 +188,14 @@ pub async fn delete_user(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard_permission(&state, &token, "users.delete").await?;
+    let claims = guard_permission(&state, &token, "users.delete").await?;
     let pool = state.pool().await?;
 
     sqlx::query!("UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id)
         .execute(&pool)
         .await?;
+    write_audit_log(&pool, claims.user_id, claims.store_id, "delete", "user",
+        &format!("Deactivated user id {id}"), "warning").await;
     Ok(())
 }
 

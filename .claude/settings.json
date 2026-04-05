@@ -21,7 +21,24 @@
       "Bash(pnpm dlx:*)",
       "Bash(npm run:*)",
       "Read(//c/Users/user/Desktop/**)",
-      "Bash(find /c/Users/user/Desktop -name *.xlsx)"
+      "Bash(find /c/Users/user/Desktop -name *.xlsx)",
+      "Bash(grep -E \"\\\\.\\(json|js|ts|yml|yaml|toml|lock|md\\)$|^d\")",
+      "Bash(ls -1 /c/Users/user/Desktop/pos-app/*.json /c/Users/user/Desktop/pos-app/*.js /c/Users/user/Desktop/pos-app/*.toml)",
+      "Bash(cargo check:*)",
+      "Bash(xargs grep:*)",
+      "Bash(sed -i 's/^use super::auth::{guard, guard_permission};$/use super::auth::{guard, guard_permission};\\\\nuse super::audit::write_audit_log;/' \"c:\\\\Users\\\\user\\\\Desktop\\\\pos-app\\\\src-tauri\\\\src\\\\commands\\\\transactions.rs\")",
+      "Bash(sed -i 's/^use super::auth::guard;$/use super::auth::guard;\\\\nuse super::audit::write_audit_log;/' \"c:\\\\Users\\\\user\\\\Desktop\\\\pos-app\\\\src-tauri\\\\src\\\\commands\\\\shifts.rs\")",
+      "Bash(sed -i 's/^use super::auth::guard;$/use super::auth::guard;\\\\nuse super::audit::write_audit_log;/' \"c:\\\\Users\\\\user\\\\Desktop\\\\pos-app\\\\src-tauri\\\\src\\\\commands\\\\cash_movements.rs\")",
+      "Bash(sed -i 's/^use super::auth::guard_permission;$/use super::auth::guard_permission;\\\\nuse super::audit::write_audit_log;/' \"c:\\\\Users\\\\user\\\\Desktop\\\\pos-app\\\\src-tauri\\\\src\\\\commands\\\\customers.rs\")",
+      "Bash(sed -i 's/^use super::auth::{guard, guard_permission};$/use super::auth::{guard, guard_permission};\\\\nuse super::audit::write_audit_log;/' \"c:\\\\Users\\\\user\\\\Desktop\\\\pos-app\\\\src-tauri\\\\src\\\\commands\\\\expenses.rs\")",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(while read:*)",
+      "Bash(do if:*)",
+      "Bash(then echo:*)",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(npx --yes tsc --noEmit --jsx react)",
+      "Bash(set SQLX_OFFLINE=true)"
     ]
   }
 }

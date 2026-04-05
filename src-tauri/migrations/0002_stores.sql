@@ -20,7 +20,3 @@ CREATE TABLE IF NOT EXISTS stores (
     updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- ── Seed: default store ───────────────────────────────────────────────────────
-INSERT INTO stores (store_name, country, currency, timezone) VALUES
-    ('Main Store', 'Nigeria', 'NGN', 'Africa/Lagos')
-ON CONFLICT DO NOTHING;

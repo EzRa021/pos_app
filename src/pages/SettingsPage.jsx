@@ -3,9 +3,9 @@
 // ============================================================================
 import { useState } from "react";
 import {
-  Receipt, Store, Tag, Shield, ChevronRight,
-  SlidersHorizontal, Star, Download, KeyRound, Barcode, FileSpreadsheet,
-  Building2, Printer,
+  Receipt, Tag, Shield, ChevronRight,
+  SlidersHorizontal, Star, Download, Barcode, FileSpreadsheet,
+  Building2, Printer, Palette, Store, Cloud,
 } from "lucide-react";
 
 import { PageHeader }                    from "@/components/shared/PageHeader";
@@ -14,10 +14,13 @@ import { StoreSettingsPanel }            from "@/features/settings/StoreSettings
 import { LoyaltySettingsPanel }          from "@/features/settings/LoyaltySettingsPanel";
 import { SecuritySettingsPanel }         from "@/features/settings/SecuritySettingsPanel";
 import { BackupPanel }                   from "@/features/settings/BackupPanel";
+import { AppearancePanel }               from "@/features/settings/AppearancePanel";
 import { ImportExportSettingsPanel }     from "@/features/settings/ImportExportSettingsPanel";
 import { LabelSettingsPanel }            from "@/features/labels/LabelSettingsPanel";
-import { BusinessProfilePanel }         from "@/features/settings/BusinessProfilePanel";
-import { PrinterSettingsPanel }         from "@/features/settings/PrinterSettingsPanel";
+import { BusinessProfilePanel }          from "@/features/settings/BusinessProfilePanel";
+import { PrinterSettingsPanel }          from "@/features/settings/PrinterSettingsPanel";
+import { StoresManagementPanel }         from "@/features/settings/StoresManagementPanel";
+import { CloudSyncPanel }               from "@/features/settings/CloudSyncPanel";
 import { useBranchStore }        from "@/stores/branch.store";
 import { cn }                    from "@/lib/utils";
 
@@ -27,6 +30,13 @@ const SETTINGS_TABS = [
     label:       "Business Profile",
     icon:        Building2,
     description: "Business name, ID, currency, and contact details",
+    available:   true,
+  },
+  {
+    id:          "appearance",
+    label:       "Appearance",
+    icon:        Palette,
+    description: "Dark / light theme per branch",
     available:   true,
   },
   {
@@ -86,11 +96,18 @@ const SETTINGS_TABS = [
     available:   true,
   },
   {
-    id:          "store",
-    label:       "Store Info",
+    id:          "stores",
+    label:       "Stores",
     icon:        Store,
-    description: "Store name, address and contact details",
-    available:   false,
+    description: "Manage branches, locations and store settings",
+    available:   true,
+  },
+  {
+    id:          "cloud-sync",
+    label:       "Cloud Sync",
+    icon:        Cloud,
+    description: "Multi-location real-time sync via Supabase",
+    available:   true,
   },
   {
     id:          "tax",
@@ -165,14 +182,17 @@ export default function SettingsPage() {
   const renderContent = () => {
     switch (activeTab) {
       case "business":       return <BusinessProfilePanel />;
+      case "appearance":     return <AppearancePanel />;
       case "receipt":        return <ReceiptSettingsPanel />;
       case "labels":         return <LabelSettingsPanel />;
       case "business-rules": return <StoreSettingsPanel />;
       case "loyalty":        return <LoyaltySettingsPanel />;
       case "security":       return <SecuritySettingsPanel />;
       case "backup":         return <BackupPanel />;
-      case "import-export":   return <ImportExportSettingsPanel />;
-      case "printer":          return <PrinterSettingsPanel />;
+      case "import-export":  return <ImportExportSettingsPanel />;
+      case "printer":        return <PrinterSettingsPanel />;
+      case "stores":         return <StoresManagementPanel />;
+      case "cloud-sync":    return <CloudSyncPanel />;
       default: {
         const tab  = SETTINGS_TABS.find((t) => t.id === activeTab);
         const Icon = tab?.icon;

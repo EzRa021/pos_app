@@ -1,26 +1,39 @@
 // ============================================================================
 // hooks/useCurrencySetup.js
 // ============================================================================
-// Reads the business currency from the cached business profile and pushes
-// it into format.js's module-level config so that formatCurrency() and
-// related helpers use the correct currency everywhere in the app — without
-// any per-call changes at existing call sites.
+// Reads the active store's currency from store_settings (per-store) and
+// pushes it into format.js's module-level config so that formatCurrency()
+// uses the correct currency everywhere — without any per-call changes.
+//
+// Falls back to the business-level currency from get_business_info if the
+// store settings don't have one configured yet.
 //
 // Call this hook ONCE, inside AppShell (after login, before any page renders).
-// It re-runs automatically when the business profile changes (e.g. after the
-// user edits their currency in Settings > Business Profile).
+// It re-runs automatically when the active store changes.
 // ============================================================================
 
-import { useEffect }       from "react";
-import { useBusinessInfo } from "@/hooks/useBusinessInfo";
+import { useEffect }         from "react";
+import { useQuery }          from "@tanstack/react-query";
+import { useBranchStore }    from "@/stores/branch.store";
+import { getStoreSettings }  from "@/commands/store_settings";
+import { useBusinessInfo }   from "@/hooks/useBusinessInfo";
 import { setCurrencyConfig } from "@/lib/format";
 
 export function useCurrencySetup() {
-  const { currency, timezone } = useBusinessInfo();
+  const storeId = useBranchStore((s) => s.activeStore?.id);
+  const { currency: bizCurrency } = useBusinessInfo();
+
+  const { data: settings } = useQuery({
+    queryKey: ["store-settings", storeId],
+    queryFn:  () => getStoreSettings(storeId),
+    enabled:  !!storeId,
+    staleTime: 5 * 60_000,
+  });
 
   useEffect(() => {
-    if (currency) {
-      setCurrencyConfig({ currency });
-    }
-  }, [currency, timezone]);
+    // Prefer per-store currency; fall back to business-level.
+    const currency = settings?.currency || bizCurrency || "NGN";
+    const locale   = settings?.locale   || undefined;
+    setCurrencyConfig({ currency, locale });
+  }, [settings?.currency, settings?.locale, bizCurrency]);
 }

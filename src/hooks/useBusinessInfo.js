@@ -42,6 +42,7 @@ export function useBusinessInfo() {
     businessType: data?.business_type ?? null,
     currency:     data?.currency     ?? 'NGN',
     timezone:     data?.timezone     ?? 'Africa/Lagos',
+    logoData:     data?.logo_data    ?? null,
     isLoading,
     refetch,
   };

@@ -14,6 +14,8 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
+use crate::utils::ref_no::next_ref_no;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -215,15 +217,8 @@ pub async fn create_purchase_order(
 
     let mut db_tx = pool.begin().await?;
 
-    // Generate PO number
-    let po_num: String = sqlx::query_scalar!(
-        "SELECT 'PO-' || LPAD(NEXTVAL('po_ref_seq')::text, 6, '0')"
-    )
-    .fetch_one(&mut *db_tx)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| format!("PO-{}", chrono::Utc::now().timestamp()));
+    // Generate per-store PO number
+    let po_num = next_ref_no(&pool, payload.store_id, "PO", "PO", 6).await;
 
     // Validate all item quantities before inserting.
     // Bulk-fetch all item metadata in one query to avoid N+1 per-item round-trips.
@@ -248,17 +243,17 @@ pub async fn create_purchase_order(
     .fetch_all(&mut *db_tx)
     .await?;
     let item_meta_map: std::collections::HashMap<uuid::Uuid, _> =
-        meta_rows.into_iter().filter_map(|r| r.id.map(|id| (id, r))).collect();
+        meta_rows.into_iter().map(|r| (r.id, r)).collect();
 
     let mut validated_lines: Vec<ValidatedLine> = Vec::with_capacity(payload.items.len());
     for item in &payload.items {
         let meta = item_meta_map.get(&item.item_id)
             .ok_or_else(|| AppError::NotFound(format!("Item {} not found", item.item_id)))?;
 
-        let qty = crate::utils::qty::validate_qty(
+        let qty = crate::utils::qty::validate_qty_opt(
             to_dec(item.quantity),
-            &meta.measurement_type,
-            meta.item_name.as_deref().unwrap_or("Unknown Item"),
+            meta.measurement_type.as_deref(),
+            &meta.item_name,
         )?;
         let cost     = to_dec(item.unit_cost);
         let line_tot = qty * cost;
@@ -308,6 +303,28 @@ pub async fn create_purchase_order(
     let order = fetch_po(&pool, po_id).await?;
     let items = fetch_po_items(&pool, po_id).await?;
 
+    crate::database::sync::queue_row(
+        &pool, "purchase_orders", "INSERT", &po_id.to_string(),
+        serde_json::json!({ "id": po_id, "store_id": payload.store_id,
+                            "po_number": po_num, "supplier_id": payload.supplier_id,
+                            "total_amount": total.to_string(), "status": "pending" }),
+        Some(payload.store_id),
+    ).await;
+    for item in &items {
+        crate::database::sync::queue_row(
+            &pool, "purchase_order_items", "INSERT",
+            &format!("{}:{}", po_id, item.item_id),
+            serde_json::json!({ "po_id": po_id, "item_id": item.item_id,
+                                "quantity_ordered": item.quantity_ordered,
+                                "unit_cost": item.unit_cost,
+                                "line_total": item.line_total }),
+            Some(payload.store_id),
+        ).await;
+    }
+
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "purchase_order",
+        &format!("Created PO {} — ₦{}", po_num, total), "info").await;
+
     Ok(PurchaseOrderDetail { order, items })
 }
 
@@ -355,12 +372,12 @@ pub async fn receive_purchase_order(
     .await?;
     let po_meta_map: std::collections::HashMap<i32, PoLineMeta> = meta_rows
         .into_iter()
-        .filter_map(|r| Some((r.id?, PoLineMeta {
-            item_id:          r.item_id?,
-            item_name:        r.item_name?,
+        .map(|r| (r.id, PoLineMeta {
+            item_id:          r.item_id,
+            item_name:        r.item_name,
             unit_type:        r.unit_type,
-            measurement_type: Some(r.measurement_type),
-        })))
+            measurement_type: r.measurement_type,
+        }))
         .collect();
 
     for receive in &payload.items {
@@ -461,6 +478,31 @@ pub async fn receive_purchase_order(
     let order = fetch_po(&pool, id).await?;
     let items = fetch_po_items(&pool, id).await?;
 
+    crate::database::sync::queue_row(
+        &pool, "purchase_orders", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": order.store_id,
+                            "status": "received" }),
+        Some(order.store_id),
+    ).await;
+    for item in &items {
+        crate::database::sync::queue_row(
+            &pool, "purchase_order_items", "UPDATE",
+            &format!("{}:{}", id, item.item_id),
+            serde_json::json!({ "po_id": id, "item_id": item.item_id,
+                                "quantity_received": item.quantity_received }),
+            Some(order.store_id),
+        ).await;
+        crate::database::sync::queue_row(
+            &pool, "item_stock", "UPDATE",
+            &format!("{}:{}", item.item_id, order.store_id),
+            serde_json::json!({ "item_id": item.item_id, "store_id": order.store_id }),
+            Some(order.store_id),
+        ).await;
+    }
+
+    write_audit_log(&pool, claims.user_id, Some(order.store_id), "receive", "purchase_order",
+        &format!("Received goods for PO {}", order.po_number), "info").await;
+
     Ok(PurchaseOrderDetail { order, items })
 }
 
@@ -470,7 +512,7 @@ pub async fn cancel_purchase_order(
     token: String,
     id:    i32,
 ) -> AppResult<PurchaseOrderDetail> {
-    guard_permission(&state, &token, "purchase_orders.update").await?;
+    let claims = guard_permission(&state, &token, "purchase_orders.update").await?;
     let pool  = state.pool().await?;
     let order = fetch_po(&pool, id).await?;
 
@@ -488,6 +530,8 @@ pub async fn cancel_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
     let items = fetch_po_items(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, Some(order.store_id), "cancel", "purchase_order",
+        &format!("Cancelled PO {}", order.po_number), "warning").await;
     Ok(PurchaseOrderDetail { order, items })
 }
 
@@ -547,6 +591,8 @@ pub async fn approve_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
     let items = fetch_po_items(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, Some(order.store_id), "approve", "purchase_order",
+        &format!("Approved PO {}", order.po_number), "info").await;
     Ok(PurchaseOrderDetail { order, items })
 }
 

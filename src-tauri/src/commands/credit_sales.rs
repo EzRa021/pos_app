@@ -200,6 +200,16 @@ pub async fn record_credit_payment(
 
     db_tx.commit().await?;
 
+    crate::database::sync::queue_row(
+        &pool, "credit_sales", "UPDATE", &payload.credit_sale_id.to_string(),
+        serde_json::json!({ "id": payload.credit_sale_id,
+                            "store_id": cs.store_id,
+                            "amount_paid": new_paid.to_string(),
+                            "outstanding": new_outstanding.max(Decimal::ZERO).to_string(),
+                            "status": new_status }),
+        Some(cs.store_id),
+    ).await;
+
     fetch_credit_sale(&pool, payload.credit_sale_id).await
 }
 

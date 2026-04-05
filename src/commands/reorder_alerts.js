@@ -14,4 +14,4 @@ export const acknowledgeReorderAlert = (id) =>
   rpc("acknowledge_reorder_alert", { id });
 
 export const resolveReorderAlert = (id) =>
-  rpc("resolve_reorder_alert", { id });
+  rpc("acknowledge_reorder_alert", { id });

@@ -17,8 +17,11 @@ import { useState, useEffect, useCallback } from "react";
 import { getCurrentWindow }                 from "@tauri-apps/api/window";
 import { Minus, X, Maximize2, Minimize2, Search } from "lucide-react";
 import { useUiStore }        from "@/stores/ui.store";
+import { useBusinessInfo }  from "@/hooks/useBusinessInfo";
 import { cn }                from "@/lib/utils";
 import { SyncStatusBadge }  from "@/components/shared/SyncStatusBadge";
+
+const QUANTUM_LOGO = "/quantum-logo.svg";
 
 // ── Live clock ────────────────────────────────────────────────────────────────
 function Clock() {
@@ -103,6 +106,7 @@ function SearchTrigger() {
 // ── TitleBar ──────────────────────────────────────────────────────────────────
 export function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false);
+  const { logoData, name: businessName } = useBusinessInfo();
 
   // Sync maximized state on mount and whenever the window is resized
   const syncMaximized = useCallback(async () => {
@@ -150,9 +154,22 @@ export function TitleBar() {
         className="flex items-center gap-2 px-3 min-w-0 flex-1"
         data-tauri-drag-region
       >
-        {/* Q logo chip */}
-        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary shadow-sm shadow-primary/20">
-          <span className="text-[10px] font-black leading-none text-white select-none">Q</span>
+        {/* Q logo chip — shows business logo, then quantum logo, then Q letter */}
+        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary shadow-sm shadow-primary/20 overflow-hidden">
+          {logoData ? (
+            <img src={logoData} alt={businessName ?? 'Quantum POS'} className="h-full w-full object-cover" />
+          ) : (
+            <img
+              src={QUANTUM_LOGO}
+              alt="Quantum POS"
+              className="h-full w-full object-cover"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.parentElement.innerHTML =
+                  '<span class="text-[10px] font-black leading-none text-white select-none">Q</span>';
+              }}
+            />
+          )}
         </div>
 
         {/* App name */}

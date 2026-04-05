@@ -6,12 +6,13 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Separator }        from "@/components/ui/separator";
-import { AppSidebar }       from "@/components/app-sidebar";
+import { AppSidebar }       from "@/components/layout/AppSidebar";
 import { NotificationBell }  from "@/features/notifications/NotificationBell";
 import { SyncStatusBadge }  from "@/components/shared/SyncStatusBadge";
 import { CommandPalette }   from "@/features/command-palette/CommandPalette";
 import { KeyboardHelp }    from "@/features/keyboard-help/KeyboardHelp";
 import { useUiStore }       from "@/stores/ui.store";
+import { useBranchStore }  from "@/stores/branch.store";
 import { useCurrencySetup } from "@/hooks/useCurrencySetup";
 import { ErrorBoundary }    from "@/components/shared/ErrorBoundary";
 import { ChevronRight, Home } from "lucide-react";
@@ -177,11 +178,26 @@ function Breadcrumb() {
 
 // ── AppShell ──────────────────────────────────────────────────────────────────
 export function AppShell() {
-  const setCommandPaletteOpen = useUiStore((s) => s.setCommandPaletteOpen);
+  const setCommandPaletteOpen  = useUiStore((s) => s.setCommandPaletteOpen);
+  const validateActiveStore    = useBranchStore((s) => s.validateActiveStore);
 
   // Push business currency into format.js so formatCurrency() uses the right
   // symbol everywhere without requiring per-call changes at existing sites.
   useCurrencySetup();
+
+  // Re-validate the active store whenever the window regains focus.
+  // Catches the case where an admin deactivates a store while a cashier
+  // is on the POS — the next time the cashier switches back to the window
+  // their stale store is detected and cleared (5.2).
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.visibilityState === "visible") {
+        validateActiveStore();
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [validateActiveStore]);
 
   // Global Cmd+K / Ctrl+K shortcut — registered here (not inside CommandPalette)
   // so it survives page navigations regardless of palette mount state.

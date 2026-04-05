@@ -8,7 +8,7 @@ import {
   Package, Plus, Search, Edit3, Archive, Power, PowerOff,
   X, TrendingDown, DollarSign, Box, RefreshCw, Tag, Percent,
   PackagePlus, ChevronDown, Check, Minus, AlertTriangle, Printer,
-  Layers, FileSpreadsheet,
+  Layers, FileSpreadsheet, Star,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -24,6 +24,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useItems }                  from "@/features/items/useItems";
+import { useFavourites }             from "@/features/pos/useFavourites";
 import { useBulkOperations }         from "@/features/bulk_operations/useBulkOperations";
 import { BulkPriceUpdateDialog }     from "@/features/bulk_operations/BulkPriceUpdateDialog";
 import { BulkDiscountDialog }        from "@/features/bulk_operations/BulkDiscountDialog";
@@ -32,6 +33,7 @@ import { PrintLabelsDialog }         from "@/features/labels/PrintLabelsDialog";
 import { BulkPrintLabelsDialog }     from "@/features/labels/BulkPrintLabelsDialog";
 import { ItemImage }                 from "@/components/shared/ItemImage";
 import { usePermission }             from "@/hooks/usePermission";
+import { usePaginationParams }       from "@/hooks/usePaginationParams";
 import { ItemFormDialog }              from "@/features/items/ItemFormDialog";
 import { ExcelImportExportDialog }    from "@/features/items/ExcelImportExportDialog";
 import {
@@ -345,6 +347,7 @@ function ArchiveDialog({ open, onOpenChange, item, mutation }) {
 function buildColumns({
   onEdit, onArchive, onToggle, onPrintLabels, canManage,
   selectedIds, onToggleRow, onToggleAll, allSelected, someSelected,
+  onFavToggle, isPinned,
 }) {
   const checkboxCol = {
     key: "__chk__",
@@ -431,6 +434,26 @@ function buildColumns({
     },
   ];
 
+  // Favourite button — shown for all users (read-only action, no manage perm needed)
+  const favCol = [{
+    key: "__fav__", header: "", width: "36px",
+    render: (row) => {
+      const pinned = isPinned?.(row.id) ?? false;
+      return (
+        <Button
+          variant="ghost" size="icon" className="h-7 w-7"
+          title={pinned ? "Remove from POS Quick Access" : "Add to POS Quick Access"}
+          onClick={(e) => { e.stopPropagation(); onFavToggle?.(row.id); }}
+        >
+          <Star className={cn(
+            "h-3.5 w-3.5 transition-colors",
+            pinned ? "text-amber-400 fill-amber-400" : "text-muted-foreground/40 hover:text-amber-400",
+          )} />
+        </Button>
+      );
+    },
+  }];
+
   const actionCol = canManage ? [{
     key: "actions", header: "", align: "right",
     render: (row) => (
@@ -458,7 +481,7 @@ function buildColumns({
     ),
   }] : [];
 
-  return [checkboxCol, ...dataCols, ...actionCol];
+  return [checkboxCol, ...dataCols, ...favCol, ...actionCol];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -470,8 +493,7 @@ export function ItemsTable() {
   const canManage = usePermission("items.update");
 
   // ── Filters ───────────────────────────────────────────────────────────────
-  const [page,            setPage]            = useState(1);
-  const [search,          setSearch]          = useState("");
+  const { page, search, setPage, setSearch } = usePaginationParams({ defaultPageSize: 25 });
   const [isActive,        setIsActive]        = useState(null);
   const [lowStock,        setLowStock]        = useState(false);
   const [measurementType, setMeasurementType] = useState(null);
@@ -573,6 +595,9 @@ export function ItemsTable() {
     }
   };
 
+  // ── Favourites ────────────────────────────────────────────────────────────
+  const { isPinned, toggle: favToggle } = useFavourites();
+
   // ── Row callbacks ─────────────────────────────────────────────────────────
   const openEdit        = useCallback((row) => { setSelected(row); setEditOpen(true);    }, []);
   const openArchive     = useCallback((row) => { setSelected(row); setArchiveOpen(true); }, []);
@@ -588,9 +613,11 @@ export function ItemsTable() {
     canManage,
     selectedIds, onToggleRow: toggleRow, onToggleAll: toggleAll,
     allSelected, someSelected,
+    isPinned, onFavToggle: favToggle,
   }), [
     openEdit, openArchive, openToggle, openPrintLabels, canManage,
     selectedIds, toggleRow, toggleAll, allSelected, someSelected,
+    isPinned, favToggle,
   ]);
 
   if (!storeId) return (

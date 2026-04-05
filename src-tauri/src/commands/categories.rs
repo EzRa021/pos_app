@@ -10,6 +10,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 // ── Shared SELECT (no store_code – column not yet in stores table) ────────────
 
@@ -120,7 +121,7 @@ pub(crate) async fn create_category_inner(
     token:   String,
     payload: CreateCategoryDto,
 ) -> AppResult<Category> {
-    guard_permission(state, &token, "categories.create").await?;
+    let claims = guard_permission(state, &token, "categories.create").await?;
     let pool = state.pool().await?;
 
     let tax_rate = payload.default_tax_rate
@@ -158,6 +159,21 @@ pub(crate) async fn create_category_inner(
     .fetch_one(&pool)
     .await?;
 
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "category",
+        &format!("Created category '{}'", payload.category_name), "info").await;
+
+    crate::database::sync::queue_row(
+        &pool, "categories", "INSERT", &id.to_string(),
+        serde_json::json!({
+            "id": id, "store_id": payload.store_id,
+            "department_id": payload.department_id,
+            "category_name": payload.category_name,
+            "category_code": payload.category_code,
+            "is_active": payload.is_active.unwrap_or(true),
+        }),
+        Some(payload.store_id),
+    ).await;
+
     get_category_inner(state, token, id).await
 }
 
@@ -167,7 +183,7 @@ pub(crate) async fn update_category_inner(
     id:      i32,
     payload: UpdateCategoryDto,
 ) -> AppResult<Category> {
-    guard_permission(state, &token, "categories.update").await?;
+    let claims = guard_permission(state, &token, "categories.update").await?;
     let pool = state.pool().await?;
 
     let tax_rate = payload.default_tax_rate
@@ -210,6 +226,24 @@ pub(crate) async fn update_category_inner(
     .execute(&pool)
     .await?;
 
+    write_audit_log(&pool, claims.user_id, None, "update", "category",
+        &format!("Updated category id {id}"), "info").await;
+
+    // Fetch store_id for scoping
+    let store_id: Option<i32> = sqlx::query_scalar!("SELECT store_id FROM categories WHERE id = $1", id)
+        .fetch_optional(&pool).await.ok().flatten();
+    crate::database::sync::queue_row(
+        &pool, "categories", "UPDATE", &id.to_string(),
+        serde_json::json!({
+            "id": id, "store_id": store_id,
+            "category_name": payload.category_name,
+            "category_code": payload.category_code,
+            "department_id": payload.department_id,
+            "is_active": payload.is_active,
+        }),
+        store_id,
+    ).await;
+
     get_category_inner(state, token, id).await
 }
 
@@ -218,13 +252,15 @@ pub(crate) async fn delete_category_inner(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard_permission(state, &token, "categories.delete").await?;
+    let claims = guard_permission(state, &token, "categories.delete").await?;
     let pool = state.pool().await?;
     sqlx::query!(
         "UPDATE categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id
     )
     .execute(&pool)
     .await?;
+    write_audit_log(&pool, claims.user_id, None, "deactivate", "category",
+        &format!("Deactivated category id {id}"), "warning").await;
     Ok(())
 }
 
@@ -233,11 +269,13 @@ pub(crate) async fn hard_delete_category_inner(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard_permission(state, &token, "categories.delete").await?;
+    let claims = guard_permission(state, &token, "categories.delete").await?;
     let pool = state.pool().await?;
     sqlx::query!("DELETE FROM categories WHERE id = $1", id)
         .execute(&pool)
         .await?;
+    write_audit_log(&pool, claims.user_id, None, "hard_delete", "category",
+        &format!("Permanently deleted category id {id}"), "critical").await;
     Ok(())
 }
 

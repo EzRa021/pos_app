@@ -13,6 +13,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard;
+use super::audit::write_audit_log;
 
 #[tauri::command]
 pub async fn log_drawer_event(
@@ -36,7 +37,7 @@ pub async fn log_drawer_event(
     .fetch_one(&pool)
     .await?;
 
-    sqlx::query_as!(
+    let event = sqlx::query_as!(
         CashDrawerEvent,
         "SELECT id, shift_id, event_type, notes, created_by, created_at
          FROM   cash_drawer_events WHERE id = $1",
@@ -44,7 +45,10 @@ pub async fn log_drawer_event(
     )
     .fetch_one(&pool)
     .await
-    .map_err(AppError::from)
+    .map_err(AppError::from)?;
+    write_audit_log(&pool, claims.user_id, None, "drawer_event", "shift",
+        &format!("Drawer event '{}' for shift {shift_id}", event_type), "info").await;
+    Ok(event)
 }
 
 // get_shift_summary has moved to commands/shifts.rs (quantum-pos-app aligned version).

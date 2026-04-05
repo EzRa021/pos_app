@@ -41,6 +41,9 @@
 //   ["purchase-orders"]        — PO list
 //   ["purchase-order", id]     — single PO detail
 //   ["analytics-*"]            — analytics hooks (each has its own prefix)
+//   ["dash-recent-txns", storeId] — dashboard recent transactions panel (CashierView)
+//   ["dash-low-stock-cashier", storeId] — dashboard low-stock notice (CashierView)
+//   ["dash-low-stock-sk", storeId]      — dashboard low-stock panel (StockKeeperView)
 //   ["credit-sales"]           — credit sales list
 //   ["customers"]              — customer list
 //   ["customer", id]           — single customer detail
@@ -106,6 +109,11 @@ export function invalidateAfterSale({
   inv(["analytics-cashiers"]);
   inv(["analytics-peak-hours"]);
 
+  // Dashboard panels — private query keys used directly in AnalyticsDashboardPage
+  inv(["dash-recent-txns"]);        // CashierView: recent transactions list
+  inv(["dash-low-stock-cashier"]);  // CashierView: low stock notice
+  inv(["dash-low-stock-sk"]);       // StockKeeperView: low stock panel
+
   // Credit sale: customer balance and credit-sales list change
   if (paymentMethod === "credit" && customerId) {
     inv(["credit-sales"]);
@@ -140,6 +148,7 @@ export function invalidateAfterSale({
 // ─────────────────────────────────────────────────────────────────────────────
 export function invalidateAfterVoid(storeId) {
   inv(["transactions"]);
+  inv(["dash-recent-txns"]);
   invalidateStock(storeId);
   inv(["payments"]);
   inv(["analytics-sales-summary"]);
@@ -154,6 +163,7 @@ export function invalidateAfterVoid(storeId) {
 export function invalidateAfterReturn(storeId) {
   inv(["returns"]);
   inv(["transactions"]);
+  inv(["dash-recent-txns"]);
   invalidateStock(storeId);
   inv(["analytics-returns"]);
   inv(["analytics-sales-summary"]);
@@ -176,4 +186,48 @@ export function invalidateAfterPOReceive(storeId, poId) {
 export function invalidateAfterPOChange(poId) {
   if (poId) inv(["purchase-order", poId]);
   inv(["purchase-orders"]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// After a stock transfer is created, approved, or completed
+// Stock changes in both source and destination stores.
+// ─────────────────────────────────────────────────────────────────────────────
+export function invalidateAfterStockTransfer(storeId) {
+  inv(["stock-transfers"]);
+  inv(["stock-transfer"]);
+  invalidateStock(storeId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// After an expense is created or approved
+// ─────────────────────────────────────────────────────────────────────────────
+export function invalidateAfterExpense() {
+  inv(["expenses"]);
+  inv(["analytics-profit"]);
+  inv(["analytics-profit-loss"]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// After a price change is requested, approved, or rejected
+// Item prices may change — invalidate catalog and POS item grid.
+// ─────────────────────────────────────────────────────────────────────────────
+export function invalidateAfterPriceChange() {
+  inv(["price-changes"]);
+  inv(["price-lists"]);
+  inv(["price-list-items"]);
+  inv(["items"]);
+  inv(["pos-items"]);
+  inv(["item"]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// After a reorder alert is acknowledged
+// ─────────────────────────────────────────────────────────────────────────────
+export function invalidateAfterReorderAlert(storeId) {
+  inv(["reorder-alerts"]);
+  inv(["notifications"]);
+  if (storeId) {
+    inv(["low_stock",         storeId]);
+    inv(["dash-low-stock-sk", storeId]);
+  }
 }

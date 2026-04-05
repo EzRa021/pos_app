@@ -16,6 +16,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
@@ -171,6 +172,27 @@ pub async fn get_price_list_items(
     .map_err(AppError::from)
 }
 
+// ── Remove item from Price List ───────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn remove_price_list_item(
+    state:         State<'_, AppState>,
+    token:         String,
+    price_list_id: i32,
+    item_id:       Uuid,
+) -> AppResult<()> {
+    guard_permission(&state, &token, "items.update").await?;
+    let pool = state.pool().await?;
+    sqlx::query!(
+        "DELETE FROM price_list_items WHERE price_list_id = $1 AND item_id = $2",
+        price_list_id,
+        item_id,
+    )
+    .execute(&pool)
+    .await?;
+    Ok(())
+}
+
 // ── Update / Delete Price List ────────────────────────────────────────────────
 
 #[tauri::command]
@@ -281,7 +303,7 @@ pub async fn request_price_change(
     .fetch_one(&pool)
     .await?;
 
-    sqlx::query_as!(
+    let pc = sqlx::query_as!(
         PriceChange,
         r#"SELECT pc.id, pc.store_id, pc.item_id,
                   i.item_name,
@@ -294,7 +316,10 @@ pub async fn request_price_change(
     )
     .fetch_one(&pool)
     .await
-    .map_err(AppError::from)
+    .map_err(AppError::from)?;
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "request_price_change", "item",
+        &format!("Price change requested for '{}': ₦{} → ₦{}", pc.item_name.as_deref().unwrap_or(""), old_price, new_price), "info").await;
+    Ok(pc)
 }
 
 #[tauri::command]
@@ -361,7 +386,7 @@ pub async fn approve_price_change(
 
     db_tx.commit().await?;
 
-    sqlx::query_as!(
+    let approved = sqlx::query_as!(
         PriceChange,
         r#"SELECT pc.id, pc.store_id, pc.item_id,
                   i.item_name,
@@ -374,7 +399,10 @@ pub async fn approve_price_change(
     )
     .fetch_one(&pool)
     .await
-    .map_err(AppError::from)
+    .map_err(AppError::from)?;
+    write_audit_log(&pool, claims.user_id, Some(pc.store_id), "approve_price_change", "item",
+        &format!("Price change approved for '{}': ₦{} → ₦{}", approved.item_name.as_deref().unwrap_or(""), old_price, pc.new_price), "info").await;
+    Ok(approved)
 }
 
 #[tauri::command]

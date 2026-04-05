@@ -146,7 +146,7 @@ const UNIT_OPTIONS = {
 const DEFAULTS = {
   item_name: "", sku: "", barcode: "", description: "",
   category_id: null, department_id: null,
-  cost_price: "", selling_price: "", discount_price: "",
+  cost_price: "", selling_price: "", discount_price: "", discount_price_enabled: false,
   initial_quantity: "0",
   track_stock: true, min_stock_level: "0", max_stock_level: "1000",
   allow_negative_stock: false,
@@ -195,7 +195,8 @@ function itemToForm(item) {
     department_id:        item.department_id ?? null,
     cost_price:           item.cost_price   != null ? String(parseFloat(item.cost_price))   : "",
     selling_price:        item.selling_price != null ? String(parseFloat(item.selling_price)) : "",
-    discount_price:       item.discount_price != null ? String(parseFloat(item.discount_price)) : "",
+    discount_price:         item.discount_price != null ? String(parseFloat(item.discount_price)) : "",
+    discount_price_enabled: item.discount_price_enabled ?? false,
     initial_quantity:     "0",
     track_stock:          item.track_stock         ?? true,
     min_stock_level:      item.min_stock_level      != null ? String(item.min_stock_level)      : "0",
@@ -249,7 +250,8 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
       department_id:        form.department_id ? parseInt(form.department_id, 10) : null,
       cost_price:           toNum(form.cost_price) ?? 0,
       selling_price:        toNum(form.selling_price) ?? 0,
-      discount_price:       toNum(form.discount_price) ?? null,
+      discount_price:         toNum(form.discount_price) ?? null,
+      discount_price_enabled: form.discount_price_enabled,
       track_stock:          form.track_stock,
       min_stock_level:      toNum(form.min_stock_level) ?? 0,
       max_stock_level:      toNum(form.max_stock_level) ?? 1000,
@@ -471,13 +473,31 @@ export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, st
                     placeholder="0.00"
                   />
                 </FieldRow>
-                <FieldRow label="Discount Price (₦)" hint="Leave blank if none.">
-                  <Input
-                    type="number" min="0" step="0.01"
-                    value={form.discount_price}
-                    onChange={(e) => set("discount_price", e.target.value)}
-                    placeholder="0.00"
-                  />
+                <FieldRow
+                  label="Discount Price (₦)"
+                  hint={form.discount_price_enabled ? "Active — used at POS instead of selling price." : "Set a price, then enable to activate at POS."}
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number" min="0" step="0.01"
+                      value={form.discount_price}
+                      onChange={(e) => set("discount_price", e.target.value)}
+                      placeholder="0.00"
+                      className="flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => set("discount_price_enabled", !form.discount_price_enabled)}
+                      className={cn(
+                        "shrink-0 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold transition-colors",
+                        form.discount_price_enabled
+                          ? "border-success/40 bg-success/10 text-success hover:bg-success/20"
+                          : "border-border text-muted-foreground hover:text-foreground hover:border-border/80"
+                      )}
+                    >
+                      {form.discount_price_enabled ? "Active" : "Inactive"}
+                    </button>
+                  </div>
                 </FieldRow>
               </div>
               {/* Margin indicator */}

@@ -32,11 +32,11 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Generate a placeholder UUID for the backfill pass.
+    -- No business row is inserted here — onboarding must create it.
+    -- All orphaned rows are tagged with this UUID so they can be claimed
+    -- when the user completes onboarding and a real business is created.
     default_biz_id := gen_random_uuid();
-
-    INSERT INTO businesses (id, name, type, currency, timezone)
-    VALUES (default_biz_id, 'My Business', 'retail', 'NGN', 'Africa/Lagos')
-    ON CONFLICT DO NOTHING;
 
     -- ── STORES & USERS ───────────────────────────────────────────────────────
     UPDATE stores           SET business_id = default_biz_id WHERE business_id IS NULL;
@@ -129,16 +129,5 @@ BEGIN
     -- ── AUDIT LOGS ───────────────────────────────────────────────────────────
     UPDATE audit_logs            SET business_id = default_biz_id WHERE business_id IS NULL;
 
-    -- ── SEED app_config ──────────────────────────────────────────────────────
-    INSERT INTO app_config (key, value)
-    VALUES
-        ('business_id',         default_biz_id::text),
-        ('onboarding_complete', 'true')
-    ON CONFLICT DO NOTHING;
-
-    -- ── Record the event ─────────────────────────────────────────────────────
-    INSERT INTO sync_log (business_id, event_type, message)
-    VALUES (default_biz_id, 'backfill', 'Auto-backfill via migration 0056');
-
-    RAISE NOTICE 'Backfill complete. Default business_id = %', default_biz_id;
+    RAISE NOTICE 'Backfill complete. Orphaned rows tagged with placeholder business_id = %. Onboarding required to create the real business.', default_biz_id;
 END $$;

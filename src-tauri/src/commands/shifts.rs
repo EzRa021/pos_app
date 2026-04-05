@@ -24,7 +24,8 @@ use crate::{
     models::pagination::PagedResult,
     state::AppState,
 };
-use super::auth::guard;
+use super::auth::{guard, guard_permission};
+use super::audit::write_audit_log;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -166,7 +167,18 @@ pub(crate) async fn open_shift_inner(
     .await
     .ok(); // non-fatal
 
-    fetch_shift(&pool, id).await
+    let shift = fetch_shift(&pool, id).await?;
+
+    crate::database::sync::queue_row(
+        &pool, "shifts", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": payload.store_id,
+                            "status": "open", "opening_float": float }),
+        Some(payload.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "open", "shift",
+        &format!("Shift {} opened with ₦{} float", shift.shift_number, float), "info").await;
+    Ok(shift)
 }
 
 #[tauri::command]
@@ -246,7 +258,21 @@ pub(crate) async fn close_shift_inner(
     .await
     .ok(); // non-fatal
 
-    fetch_shift(&pool, id).await
+    let closed = fetch_shift(&pool, id).await?;
+
+    crate::database::sync::queue_row(
+        &pool, "shifts", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": closed.store_id,
+                            "status": "closed", "actual_cash": actual,
+                            "expected_cash": expected, "cash_difference": difference }),
+        Some(closed.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(closed.store_id), "close", "shift",
+        &format!("Shift {} closed — expected ₦{}, actual ₦{}, diff ₦{}",
+            closed.shift_number,
+            expected.round_dp(2), actual.round_dp(2), difference.round_dp(2)), "info").await;
+    Ok(closed)
 }
 
 #[tauri::command]
@@ -638,6 +664,18 @@ pub(crate) async fn add_cash_movement_inner(
 
     db_tx.commit().await?;
 
+    crate::database::sync::queue_row(
+        &pool, "cash_movements", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id, "shift_id": payload.shift_id,
+                            "movement_type": payload.movement_type,
+                            "amount": amount, "reason": payload.reason }),
+        Some(shift.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(shift.store_id), "cash_movement", "shift",
+        &format!("{} ₦{} on shift {} — {}", payload.movement_type, amount, payload.shift_id,
+            payload.reason.as_deref().unwrap_or("")), "info").await;
+
     sqlx::query_as!(
         CashMovement,
         "SELECT id, shift_id, movement_number, movement_type, amount,
@@ -926,7 +964,8 @@ pub(crate) async fn reconcile_shift_inner(
     id:       i32,
     notes:    Option<String>,
 ) -> AppResult<Shift> {
-    let claims = guard(state, &token).await?;
+    // Reconciling a shift is a manager/admin action — requires shifts.manage
+    let claims = guard_permission(state, &token, "shifts.manage").await?;
     let pool   = state.pool().await?;
 
     let updated = sqlx::query_scalar!(

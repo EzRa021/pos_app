@@ -433,11 +433,18 @@ function SchedulePriceChangeDialog({ open, onOpenChange, storeId, onSchedule }) 
 // ── Price List Items Dialog ───────────────────────────────────────────────────
 
 function PriceListItemsDialog({ open, onOpenChange, priceList, storeId, canManage }) {
-  const { items, isLoading, addItem } = usePriceListItems(priceList?.id);
-  const [search,   setSearch]   = useState("");
-  const [selected, setSelected] = useState(null);
-  const [price,    setPrice]    = useState("");
-  const [busy,     setBusy]     = useState(false);
+  const { items, isLoading, addItem, removeItem } = usePriceListItems(priceList?.id);
+  const [search,       setSearch]       = useState("");
+  const [selected,     setSelected]     = useState(null);
+  const [price,        setPrice]        = useState("");
+  const [busy,         setBusy]         = useState(false);
+  const [removeTarget, setRemoveTarget] = useState(null);
+
+  // Reset add form when dialog closes
+  const handleOpenChange = (val) => {
+    if (!val) { setSearch(""); setSelected(null); setPrice(""); setRemoveTarget(null); }
+    onOpenChange(val);
+  };
 
   const handleAddItem = async () => {
     if (!selected || !(parseFloat(price) > 0)) {
@@ -447,10 +454,16 @@ function PriceListItemsDialog({ open, onOpenChange, priceList, storeId, canManag
     setBusy(true);
     try {
       await addItem.mutateAsync({ item_id: selected.id, price: parseFloat(price) });
-      toast.success(`${selected.item_name} added to price list.`);
       setSearch(""); setSelected(null); setPrice("");
     } catch (err) { toast.error(extractError(err)); }
     finally { setBusy(false); }
+  };
+
+  const handleRemove = async (row) => {
+    try {
+      await removeItem.mutateAsync(row.item_id);
+      setRemoveTarget(null);
+    } catch (err) { toast.error(extractError(err)); }
   };
 
   const columns = useMemo(() => [
@@ -479,66 +492,98 @@ function PriceListItemsDialog({ open, onOpenChange, priceList, storeId, canManag
       key: "effective_to", header: "To",
       render: (row) => <span className="text-xs text-muted-foreground">{row.effective_to ? formatDate(row.effective_to) : "—"}</span>,
     },
-  ], []);
+    ...(canManage ? [{
+      key: "remove", header: "", align: "right",
+      render: (row) => (
+        <Button variant="ghost" size="icon" className="h-7 w-7 hover:bg-destructive/10"
+          title="Remove from list"
+          onClick={(e) => { e.stopPropagation(); setRemoveTarget(row); }}>
+          <Trash2 className="h-3.5 w-3.5 text-destructive/70 hover:text-destructive" />
+        </Button>
+      ),
+    }] : []),
+  ], [canManage]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl p-0 gap-0 overflow-hidden">
-        <div className="h-[3px] w-full bg-primary" />
-        <div className="p-6 pb-4">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-primary/25 bg-primary/10">
-              <List className="h-5 w-5 text-primary" />
+    <>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent className="max-w-2xl p-0 gap-0 overflow-hidden max-h-[90vh] flex flex-col">
+          <div className="h-[3px] w-full shrink-0 bg-primary" />
+          <div className="p-5 pb-4 flex-1 overflow-y-auto">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10">
+                <List className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-semibold">{priceList?.list_name}</DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground mt-0.5 capitalize">
+                  {priceList?.list_type} price list
+                  {!isLoading && (
+                    <span className="ml-2 inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0 text-[10px] font-semibold tabular-nums">
+                      {items.length} item{items.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </DialogDescription>
+              </div>
             </div>
-            <div>
-              <DialogTitle className="text-base font-semibold">{priceList?.list_name}</DialogTitle>
-              <DialogDescription className="text-xs text-muted-foreground mt-0.5 capitalize">
-                {priceList?.list_type} price list · {items.length} item{items.length !== 1 ? "s" : ""}
-              </DialogDescription>
-            </div>
-          </div>
-          {canManage && (
-            <div className="flex items-end gap-2 mb-4 p-3 rounded-lg border border-border bg-muted/20">
-              <div className="flex-1 space-y-1.5 relative">
-                <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Add Item</label>
-                <ItemSearchField
-                  storeId={storeId}
-                  value={search}
-                  onChange={setSearch}
-                  onSelect={(item) => { setSelected(item); setSearch(item.item_name); }}
-                  placeholder="Search to add an item…"
+
+            {canManage && (
+              <div className="flex items-end gap-2 mb-4 p-3 rounded-lg border border-border bg-muted/20">
+                <div className="flex-1 space-y-1.5 min-w-0">
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    Add / Update Item
+                  </label>
+                  <ItemSearchField
+                    storeId={storeId}
+                    value={search}
+                    onChange={setSearch}
+                    onSelect={(item) => { setSelected(item); setSearch(item.item_name); }}
+                    placeholder="Search to add an item…"
+                  />
+                </div>
+                <div className="w-32 space-y-1.5 shrink-0">
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">List Price (₦)</label>
+                  <Input type="number" min="0" step="0.01" value={price}
+                    onChange={(e) => setPrice(e.target.value)} placeholder="0.00" className="h-8 text-sm" />
+                </div>
+                <Button size="sm" onClick={handleAddItem} disabled={busy || !selected || !price}
+                  className="h-8 gap-1.5 shrink-0">
+                  {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                  {selected && items.some((i) => i.item_id === selected.id) ? "Update" : "Add"}
+                </Button>
+              </div>
+            )}
+
+            <DataTable
+              columns={columns}
+              data={items}
+              isLoading={isLoading}
+              emptyState={
+                <EmptyState icon={Package}
+                  title="No items in this price list"
+                  description={canManage ? "Use the form above to add items with custom prices." : "No items configured."}
+                  compact
                 />
-              </div>
-              <div className="w-32 space-y-1.5">
-                <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">List Price (₦)</label>
-                <Input type="number" min="0" step="0.01" value={price}
-                  onChange={(e) => setPrice(e.target.value)} placeholder="0.00" className="h-8 text-sm" />
-              </div>
-              <Button size="sm" onClick={handleAddItem} disabled={busy || !selected || !price}
-                className="h-8 gap-1.5 shrink-0">
-                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                Add
-              </Button>
-            </div>
-          )}
-          <DataTable
-            columns={columns}
-            data={items}
-            isLoading={isLoading}
-            emptyState={
-              <EmptyState icon={Package}
-                title="No items in this price list"
-                description={canManage ? "Use the form above to add items with custom prices." : "No items configured."}
-                compact
-              />
-            }
-          />
-        </div>
-        <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10">
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+              }
+            />
+          </div>
+          <DialogFooter className="shrink-0 px-5 py-3.5 border-t border-border bg-muted/10">
+            <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Remove item confirm */}
+      <ConfirmDialog
+        open={!!removeTarget}
+        onOpenChange={(v) => { if (!v) setRemoveTarget(null); }}
+        title={`Remove "${removeTarget?.item_name}"?`}
+        description="This item's custom price will be removed from this price list. The item's regular selling price is not affected."
+        confirmLabel="Remove"
+        variant="destructive"
+        onConfirm={() => handleRemove(removeTarget)}
+      />
+    </>
   );
 }
 
@@ -632,19 +677,20 @@ function OverviewTab({ canManage, storeId }) {
   const [statusFilter, setStatusFilter] = useState(null);
   const [page,         setPage]         = useState(1);
   const [reqOpen,      setReqOpen]      = useState(false);
-  const [confirm,      setConfirm]      = useState(null); // { id, action }
+  const [confirm,      setConfirm]      = useState(null); // { id, action, item_name, old_price, new_price }
 
   const { records, total, isLoading, request, approve, reject } =
     usePriceChanges({ status: statusFilter, page, limit: 15 });
 
-  const pendingCount = useMemo(
-    () => records.filter((r) => r.status === "pending").length,
-    [records],
-  );
+  // Separate query to always get accurate pending count regardless of filter
+  const { records: pendingRecords } = usePriceChanges({ status: "pending", page: 1, limit: 200 });
+  const pendingCount = pendingRecords.length;
 
   const tabs = REQUEST_STATUS_TABS.map((t) => ({
     ...t,
-    count: t.key === null ? total : records.filter((r) => r.status === t.key).length,
+    count: t.key === null ? total
+         : t.key === "pending" ? pendingCount
+         : undefined,
   }));
 
   const handleConfirm = async () => {
@@ -723,14 +769,16 @@ function OverviewTab({ canManage, storeId }) {
       render: (row) => {
         if (row.status !== "pending" || !canManage) return null;
         return (
-          <div className="flex items-center justify-end gap-1">
-            <Button variant="ghost" size="icon" className="h-7 w-7" title="Approve"
-              onClick={(e) => { e.stopPropagation(); setConfirm({ id: row.id, action: "approve" }); }}>
-              <Check className="h-3.5 w-3.5 text-success" />
+          <div className="flex items-center justify-end gap-1.5">
+            <Button size="xs" variant="outline"
+              className="h-6 px-2 text-[10px] font-semibold border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={(e) => { e.stopPropagation(); setConfirm({ id: row.id, action: "reject", item_name: row.item_name, old_price: row.old_price, new_price: row.new_price }); }}>
+              <X className="h-3 w-3 mr-0.5" />Reject
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" title="Reject"
-              onClick={(e) => { e.stopPropagation(); setConfirm({ id: row.id, action: "reject" }); }}>
-              <X className="h-3.5 w-3.5 text-destructive" />
+            <Button size="xs"
+              className="h-6 px-2 text-[10px] font-semibold bg-success hover:bg-success/90 text-white"
+              onClick={(e) => { e.stopPropagation(); setConfirm({ id: row.id, action: "approve", item_name: row.item_name, old_price: row.old_price, new_price: row.new_price }); }}>
+              <Check className="h-3 w-3 mr-0.5" />Approve
             </Button>
           </div>
         );
@@ -787,9 +835,9 @@ function OverviewTab({ canManage, storeId }) {
         onOpenChange={(v) => { if (!v) setConfirm(null); }}
         title={confirm?.action === "approve" ? "Approve Price Change?" : "Reject Price Change?"}
         description={confirm?.action === "approve"
-          ? "The item's selling price will be updated immediately. This cannot be undone."
-          : "The request will be rejected. The price will not change."}
-        confirmLabel={confirm?.action === "approve" ? "Approve & Apply" : "Reject"}
+          ? `"${confirm?.item_name}" will be updated from ${formatCurrency(parseFloat(confirm?.old_price ?? 0))} → ${formatCurrency(parseFloat(confirm?.new_price ?? 0))}. This applies immediately to the POS.`
+          : `The price change request for "${confirm?.item_name}" will be rejected. The selling price will remain unchanged.`}
+        confirmLabel={confirm?.action === "approve" ? "Approve & Apply Now" : "Reject Request"}
         variant={confirm?.action === "approve" ? "default" : "destructive"}
         onConfirm={handleConfirm}
       />

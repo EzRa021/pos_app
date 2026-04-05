@@ -21,7 +21,8 @@ import {
 } from "@/components/ui/dialog";
 import { cn }             from "@/lib/utils";
 import { formatCurrency, formatDate } from "@/lib/format";
-import { usePermission }  from "@/hooks/usePermission";
+import { usePermission }       from "@/hooks/usePermission";
+import { usePaginationParams } from "@/hooks/usePaginationParams";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -378,17 +379,16 @@ export function SuppliersPanel() {
   const navigate   = useNavigate();
   const canManage  = usePermission("suppliers.create");
 
-  const [search,          setSearch]          = useState("");
+  const { page, search, setPage, setSearch } = usePaginationParams({ defaultPageSize: 50 });
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusTab,       setStatusTab]       = useState("all");
-  const [page,            setPage]            = useState(1);
   const [formOpen,        setFormOpen]        = useState(false);
   const [editing,         setEditing]         = useState(null);
   const [toggleTarget,    setToggleTarget]    = useState(null);
   const [deleteTarget,    setDeleteTarget]    = useState(null);
 
   useEffect(() => {
-    const id = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(id);
   }, [search]);
 

@@ -27,7 +27,13 @@
 use std::path::Path;
 use sha2::{Sha256, Digest};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use include_dir::{include_dir, Dir};
 use crate::{error::{AppError, AppResult}, state::DbConfig};
+
+/// All migration SQL files embedded into the binary at compile time.
+/// This makes the production Tauri binary fully self-contained — no external
+/// migrations folder is needed at runtime.
+static EMBEDDED_MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -67,6 +73,39 @@ pub async fn create_pool(cfg: &DbConfig) -> AppResult<PgPool> {
     Ok(pool)
 }
 
+/// Create a cloud PgPool from a raw connection URL (no migrations — cloud DB
+/// is assumed to already have the schema from the primary local DB).
+/// Uses a smaller pool since cloud writes are background / async.
+pub async fn create_cloud_pool(url: &str) -> AppResult<PgPool> {
+    tracing::info!("Connecting to Supabase cloud database…");
+    PgPoolOptions::new()
+        .max_connections(5)
+        .min_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(15))
+        .idle_timeout(std::time::Duration::from_secs(120))
+        .max_lifetime(std::time::Duration::from_secs(1800))
+        .connect(url)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to connect to Supabase cloud DB: {e}")))
+}
+
+/// Connect to Supabase **and** automatically run all pending migrations.
+///
+/// Migrations are read from the [`EMBEDDED_MIGRATIONS`] static — they are
+/// baked into the binary at compile time, so no local folder is required at
+/// runtime. This is the function used in production mode.
+///
+/// The same `_app_migrations` tracking table and idempotency guarantees used
+/// for the local DB apply here, so re-running on an already-migrated cloud DB
+/// is always safe.
+pub async fn create_cloud_pool_with_migrations(url: &str) -> AppResult<PgPool> {
+    let pool = create_cloud_pool(url).await?;
+    tracing::info!("Running schema migrations on Supabase cloud database…");
+    run_migrations_embedded(&pool).await?;
+    tracing::info!("Supabase schema is up to date.");
+    Ok(pool)
+}
+
 /// Lightweight connectivity check — SELECT 1.
 pub async fn ping(pool: &PgPool) -> bool {
     sqlx::query("SELECT 1").execute(pool).await.is_ok()
@@ -74,6 +113,7 @@ pub async fn ping(pool: &PgPool) -> bool {
 
 // ── Migration Runner ──────────────────────────────────────────────────────────
 
+/// Run migrations from the filesystem (used by local PostgreSQL on dev/setup).
 async fn run_migrations(pool: &PgPool, migrations_dir: &str) -> AppResult<()> {
     // 1. Ensure tracking table exists with content_hash column
     ensure_migrations_table(pool).await?;
@@ -120,6 +160,129 @@ async fn run_migrations(pool: &PgPool, migrations_dir: &str) -> AppResult<()> {
         apply_migration(pool, version, &filename, &content, &hash).await?;
 
         tracing::info!("Migration {version:04} applied successfully.");
+    }
+
+    Ok(())
+}
+
+/// Run migrations from the [`EMBEDDED_MIGRATIONS`] static (used by Supabase
+/// cloud in production). The logic is identical to `run_migrations` but reads
+/// file content from the compile-time embedded directory instead of the
+/// filesystem, so no external folder is required at runtime.
+///
+/// All pending migrations are applied in a SINGLE TRANSACTION for speed.
+async fn run_migrations_embedded(pool: &PgPool) -> AppResult<()> {
+    // 1. Ensure tracking table exists
+    ensure_migrations_table(pool).await?;
+
+    // 2. Load what is already applied: version -> content_hash
+    let applied = load_applied_migrations(pool).await?;
+
+    // 3. Collect & sort embedded .sql files by version number
+    let mut all_entries: Vec<(i64, String, &str)> = Vec::new();
+    for file in EMBEDDED_MIGRATIONS.files() {
+        let filename = match file.path().file_name().and_then(|n| n.to_str()) {
+            Some(f) => f.to_string(),
+            None    => continue,
+        };
+        if !filename.ends_with(".sql") { continue; }
+        let version = match filename.split('_').next().and_then(|v| v.parse::<i64>().ok()) {
+            Some(v) => v,
+            None    => { tracing::warn!("Ignoring non-standard embedded migration: {filename}"); continue; }
+        };
+        let content = match file.contents_utf8() {
+            Some(c) => c,
+            None    => { tracing::warn!("Embedded migration {filename} is not valid UTF-8, skipping."); continue; }
+        };
+        all_entries.push((version, filename, content));
+    }
+    all_entries.sort_by_key(|(v, _, _)| *v);
+
+    // 4. Separate into: needs_run vs needs_hash_upgrade vs already_ok
+    // (version, name, content, hash)
+    let mut to_run:     Vec<(i64, String, &str, String)> = Vec::new();
+    // (version, name, hash)
+    let mut to_upgrade: Vec<(i64, String, String)>       = Vec::new();
+
+    for (version, filename, content) in &all_entries {
+        let hash = compute_hash(content);
+        match applied.get(version) {
+            // Already applied, same content → skip
+            Some(stored_hash) if stored_hash == &hash => {
+                tracing::debug!("Cloud migration {version:04} up to date — skipping.");
+                continue;
+            }
+            // Old DefaultHasher format (16 hex chars) → upgrade hash, don’t re-run
+            Some(stored_hash) if stored_hash.len() == 16 => {
+                // Old DefaultHasher format -- upgrade hash only, no re-run needed
+                to_upgrade.push((*version, filename.clone(), hash));
+            }
+            // Applied before but file changed → re-run (idempotent migration)
+            Some(_) => {
+                // Content changed -- re-apply (idempotent migration)
+                to_run.push((*version, filename.clone(), content, hash));
+            }
+            // Never applied → run fresh
+            None => {
+                tracing::info!("Cloud migration {version:04}: {filename}");
+                to_run.push((*version, filename.clone(), content, hash));
+            }
+        }
+    }
+
+    if to_run.is_empty() && to_upgrade.is_empty() {
+        tracing::info!("Cloud DB schema is already up to date.");
+        return Ok(());
+    }
+
+    // Apply ALL pending migrations in ONE transaction -> single round-trip to Supabase
+    if !to_run.is_empty() {
+        tracing::info!(
+            "Applying {} pending cloud migration(s) in a single transaction...",
+            to_run.len()
+        );
+
+        let mut tx = pool.begin().await
+            .map_err(|e| AppError::Internal(
+                format!("Cannot begin cloud migration transaction: {e}")
+            ))?;
+
+        for (version, filename, content, hash) in &to_run {
+            for stmt in split_sql_statements(content) {
+                sqlx::query(&stmt)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AppError::Internal(
+                        format!("Cloud migration {filename} failed.\nStatement:\n{stmt}\n\nError: {e}")
+                    ))?;
+            }
+            sqlx::query(
+                "INSERT INTO _app_migrations (version, name, content_hash)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (version) DO UPDATE
+                     SET name=EXCLUDED.name, content_hash=EXCLUDED.content_hash, applied_at=NOW()"
+            )
+            .bind(*version)
+            .bind(filename.as_str())
+            .bind(hash.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::Internal(
+                format!("Cannot record cloud migration {filename}: {e}")
+            ))?;
+            tracing::debug!("Cloud migration {version:04} staged in batch.");
+        }
+
+        tx.commit().await
+            .map_err(|e| AppError::Internal(
+                format!("Cannot commit cloud migrations batch: {e}")
+            ))?;
+        tracing::info!("{} cloud migration(s) applied and committed.", to_run.len());
+    }
+
+    // Upgrade old-format hashes (no SQL re-run, just UPDATE the hash column)
+    for (version, filename, hash) in to_upgrade {
+        upgrade_migration_hash(pool, version, &filename, &hash).await?;
     }
 
     Ok(())

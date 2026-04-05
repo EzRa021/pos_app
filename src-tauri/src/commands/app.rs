@@ -53,8 +53,15 @@ pub async fn db_connect(
     }
 
     // ── Store pool in AppState ────────────────────────────────────────────────
-    let mut guard = state.db.lock().await;
-    *guard = Some(pool);
+    {
+        let mut guard = state.db.lock().await;
+        *guard = Some(pool);
+    } // release lock before async calls below
+
+    // ── Cache business_id so triggers + handlers have it in-memory ────────────
+    if let Ok(pool) = state.pool().await {
+        state.load_business_id(&pool).await;
+    }
 
     Ok(DbConnectResult {
         success: true,

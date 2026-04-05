@@ -722,7 +722,7 @@ function CashierView({ user, health, lHealth }) {
     enabled:  !!storeId,
     staleTime: 30_000,
   });
-  const recentTxns = useMemo(() => txnPage?.rows ?? [], [txnPage]);
+  const recentTxns = useMemo(() => txnPage?.data ?? [], [txnPage]);
 
   // Low stock notice
   const { data: lowStockItems } = useQuery({

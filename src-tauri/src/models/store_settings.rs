@@ -28,12 +28,17 @@ pub struct StoreSettings {
     pub receipt_copies:                      i32,
     // Stock
     pub auto_create_po_on_reorder:           bool,
+    // Tax
+    pub tax_inclusive:                       bool,
     // Cash
     pub opening_float_required:              bool,
     pub min_opening_float:                   Option<Decimal>,
     // Credit
     pub max_credit_days:                     i32,
     pub auto_flag_overdue_after_days:        i32,
+    // Currency
+    pub currency:                            String,
+    pub locale:                              String,
     pub created_at:                          DateTime<Utc>,
     pub updated_at:                          DateTime<Utc>,
 }
@@ -55,9 +60,12 @@ pub struct UpdateStoreSettingsDto {
     pub show_vat_on_receipt:                 Option<bool>,
     pub show_cashier_on_receipt:             Option<bool>,
     pub receipt_copies:                      Option<i32>,
+    pub tax_inclusive:                       Option<bool>,
     pub auto_create_po_on_reorder:           Option<bool>,
     pub opening_float_required:              Option<bool>,
     pub min_opening_float:                   Option<f64>,
     pub max_credit_days:                     Option<i32>,
     pub auto_flag_overdue_after_days:        Option<i32>,
+    pub currency:                            Option<String>,
+    pub locale:                              Option<String>,
 }

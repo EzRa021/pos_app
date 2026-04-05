@@ -3,7 +3,9 @@
 // ============================================================================
 // Storage strategy (desktop POS):
 //   • access_token  → in-memory only (Zustand state). Never written to disk.
-//   • refresh_token → localStorage. Survives app restarts for auto-login.
+//   • refresh_token → sessionStorage. Cleared when the WebView (app) closes.
+//                     Stays alive across hot-reloads and navigation within the
+//                     same session. Avoids leaving a credential on disk.
 //   • user data     → localStorage. Used for optimistic display on next startup
 //                     before the refresh token exchange completes.
 //
@@ -34,13 +36,13 @@ function scheduleRefresh(expiresIn, restoreSessionFn) {
 
 function saveToStorage(refreshToken, user) {
   try {
-    localStorage.setItem(REFRESH_KEY, refreshToken);
-    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    sessionStorage.setItem(REFRESH_KEY, refreshToken);  // clears on app/tab close
+    localStorage.setItem(USER_KEY, JSON.stringify(user)); // kept for optimistic display
   } catch { /* storage quota — ignore */ }
 }
 
 function clearStorage() {
-  localStorage.removeItem(REFRESH_KEY);
+  sessionStorage.removeItem(REFRESH_KEY);
   localStorage.removeItem(USER_KEY);
 }
 
@@ -139,10 +141,10 @@ export const useAuthStore = create((set, get) => ({
   },
 
   async _doRestoreSession(attempt) {
-    const MAX_RETRY  = 4;   // 1 s → 2 s → 4 s → 8 s
-    const RETRY_BASE = 1000;
+    const MAX_RETRY  = 3;   // 300 ms → 600 ms → 1.2 s  (max ~2 s total)
+    const RETRY_BASE = 300;
 
-    const savedRefresh = localStorage.getItem(REFRESH_KEY);
+    const savedRefresh = sessionStorage.getItem(REFRESH_KEY);
     if (!savedRefresh) {
       set({ isInitialized: true });
       return false;
@@ -200,7 +202,7 @@ export const useAuthStore = create((set, get) => ({
       // up). Do NOT clear the tokens and do NOT set user:null — retry first.
       if (attempt < MAX_RETRY) {
         const delay = RETRY_BASE * Math.pow(2, attempt); // 1s 2s 4s 8s
-        console.warn(`[auth] restoreSession attempt ${attempt + 1} failed ("${errMsg}") — retrying in ${delay}ms`);
+        console.warn(`[auth] restoreSession attempt ${attempt + 1} failed ("${errMsg}") — retrying in ${delay} ms`);
         await new Promise(r => setTimeout(r, delay));
         return get()._doRestoreSession(attempt + 1);
       }

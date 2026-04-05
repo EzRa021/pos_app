@@ -103,92 +103,119 @@
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   Design tokens — Quantum POS is ALWAYS DARK.
-   :root and .dark are identical; both are declared so shadcn's class strategy
-   and bare renders both resolve correctly.
+   Design tokens — Light theme on :root, dark overrides on .dark.
+   html[class="dark"] is set by default in index.html and switched by
+   branch.store.js based on the active store's `theme` column.
    ────────────────────────────────────────────────────────────────────────── */
-:root,
+
+/* ── LIGHT THEME (default :root) ────────────────────────────────────────────── */
+:root {
+  --radius: 0.5rem;
+
+  --background:         oklch(0.980 0.002 286);   /* #f8f8fa */
+  --foreground:         oklch(0.097 0.003 286);   /* #09090b */
+
+  --card:               oklch(1.000 0.000 0);     /* #ffffff */
+  --card-foreground:    oklch(0.097 0.003 286);
+
+  --popover:            oklch(1.000 0.000 0);
+  --popover-foreground: oklch(0.097 0.003 286);
+
+  --primary:            oklch(0.623 0.214 259.8); /* #3b82f6 */
+  --primary-foreground: oklch(0.985 0.000 0);
+
+  --secondary:            oklch(0.940 0.002 286); /* #eeeeef */
+  --secondary-foreground: oklch(0.097 0.003 286);
+  --muted:                oklch(0.940 0.002 286);
+  --muted-foreground:     oklch(0.460 0.003 286); /* #71717a */
+  --accent:               oklch(0.940 0.002 286);
+  --accent-foreground:    oklch(0.097 0.003 286);
+
+  --destructive:            oklch(0.628 0.258 27.3);
+  --destructive-foreground: oklch(0.985 0.000 0);
+
+  --success:            oklch(0.527 0.154 149.6);
+  --success-foreground: oklch(0.985 0.000 0);
+
+  --warning:            oklch(0.769 0.188 70.1);
+  --warning-foreground: oklch(0.097 0.003 286);
+
+  --border: oklch(0.900 0.002 286);   /* #e4e4e7 */
+  --input:  oklch(0.980 0.002 286);   /* same as bg */
+  --ring:   oklch(0.623 0.214 259.8);
+
+  --chart-1: oklch(0.623 0.214 259.8);
+  --chart-2: oklch(0.527 0.154 149.6);
+  --chart-3: oklch(0.769 0.188 70.1);
+  --chart-4: oklch(0.628 0.258 27.3);
+  --chart-5: oklch(0.680 0.180 300.0);
+
+  --sidebar:                    oklch(0.950 0.002 286);   /* slightly off-bg */
+  --sidebar-foreground:         oklch(0.097 0.003 286);
+  --sidebar-primary:            oklch(0.623 0.214 259.8);
+  --sidebar-primary-foreground: oklch(0.985 0.000 0);
+  --sidebar-accent:             oklch(0.900 0.002 286);
+  --sidebar-accent-foreground:  oklch(0.097 0.003 286);
+  --sidebar-border:             oklch(0.900 0.002 286);
+  --sidebar-ring:               oklch(0.623 0.214 259.8);
+
+  /* Skeleton shimmer colours (light) */
+  --shimmer-base:   oklch(0.920 0.002 286);
+  --shimmer-peak:   oklch(0.960 0.002 286);
+}
+
+/* ── DARK THEME (.dark on <html>) ───────────────────────────────────────────── */
 .dark {
-  /* ── Global radius base ─────────────────────────────────────────────────── */
-  --radius: 0.5rem;  /* 8px */
+  --background:         oklch(0.097 0.003 286);   /* #09090b */
+  --foreground:         oklch(0.985 0.000 0);     /* #fafafa */
 
-  /* ── Background:  #09090b  ──────────────────────────────────────────────── */
-  /* oklch(0.097 0.003 286)  — near-black with a faint zinc tint             */
-  --background:      oklch(0.097 0.003 286);
-  --foreground:      oklch(0.985 0.000 0);    /* #fafafa */
-
-  /* ── Card / panel:  #111113  ────────────────────────────────────────────── */
-  /* Sidebar, modals, drawers, dropdown menus                                 */
-  --card:            oklch(0.130 0.003 286);
-  --card-foreground: oklch(0.985 0.000 0);
+  --card:               oklch(0.130 0.003 286);   /* #111113 */
+  --card-foreground:    oklch(0.985 0.000 0);
 
   --popover:            oklch(0.130 0.003 286);
   --popover-foreground: oklch(0.985 0.000 0);
 
-  /* ── Primary blue:  #3b82f6  ────────────────────────────────────────────── */
-  /* Active nav items, primary CTA buttons, focus rings, progress             */
   --primary:            oklch(0.623 0.214 259.8);
   --primary-foreground: oklch(0.985 0.000 0);
 
-  /* ── Muted / disabled:  #27272a  ────────────────────────────────────────── */
-  /* Inactive tabs, skeleton loaders, ghost hover backgrounds                 */
-  --secondary:            oklch(0.218 0.003 286);
+  --secondary:            oklch(0.218 0.003 286); /* #27272a */
   --secondary-foreground: oklch(0.985 0.000 0);
   --muted:                oklch(0.218 0.003 286);
-  --muted-foreground:     oklch(0.704 0.000 0); /* #a1a1aa */
+  --muted-foreground:     oklch(0.704 0.000 0);   /* #a1a1aa */
   --accent:               oklch(0.218 0.003 286);
   --accent-foreground:    oklch(0.985 0.000 0);
 
-  /* ── Destructive:  #ef4444  ─────────────────────────────────────────────── */
-  /* Delete, void, refund, cancel, error states                               */
   --destructive:            oklch(0.628 0.258 27.3);
   --destructive-foreground: oklch(0.985 0.000 0);
 
-  /* ── Success:  #16a34a  ─────────────────────────────────────────────────── */
-  /* Charge/Pay button ONLY — connection success — transaction complete        */
   --success:            oklch(0.527 0.154 149.6);
   --success-foreground: oklch(0.985 0.000 0);
 
-  /* ── Warning:  #f59e0b  ─────────────────────────────────────────────────── */
-  /* Low-stock alerts, unpaid invoices, pending approvals                     */
   --warning:            oklch(0.769 0.188 70.1);
-  --warning-foreground: oklch(0.097 0.003 286); /* dark text on amber */
+  --warning-foreground: oklch(0.097 0.003 286);
 
-  /* ── Form / focus ───────────────────────────────────────────────────────── */
-  /* Border:  #27272a — every divider, card border, input border              */
   --border: oklch(0.218 0.003 286);
-  /* Input background slightly lifted above card background                   */
   --input:  oklch(0.162 0.003 286);
-  /* Ring: primary blue for keyboard focus indicators                         */
   --ring:   oklch(0.623 0.214 259.8);
 
-  /* ── Chart palette ──────────────────────────────────────────────────────── */
-  /* Follows semantic colours so charts integrate naturally with the UI       */
-  --chart-1: oklch(0.623 0.214 259.8);  /* primary blue   */
-  --chart-2: oklch(0.527 0.154 149.6);  /* success green  */
-  --chart-3: oklch(0.769 0.188 70.1);   /* warning amber  */
-  --chart-4: oklch(0.628 0.258 27.3);   /* destructive red */
-  --chart-5: oklch(0.680 0.180 300.0);  /* purple accent   */
+  --chart-1: oklch(0.623 0.214 259.8);
+  --chart-2: oklch(0.527 0.154 149.6);
+  --chart-3: oklch(0.769 0.188 70.1);
+  --chart-4: oklch(0.628 0.258 27.3);
+  --chart-5: oklch(0.680 0.180 300.0);
 
-  /* ── Sidebar-specific tokens ────────────────────────────────────────────── */
-  /*
-     sidebar     = card background (#111113)
-     accent      = muted (#27272a) — the generic hover bg for non-active items
-     primary     = brand blue (#3b82f6) — consumed by shadcn Rail active styles
-     border/ring = same as global tokens
-
-     Active nav item override is done in component CSS:
-       bg-primary/15  +  text-primary  (not sidebar-accent)
-     so the sidebar-accent only applies to dropdown triggers and non-nav hovers.
-  */
-  --sidebar:                    oklch(0.130 0.003 286);   /* #111113 */
-  --sidebar-foreground:         oklch(0.985 0.000 0);     /* #fafafa */
-  --sidebar-primary:            oklch(0.623 0.214 259.8); /* #3b82f6 */
+  --sidebar:                    oklch(0.130 0.003 286);
+  --sidebar-foreground:         oklch(0.985 0.000 0);
+  --sidebar-primary:            oklch(0.623 0.214 259.8);
   --sidebar-primary-foreground: oklch(0.985 0.000 0);
-  --sidebar-accent:             oklch(0.218 0.003 286);   /* #27272a */
+  --sidebar-accent:             oklch(0.218 0.003 286);
   --sidebar-accent-foreground:  oklch(0.985 0.000 0);
-  --sidebar-border:             oklch(0.218 0.003 286);   /* #27272a */
-  --sidebar-ring:               oklch(0.623 0.214 259.8); /* #3b82f6 */
+  --sidebar-border:             oklch(0.218 0.003 286);
+  --sidebar-ring:               oklch(0.623 0.214 259.8);
+
+  /* Skeleton shimmer colours (dark) */
+  --shimmer-base: oklch(0.218 0.003 286);
+  --shimmer-peak: oklch(0.260 0.003 286);
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -207,8 +234,8 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
-  background-color: oklch(0.097 0.003 286); /* --background */
-  color: oklch(0.985 0.000 0);              /* --foreground  */
+  background-color: var(--background);
+  color: var(--foreground);
   font-family:
   "DM Sans",
   system-ui,
@@ -227,11 +254,11 @@ font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
 ::-webkit-scrollbar              { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track        { background: transparent; }
 ::-webkit-scrollbar-thumb        {
-  background: oklch(0.218 0.003 286);   /* --border */
+  background: var(--border);
   border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover  {
-  background: oklch(0.704 0.000 0);     /* --muted-foreground */
+  background: var(--muted-foreground);
 }
 ::-webkit-scrollbar-corner       { background: transparent; }
 
@@ -274,9 +301,9 @@ font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
 .skeleton-shimmer {
   background: linear-gradient(
     90deg,
-    oklch(0.218 0.003 286) 25%,
-    oklch(0.260 0.003 286) 50%,
-    oklch(0.218 0.003 286) 75%
+    var(--shimmer-base) 25%,
+    var(--shimmer-peak) 50%,
+    var(--shimmer-base) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.6s ease-in-out infinite;
@@ -287,7 +314,7 @@ font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
    Prevents a flash of unstyled content before Tailwind paints the sidebar bg.
    ────────────────────────────────────────────────────────────────────────── */
 [data-sidebar="sidebar"] {
-  background-color: oklch(0.130 0.003 286); /* --card / --sidebar */
+  background-color: var(--sidebar);
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -324,29 +351,49 @@ font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
    ────────────────────────────────────────────────────────────────────────── */
 
 /* ── 1. Container-level variable declarations ─────────────────────────────── */
-[data-sonner-toaster] {
-  /* Normal / default */
-  --normal-bg:     #111113;              /* --card              */
-  --normal-border: #27272a;              /* --border            */
-  --normal-text:   #fafafa;              /* --foreground        */
 
-  /* Success — very dark green tint over card */
-  --success-bg:     #0c1c11;             /* card + #16a34a tint */
+/* Light-mode sonner (default :root) */
+[data-sonner-toaster] {
+  --normal-bg:     #ffffff;
+  --normal-border: #e4e4e7;
+  --normal-text:   #09090b;
+
+  --success-bg:     #f0faf4;
+  --success-border: rgba(22,163,74,0.30);
+  --success-text:   #09090b;
+
+  --error-bg:     #fff0f0;
+  --error-border: rgba(239,68,68,0.30);
+  --error-text:   #09090b;
+
+  --warning-bg:     #fffbf0;
+  --warning-border: rgba(245,158,11,0.30);
+  --warning-text:   #09090b;
+
+  --info-bg:     #f0f6ff;
+  --info-border: rgba(59,130,246,0.30);
+  --info-text:   #09090b;
+}
+
+/* Dark-mode sonner */
+.dark [data-sonner-toaster] {
+  --normal-bg:     #111113;
+  --normal-border: #27272a;
+  --normal-text:   #fafafa;
+
+  --success-bg:     #0c1c11;
   --success-border: rgba(22,163,74,0.38);
   --success-text:   #fafafa;
 
-  /* Error — very dark red tint over card */
-  --error-bg:     #1c0c0c;              /* card + #ef4444 tint */
+  --error-bg:     #1c0c0c;
   --error-border: rgba(239,68,68,0.38);
   --error-text:   #fafafa;
 
-  /* Warning — very dark amber tint over card */
-  --warning-bg:     #1c1608;             /* card + #f59e0b tint */
+  --warning-bg:     #1c1608;
   --warning-border: rgba(245,158,11,0.38);
   --warning-text:   #fafafa;
 
-  /* Info — very dark blue tint over card */
-  --info-bg:     #0c1020;               /* card + #3b82f6 tint */
+  --info-bg:     #0c1020;
   --info-border: rgba(59,130,246,0.38);
   --info-text:   #fafafa;
 }
@@ -358,11 +405,13 @@ font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
   border-radius: 10px !important;
   border-width: 1px !important;
   border-style: solid !important;
+  padding: 12px 14px !important;
+}
+.dark [data-sonner-toast] {
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.55),
     0 2px 8px  rgba(0, 0, 0, 0.35),
     0 0  0 1px rgba(255,255,255,0.03) inset !important;
-  padding: 12px 14px !important;
 }
 
 /* ── 3. Toast title ───────────────────────────────────────────────────────── */
@@ -370,81 +419,65 @@ font-feature-settings: "tnum" 1; /* tabular numbers — critical for POS */
   font-weight: 600 !important;
   font-size: 13px !important;
   line-height: 1.35 !important;
-  color: #fafafa !important;             /* --foreground */
+  color: var(--foreground) !important;
 }
 
 /* ── 4. Toast description ─────────────────────────────────────────────────── */
 [data-sonner-toast] [data-description] {
   font-size: 11.5px !important;
   line-height: 1.5 !important;
-  color: #a1a1aa !important;             /* --muted-foreground */
+  color: var(--muted-foreground) !important;
   margin-top: 2px !important;
 }
 
 /* ── 5. Close button ──────────────────────────────────────────────────────── */
 [data-sonner-toast] [data-close-button] {
-  background: #27272a !important;        /* --muted / --border */
-  border-color: #27272a !important;
-  color: #a1a1aa !important;
+  background: var(--muted) !important;
+  border-color: var(--border) !important;
+  color: var(--muted-foreground) !important;
   border-radius: 6px !important;
 }
 [data-sonner-toast] [data-close-button]:hover {
-  background: #3f3f46 !important;
-  color: #fafafa !important;
+  background: var(--border) !important;
+  color: var(--foreground) !important;
 }
 
-/* ── 6. Success type ──────────────────────────────────────────────────────── */
-[data-sonner-toast][data-type="success"] {
-  background: #0c1c11 !important;
-  border-color: rgba(22, 163, 74, 0.38) !important;
-}
+/* ── 6. Success icon ──────────────────────────────────────────────────────── */
 [data-sonner-toast][data-type="success"] [data-icon] svg {
-  color: #16a34a !important;             /* --success */
+  color: #16a34a !important;
 }
 
-/* ── 7. Error type ────────────────────────────────────────────────────────── */
-[data-sonner-toast][data-type="error"] {
-  background: #1c0c0c !important;
-  border-color: rgba(239, 68, 68, 0.38) !important;
-}
+/* ── 7. Error icon ────────────────────────────────────────────────────────── */
 [data-sonner-toast][data-type="error"] [data-icon] svg {
-  color: #ef4444 !important;             /* --destructive */
+  color: #ef4444 !important;
 }
 
-/* ── 8. Warning type ──────────────────────────────────────────────────────── */
-[data-sonner-toast][data-type="warning"] {
-  background: #1c1608 !important;
-  border-color: rgba(245, 158, 11, 0.38) !important;
-}
+/* ── 8. Warning icon ──────────────────────────────────────────────────────── */
 [data-sonner-toast][data-type="warning"] [data-icon] svg {
-  color: #f59e0b !important;             /* --warning */
+  color: #f59e0b !important;
 }
 
-/* ── 9. Info type ─────────────────────────────────────────────────────────── */
-[data-sonner-toast][data-type="info"] {
-  background: #0c1020 !important;
-  border-color: rgba(59, 130, 246, 0.38) !important;
-}
+/* ── 9. Info icon ─────────────────────────────────────────────────────────── */
 [data-sonner-toast][data-type="info"] [data-icon] svg {
-  color: #3b82f6 !important;             /* --primary */
+  color: #3b82f6 !important;
 }
 
 /* ── 10. Action / cancel buttons inside toasts ────────────────────────────── */
 [data-sonner-toast] [data-button] {
-  background: #27272a !important;
-  color: #fafafa !important;
+  background: var(--muted) !important;
+  color: var(--foreground) !important;
   border-radius: 6px !important;
   font-size: 12px !important;
   font-weight: 600 !important;
 }
 [data-sonner-toast] [data-button]:hover {
-  background: #3f3f46 !important;
+  background: var(--border) !important;
 }
 [data-sonner-toast] [data-cancel] {
   background: transparent !important;
-  color: #a1a1aa !important;
+  color: var(--muted-foreground) !important;
 }
 [data-sonner-toast] [data-cancel]:hover {
-  color: #fafafa !important;
-  background: #27272a !important;
+  color: var(--foreground) !important;
+  background: var(--muted) !important;
 }

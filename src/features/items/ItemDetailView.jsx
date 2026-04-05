@@ -8,7 +8,7 @@ import {
   Package, Edit3, Archive, Power, PowerOff, ArrowLeft,
   BarChart3, History, Boxes, Hash, Tag, DollarSign, ClipboardList,
   CheckCircle2, XCircle, AlertTriangle, TrendingDown, Clock,
-  RefreshCw, Filter, X, User, Hash as HashIcon, Printer,
+  RefreshCw, Filter, X, User, Hash as HashIcon, Printer, ZoomIn, Star,
 } from "lucide-react";
 
 import { PageHeader }       from "@/components/shared/PageHeader";
@@ -23,13 +23,14 @@ import {
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
-import { Input }       from "@/components/ui/input";
 import { Separator }   from "@/components/ui/separator";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 
 import { useItem, useItemHistory }  from "@/features/items/useItems";
+import { useFavourites }            from "@/features/pos/useFavourites";
+import { ItemFormDialog }           from "@/features/items/ItemFormDialog";
 import { useInventoryItem }         from "@/features/inventory/useInventory";
 import { ItemImage }                from "@/components/shared/ItemImage";
 import { AdjustInventoryDialog }    from "@/features/inventory/AdjustInventoryDialog";
@@ -442,10 +443,13 @@ export function ItemDetailView({ itemId }) {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [restockOpen, setRestockOpen] = useState(false);
   const [adjustOpen,  setAdjustOpen]  = useState(false);
-  const [printOpen,   setPrintOpen]   = useState(false);   // ← label print
+  const [printOpen,      setPrintOpen]      = useState(false);
+  const [imgPreviewOpen, setImgPreviewOpen] = useState(false);
 
   const { item, isLoading, error, storeId, update, activate, deactivate, archive } = useItem(itemId);
   const { restock: restockMut, adjust: adjustMut } = useInventoryItem(itemId, storeId);
+  const { isPinned, toggle: favToggle } = useFavourites();
+  const pinned = item ? isPinned(itemId) : false;
 
   if (isLoading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
   if (error)     return <div className="p-6 text-sm text-destructive">{String(error)}</div>;
@@ -470,6 +474,11 @@ export function ItemDetailView({ itemId }) {
         description={`SKU: ${item.sku}${item.barcode ? ` · Barcode: ${item.barcode}` : ""}`}
         badge={
           <div className="flex items-center gap-1.5">
+            {pinned && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">
+                <Star className="h-2.5 w-2.5 fill-amber-400" /> Quick Access
+              </span>
+            )}
             {!item.is_active && (
               <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
                 Inactive
@@ -492,6 +501,23 @@ export function ItemDetailView({ itemId }) {
         }
         action={
           <div className="flex items-center gap-1.5">
+            {/* ── POS Quick Access (favourite) toggle ─────────────────── */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => favToggle(itemId)}
+              className={cn(
+                "gap-1.5 transition-colors",
+                pinned
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                  : "text-muted-foreground hover:text-amber-400 hover:border-amber-500/40",
+              )}
+              title={pinned ? "Remove from POS Quick Access" : "Add to POS Quick Access"}
+            >
+              <Star className={cn("h-3.5 w-3.5", pinned && "fill-amber-400")} />
+              {pinned ? "In Quick Access" : "Quick Access"}
+            </Button>
+
             {/* ── Print Labels button ─────────────────────────────────── */}
             <Button size="sm" variant="outline" onClick={() => setPrintOpen(true)}
               className="gap-1.5">
@@ -500,6 +526,7 @@ export function ItemDetailView({ itemId }) {
             </Button>
 
             <Button size="sm" variant="outline"
+              disabled={activate.isPending || deactivate.isPending}
               onClick={() => item.is_active ? deactivate.mutate(itemId) : activate.mutate(itemId)}>
               {item.is_active
                 ? <PowerOff className="h-3.5 w-3.5 text-amber-400" />
@@ -539,7 +566,19 @@ export function ItemDetailView({ itemId }) {
               <div className="md:col-span-2 rounded-xl border border-border bg-card p-5">
                 <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3">Product Image</h3>
                 <div className="flex items-start gap-5">
-                  <ItemImage item={item} size="xl" rounded="xl" />
+                  {/* Clickable preview — only when an image exists */}
+                  <div className="relative group shrink-0">
+                    <ItemImage item={item} size="xl" rounded="xl" />
+                    {item.image_data && (
+                      <button
+                        type="button"
+                        onClick={() => setImgPreviewOpen(true)}
+                        className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/0 group-hover:bg-black/40 transition-colors"
+                      >
+                        <ZoomIn className="h-5 w-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                      </button>
+                    )}
+                  </div>
                   <div className="flex flex-col gap-2">
                     <label htmlFor="detail-image-upload"
                       className="flex items-center gap-2 cursor-pointer rounded-lg border border-border/60 bg-muted/30 hover:bg-muted/50 px-3 py-2 text-xs font-medium text-foreground transition-colors w-fit">
@@ -577,7 +616,8 @@ export function ItemDetailView({ itemId }) {
                     />
                     {item.image_data && (
                       <button type="button" onClick={() => update.mutate({ image_data: null })}
-                        className="flex items-center gap-1.5 text-[11px] text-destructive hover:text-destructive/80 transition-colors w-fit">
+                        disabled={update.isPending}
+                        className="flex items-center gap-1.5 text-[11px] text-destructive hover:text-destructive/80 transition-colors w-fit disabled:opacity-50 disabled:cursor-not-allowed">
                         <Archive className="h-3 w-3" /> Remove image
                       </button>
                     )}
@@ -706,27 +746,14 @@ export function ItemDetailView({ itemId }) {
       </div>
 
       {/* ── Edit dialog ───────────────────────────────────────────────── */}
-      {item && (
-        <Dialog open={editOpen} onOpenChange={(v) => !update.isPending && setEditOpen(v)}>
-          <DialogContent className="max-w-lg border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/60">
-            <div className="h-[3px] w-full bg-primary" />
-            <div className="px-6 pt-5 pb-6">
-              <DialogHeader className="mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-primary/25 bg-primary/10">
-                    <Edit3 className="h-5 w-5 text-primary" />
-                  </div>
-                  <div>
-                    <DialogTitle className="text-[15px] font-bold">Edit {item.item_name}</DialogTitle>
-                    <DialogDescription className="text-[11px] text-muted-foreground">Update item details.</DialogDescription>
-                  </div>
-                </div>
-              </DialogHeader>
-              <QuickEditForm item={item} mutation={update} onClose={() => setEditOpen(false)} />
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ItemFormDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        mode="edit"
+        initial={item}
+        mutation={update}
+        storeId={storeId}
+      />
 
       {/* ── Archive dialog ────────────────────────────────────────────── */}
       {item && (
@@ -778,78 +805,31 @@ export function ItemDetailView({ itemId }) {
         onOpenChange={setPrintOpen}
         items={item ? [item] : []}
       />
+
+      {/* ── Image preview lightbox ────────────────────────────────────── */}
+      {item?.image_data && (
+        <Dialog open={imgPreviewOpen} onOpenChange={setImgPreviewOpen}>
+          <DialogContent className="max-w-lg border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/60">
+            <div className="h-[3px] w-full bg-primary" />
+            <div className="px-5 pt-4 pb-5">
+              <DialogHeader className="mb-4">
+                <DialogTitle className="text-sm font-bold">{item.item_name}</DialogTitle>
+                <DialogDescription className="text-[11px] text-muted-foreground">
+                  {item.sku} {item.barcode ? `· ${item.barcode}` : ""}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex items-center justify-center rounded-xl border border-border bg-muted/20 p-4">
+                <img
+                  src={item.image_data}
+                  alt={item.item_name}
+                  className="max-h-80 max-w-full rounded-lg object-contain"
+                />
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   );
 }
 
-// ── Quick edit form ───────────────────────────────────────────────────────────
-function QuickEditForm({ item, mutation, onClose }) {
-  const [form, setForm] = useState({
-    item_name:       item.item_name       ?? "",
-    sku:             item.sku             ?? "",
-    barcode:         item.barcode         ?? "",
-    description:     item.description     ?? "",
-    cost_price:      parseFloat(item.cost_price)    || 0,
-    selling_price:   parseFloat(item.selling_price) || 0,
-    discount_price:  parseFloat(item.discount_price) || "",
-    min_stock_level: item.min_stock_level ?? 5,
-    max_stock_level: item.max_stock_level ?? 1000,
-  });
-
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  function handleSubmit(e) {
-    e.preventDefault();
-    const payload = {
-      ...form,
-      cost_price:     parseFloat(form.cost_price)     || 0,
-      selling_price:  parseFloat(form.selling_price)  || 0,
-      discount_price: form.discount_price !== "" ? parseFloat(form.discount_price) : null,
-      min_stock_level: parseInt(form.min_stock_level) || 0,
-      max_stock_level: parseInt(form.max_stock_level) || 1000,
-    };
-    mutation.mutate(payload, { onSuccess: onClose });
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-3">
-      <div>
-        <label className="block text-xs font-semibold text-foreground mb-1.5">Item Name</label>
-        <Input value={form.item_name} onChange={set("item_name")} required />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-semibold text-foreground mb-1.5">SKU</label>
-          <Input value={form.sku} onChange={set("sku")} required />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-foreground mb-1.5">Barcode</label>
-          <Input value={form.barcode} onChange={set("barcode")} />
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-semibold text-foreground mb-1.5">Cost Price</label>
-          <Input type="number" min={0} step="0.01" value={form.cost_price} onChange={set("cost_price")} />
-        </div>
-        <div>
-          <label className="block text-xs font-semibold text-foreground mb-1.5">Selling Price</label>
-          <Input type="number" min={0} step="0.01" value={form.selling_price} onChange={set("selling_price")} />
-        </div>
-      </div>
-      {mutation.error && (
-        <p className="text-xs text-destructive border border-destructive/30 bg-destructive/10 rounded-md px-3 py-2">
-          {String(mutation.error)}
-        </p>
-      )}
-      <div className="flex gap-2 pt-1">
-        <Button type="button" variant="outline" className="flex-1" disabled={mutation.isPending} onClick={onClose}>
-          Cancel
-        </Button>
-        <Button type="submit" className="flex-1" disabled={mutation.isPending}>
-          {mutation.isPending ? "Saving…" : "Save"}
-        </Button>
-      </div>
-    </form>
-  );
-}

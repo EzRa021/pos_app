@@ -40,10 +40,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON user_sessions(user_id);
 
 -- ── Seed: default super_admin ─────────────────────────────────────────────────
 -- Default password: Admin@123  (bcrypt hash — change immediately in production)
-INSERT INTO users (username, email, password_hash, first_name, last_name, role_id)
-SELECT 'admin', 'admin@quantumpos.app',
-       '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
-       'Super', 'Admin',
-       r.id
-FROM   roles r WHERE r.role_slug = 'super_admin'
-ON CONFLICT (username) DO NOTHING;
+-- INSERT INTO users (username, email, password_hash, first_name, last_name, role_id)
+-- SELECT 'admin', 'admin@quantumpos.app',
+--        '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
+--        'Super', 'Admin',
+--        r.id
+-- FROM   roles r WHERE r.role_slug = 'super_admin'
+-- ON CONFLICT (username) DO NOTHING;

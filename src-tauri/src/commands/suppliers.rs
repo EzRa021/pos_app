@@ -12,6 +12,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
@@ -257,7 +258,7 @@ pub async fn create_supplier(
     token:   String,
     payload: CreateSupplierDto,
 ) -> AppResult<Supplier> {
-    guard_permission(&state, &token, "suppliers.create").await?;
+    let claims   = guard_permission(&state, &token, "suppliers.create").await?;
     let pool         = state.pool().await?;
     let code         = generate_supplier_code(&pool).await?;
     let credit_limit = payload.credit_limit.map(|v| to_dec(v));
@@ -285,7 +286,25 @@ pub async fn create_supplier(
     .fetch_one(&pool)
     .await?;
 
-    fetch_supplier(&pool, id).await
+    let supplier = fetch_supplier(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "supplier",
+        &format!("Created supplier '{}'", payload.supplier_name), "info").await;
+
+    crate::database::sync::queue_row(
+        &pool, "suppliers", "INSERT", &id.to_string(),
+        serde_json::json!({
+            "id": id, "store_id": payload.store_id,
+            "supplier_name": payload.supplier_name,
+            "supplier_code": code,
+            "contact_name": payload.contact_name,
+            "email": payload.email,
+            "phone": payload.phone,
+            "is_active": true,
+        }),
+        Some(payload.store_id),
+    ).await;
+
+    Ok(supplier)
 }
 
 #[tauri::command]
@@ -295,7 +314,7 @@ pub async fn update_supplier(
     id:      i32,
     payload: UpdateSupplierDto,
 ) -> AppResult<Supplier> {
-    guard_permission(&state, &token, "suppliers.update").await?;
+    let claims   = guard_permission(&state, &token, "suppliers.update").await?;
     let pool         = state.pool().await?;
     let credit_limit = payload.credit_limit.map(|v| to_dec(v));
 
@@ -328,7 +347,24 @@ pub async fn update_supplier(
     .execute(&pool)
     .await?;
 
-    fetch_supplier(&pool, id).await
+    let supplier = fetch_supplier(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, None, "update", "supplier",
+        &format!("Updated supplier id {id}"), "info").await;
+
+    let store_id: Option<i32> = sqlx::query_scalar!("SELECT store_id FROM suppliers WHERE id = $1", id)
+        .fetch_optional(&pool).await.ok().flatten();
+    crate::database::sync::queue_row(
+        &pool, "suppliers", "UPDATE", &id.to_string(),
+        serde_json::json!({
+            "id": id, "store_id": store_id,
+            "supplier_name": payload.supplier_name,
+            "contact_name": payload.contact_name,
+            "is_active": payload.is_active,
+        }),
+        store_id,
+    ).await;
+
+    Ok(supplier)
 }
 
 // ── Activate / Deactivate / Delete ────────────────────────────────────────────
@@ -365,7 +401,7 @@ pub async fn delete_supplier(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard_permission(&state, &token, "suppliers.delete").await?;
+    let claims = guard_permission(&state, &token, "suppliers.delete").await?;
     let pool = state.pool().await?;
 
     let po_count: i64 = sqlx::query_scalar!(
@@ -383,5 +419,7 @@ pub async fn delete_supplier(
         sqlx::query!("DELETE FROM suppliers WHERE id = $1", id)
             .execute(&pool).await?;
     }
+    write_audit_log(&pool, claims.user_id, None, "delete", "supplier",
+        &format!("Deleted supplier id {id}"), "warning").await;
     Ok(())
 }

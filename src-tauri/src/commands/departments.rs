@@ -9,6 +9,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 // ── Shared SELECT fragment (no store_code – column not yet in stores table) ───
 
@@ -104,7 +105,7 @@ pub(crate) async fn create_department_inner(
     token:   String,
     payload: CreateDepartmentDto,
 ) -> AppResult<Department> {
-    guard_permission(state, &token, "departments.create").await?;
+    let claims = guard_permission(state, &token, "departments.create").await?;
     let pool = state.pool().await?;
 
     let id: i32 = sqlx::query_scalar!(
@@ -129,6 +130,20 @@ pub(crate) async fn create_department_inner(
     .fetch_one(&pool)
     .await?;
 
+    write_audit_log(&pool, claims.user_id, payload.store_id, "create", "department",
+        &format!("Created department '{}'", payload.department_name), "info").await;
+
+    crate::database::sync::queue_row(
+        &pool, "departments", "INSERT", &id.to_string(),
+        serde_json::json!({
+            "id": id, "store_id": payload.store_id,
+            "department_name": payload.department_name,
+            "department_code": payload.department_code,
+            "is_active": payload.is_active.unwrap_or(true),
+        }),
+        payload.store_id,
+    ).await;
+
     get_department_inner(state, token, id).await
 }
 
@@ -138,7 +153,7 @@ pub(crate) async fn update_department_inner(
     id:      i32,
     payload: UpdateDepartmentDto,
 ) -> AppResult<Department> {
-    guard_permission(state, &token, "departments.update").await?;
+    let claims = guard_permission(state, &token, "departments.update").await?;
     let pool = state.pool().await?;
 
     sqlx::query!(
@@ -170,6 +185,22 @@ pub(crate) async fn update_department_inner(
     .execute(&pool)
     .await?;
 
+    write_audit_log(&pool, claims.user_id, None, "update", "department",
+        &format!("Updated department id {id}"), "info").await;
+
+    let store_id: Option<i32> = sqlx::query_scalar!("SELECT store_id FROM departments WHERE id = $1", id)
+        .fetch_optional(&pool).await.ok().flatten().flatten();
+    crate::database::sync::queue_row(
+        &pool, "departments", "UPDATE", &id.to_string(),
+        serde_json::json!({
+            "id": id, "store_id": store_id,
+            "department_name": payload.department_name,
+            "department_code": payload.department_code,
+            "is_active": payload.is_active,
+        }),
+        store_id,
+    ).await;
+
     get_department_inner(state, token, id).await
 }
 
@@ -178,11 +209,13 @@ pub(crate) async fn hard_delete_department_inner(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard_permission(state, &token, "departments.delete").await?;
+    let claims = guard_permission(state, &token, "departments.delete").await?;
     let pool = state.pool().await?;
     sqlx::query!("DELETE FROM departments WHERE id = $1", id)
         .execute(&pool)
         .await?;
+    write_audit_log(&pool, claims.user_id, None, "hard_delete", "department",
+        &format!("Permanently deleted department id {id}"), "critical").await;
     Ok(())
 }
 
@@ -191,7 +224,7 @@ pub(crate) async fn delete_department_inner(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard_permission(state, &token, "departments.delete").await?;
+    let claims = guard_permission(state, &token, "departments.delete").await?;
     let pool = state.pool().await?;
     sqlx::query!(
         "UPDATE departments SET is_active = FALSE, updated_at = NOW() WHERE id = $1",
@@ -199,6 +232,8 @@ pub(crate) async fn delete_department_inner(
     )
     .execute(&pool)
     .await?;
+    write_audit_log(&pool, claims.user_id, None, "deactivate", "department",
+        &format!("Deactivated department id {id}"), "warning").await;
     Ok(())
 }
 

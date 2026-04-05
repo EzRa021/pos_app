@@ -38,7 +38,7 @@ use crate::{
         loyalty, notifications, supplier_payments,
         backup, bulk_operations, price_scheduling,
         customer_wallet, labels, security, fx_rates, excel,
-        onboarding,
+        onboarding, pos_favourites, cloud_sync,
     },
     error::AppError,
     models::{
@@ -75,12 +75,13 @@ use crate::{
     notification::{CreateNotificationDto, NotificationFilters},
     supplier_payment::{RecordSupplierPaymentDto, SupplierPaymentFilters},
     backup::{CreateBackupDto, RestoreBackupDto, AutoBackupScheduleDto},
-    bulk_operations::{BulkPriceUpdateDto, BulkStockAdjustmentDto, BulkToggleItemsDto, BulkApplyDiscountDto},
+    bulk_operations::{BulkPriceUpdateDto, BulkStockAdjustmentDto, BulkToggleItemsDto, BulkApplyDiscountDto, BulkItemImportDto},
     price_scheduling::SchedulePriceChangeDto,
     customer_wallet::{DepositDto, AdjustWalletDto},
     label::{GenerateLabelsDto, PrintPriceTagsDto, SaveLabelTemplateDto},
     security::{SetPinDto, VerifyPinDto},
     fx_rates::{SetRateDto, ConvertDto},
+    pos_favourites::{AddFavouriteDto, RemoveFavouriteDto},
     },
     state::AppState,
 };
@@ -1687,6 +1688,15 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "remove_price_list_item" => {
+            let price_list_id = i32_param(&params, "price_list_id")?;
+            let item_id_str   = params.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+            let item_id       = uuid::Uuid::parse_str(item_id_str)
+                .map_err(|_| AppError::Validation("Invalid item_id UUID".into()))?;
+            price_management::remove_price_list_item(as_state(state), require_token()?, price_list_id, item_id).await?;
+            Ok(serde_json::json!({ "success": true }))
+        }
+
         "request_price_change" => {
             let payload: RequestPriceChangeDto = parse(params)?;
             let result = price_management::request_price_change(as_state(state), require_token()?, payload).await?;
@@ -1736,6 +1746,13 @@ async fn dispatch(
         "get_audit_logs" => {
             let filters: AuditFilters = parse(params)?;
             let result = audit::get_audit_logs(as_state(state), require_token()?, filters).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_audit_log_entry" => {
+            #[derive(serde::Deserialize)] struct P { id: i32 }
+            let p: P = parse(params)?;
+            let result = audit::get_audit_log_entry(as_state(state), require_token()?, p.id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1929,6 +1946,12 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "expire_old_points" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = loyalty::expire_old_points(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // NOTIFICATIONS
         // ════════════════════════════════════════════════════════════════════
@@ -1958,6 +1981,13 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "get_unread_count" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let user_id  = opt_i32(&params, "user_id");
+            let result = notifications::get_unread_count(as_state(state), require_token()?, store_id, user_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // SUPPLIER PAYMENTS
         // ════════════════════════════════════════════════════════════════════
@@ -1977,6 +2007,12 @@ async fn dispatch(
         "get_supplier_balance" => {
             let supplier_id = i32_param(&params, "supplier_id")?;
             let result = supplier_payments::get_supplier_balance(as_state(state), require_token()?, supplier_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_all_supplier_payables" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = supplier_payments::get_all_supplier_payables(as_state(state), require_token()?, store_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -2045,6 +2081,12 @@ async fn dispatch(
         "bulk_apply_discount" => {
             let payload: BulkApplyDiscountDto = parse(params)?;
             let result = bulk_operations::bulk_apply_discount(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "bulk_item_import" => {
+            let payload: BulkItemImportDto = parse(params)?;
+            let result = bulk_operations::bulk_item_import(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -2309,7 +2351,25 @@ async fn dispatch(
         "create_business" => {
             let payload: onboarding::CreateBusinessPayload = parse(params)?;
             let pool = state.pool().await?;
-            let result = onboarding::create_business(&pool, payload)
+            let cloud_pool = state.cloud_pool().await;
+            let result = onboarding::create_business(&pool, cloud_pool.as_ref(), payload)
+                .await
+                .map_err(AppError::Internal)?;
+            // Cache business_id in AppState so all future handlers can use it.
+            // Note: onboarding_complete is NOT set here — that happens in
+            // setup_super_admin (Phase 2) so mid-flow restarts resume correctly.
+            state.load_business_id(&pool).await;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        // Phase 2 of onboarding: create the super-admin user account.
+        // Unauthenticated — no token required. Gated server-side:
+        //   - business_id must already exist in app_config
+        //   - super_admin_created must NOT be 'true'
+        "setup_super_admin" => {
+            let payload: onboarding::SetupSuperAdminPayload = parse(params)?;
+            let pool = state.pool().await?;
+            let result = onboarding::setup_super_admin(&pool, payload)
                 .await
                 .map_err(AppError::Internal)?;
             Ok(serde_json::to_value(result).unwrap())
@@ -2322,6 +2382,8 @@ async fn dispatch(
             let result = onboarding::link_existing_business(&pool, &business_id)
                 .await
                 .map_err(AppError::Internal)?;
+            // Cache business_id in AppState so all future handlers can use it
+            state.load_business_id(&pool).await;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -2341,6 +2403,107 @@ async fn dispatch(
                 .await
                 .map_err(AppError::Internal)?;
             Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "check_business_exists" => {
+            let business_id = params.get("business_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| AppError::Validation("Missing 'business_id'".into()))?;
+            let cloud_pool = state.cloud_pool().await
+                .ok_or_else(|| AppError::Internal(
+                    "Cloud sync is not connected. Please check your internet connection \
+                     or configure Supabase credentials first.".into()
+                ))?;
+            let result = onboarding::check_business_exists(&cloud_pool, &business_id)
+                .await
+                .map_err(AppError::Internal)?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "restore_business_from_cloud" => {
+            let business_id = params.get("business_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| AppError::Validation("Missing 'business_id'".into()))?;
+            let pool = state.pool().await?;
+            let cloud_pool = state.cloud_pool().await
+                .ok_or_else(|| AppError::Internal(
+                    "Cloud sync is not connected. Please check your internet connection \
+                     or configure Supabase credentials first.".into()
+                ))?;
+            let result = onboarding::restore_business_from_cloud(&pool, &cloud_pool, &business_id)
+                .await
+                .map_err(AppError::Internal)?;
+            // Cache business_id in AppState so all future handlers can use it
+            state.load_business_id(&pool).await;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // POS FAVOURITES
+        // ════════════════════════════════════════════════════════════════════
+
+        "get_pos_favourites" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = pos_favourites::get_pos_favourites_inner(state, require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "add_pos_favourite" => {
+            let payload: AddFavouriteDto = parse(params)?;
+            pos_favourites::add_pos_favourite_inner(state, require_token()?, payload).await?;
+            Ok(Value::Null)
+        }
+
+        "remove_pos_favourite" => {
+            let payload: RemoveFavouriteDto = parse(params)?;
+            pos_favourites::remove_pos_favourite_inner(state, require_token()?, payload).await?;
+            Ok(Value::Null)
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // CLOUD SYNC
+        // ════════════════════════════════════════════════════════════════════
+
+        "save_supabase_config" => {
+            let payload: cloud_sync::SaveSupabaseConfigPayload = parse(params)?;
+            let result = cloud_sync::save_supabase_config(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "clear_supabase_config" => {
+            cloud_sync::clear_supabase_config(as_state(state), require_token()?).await?;
+            Ok(serde_json::json!({ "success": true }))
+        }
+
+        "get_supabase_config" => {
+            let result = cloud_sync::get_supabase_config(as_state(state), require_token()?).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_sync_status" => {
+            let result = cloud_sync::get_sync_status(as_state(state), require_token()?).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "set_cloud_sync_enabled" => {
+            let enabled = params
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| AppError::Validation("Missing or invalid 'enabled' (boolean)".into()))?;
+            cloud_sync::set_cloud_sync_enabled(as_state(state), require_token()?, enabled).await?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+
+        "trigger_backfill_sync" => {
+            let result = cloud_sync::trigger_backfill_sync(as_state(state), require_token()?).await?;
+            Ok(result)
+        }
+
+        "retry_failed_sync" => {
+            let result = cloud_sync::retry_failed_sync(as_state(state), require_token()?).await?;
+            Ok(result)
         }
 
         _ => Err(AppError::Validation(format!("Unknown RPC method: {method}"))),

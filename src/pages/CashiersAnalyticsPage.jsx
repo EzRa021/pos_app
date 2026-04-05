@@ -382,7 +382,7 @@ export default function CashiersAnalyticsPage() {
 
               {/* Sales bar chart */}
               <Section title="Revenue by Cashier" description="Total sales ranked highest to lowest">
-                <ChartContainer config={BAR_CHART_CONFIG} className={`h-[${Math.max(180, chartData.length * 28)}px]`}>
+                <ChartContainer config={BAR_CHART_CONFIG} style={{ height: Math.max(180, chartData.length * 28) }}>
                   <BarChart data={chartData} layout="vertical">
                     <CartesianGrid horizontal={false} />
                     <XAxis type="number" tickFormatter={(v) => formatCurrencyCompact(v)} tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} />

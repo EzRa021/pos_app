@@ -28,6 +28,7 @@ import StockCountsPage    from "@/pages/StockCountsPage";
 import StockCountSessionPage from "@/pages/StockCountSessionPage";
 import VarianceReportPage from "@/pages/VarianceReportPage";
 import SettingsPage       from "@/pages/SettingsPage";
+import StoreCreationPage  from "@/pages/StoreCreationPage";
 
 // ── New pages ─────────────────────────────────────────────────────────────────
 import AnalyticsPage              from "@/pages/AnalyticsPage";
@@ -45,10 +46,9 @@ import NotificationsPage       from "@/pages/NotificationsPage";
 import AuditPage               from "@/pages/AuditPage";
 import UsersPage               from "@/pages/UsersPage";
 import PriceManagementPage     from "@/pages/PriceManagementPage";
-import StoresPage              from "@/pages/StoresPage";
-import StoreDetailPage         from "@/pages/StoreDetailPage";
 import NotFoundPage            from "@/pages/NotFoundPage";
 
+import { ShieldOff } from "lucide-react";
 import { useAuthStore }   from "@/stores/auth.store";
 import { useBranchStore } from "@/stores/branch.store";
 
@@ -58,18 +58,52 @@ function ProtectedRoute() {
   const isInitialized       = useAuthStore(s => s.isInitialized);
   const isBranchInitialized = useBranchStore(s => s.isBranchInitialized);
   const needsPicker         = useBranchStore(s => s.needsPicker);
+  const needsStoreCreation  = useBranchStore(s => s.needsStoreCreation);
 
-  if (!isInitialized)                    return null;
-  if (!user)                             return null;
+  if (!isInitialized)                      return null;
+  if (!user)                               return null;
   if (!isBranchInitialized || needsPicker) return null;
 
+  // First-time user: no stores exist — force creation before anything else.
+  if (needsStoreCreation && window.location.pathname !== '/store/new') {
+    return <Navigate to="/store/new" replace />;
+  }
+
   return <Outlet />;
+}
+
+// ── RequireRole ───────────────────────────────────────────────────────────────
+function RequireRole({ roles }) {
+  const roleSlug = useAuthStore(s => s.user?.role_slug);
+  if (roles.includes(roleSlug ?? "")) return <Outlet />;
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center py-20 px-4">
+      <div className="flex h-20 w-20 items-center justify-center rounded-3xl border border-destructive/25 bg-destructive/10">
+        <ShieldOff className="h-9 w-9 text-destructive/70" />
+      </div>
+      <div className="space-y-1.5 max-w-xs">
+        <p className="text-lg font-bold text-foreground">Access denied</p>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          Your role (<span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded border border-border/60">{roleSlug ?? "unknown"}</span>) does not have permission to view this page.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 const router = createBrowserRouter([
   {
     element: <ProtectedRoute />,
     children: [
+      // ── Full-page routes (no AppShell) ────────────────────────────────────
+      {
+        element: <RequireRole roles={["super_admin", "admin", "gm"]} />,
+        children: [
+          { path: "store/new", element: <StoreCreationPage /> },
+        ],
+      },
+
+      // ── App shell routes ──────────────────────────────────────────────────
       {
         path: "/",
         element: <AppShell />,
@@ -130,16 +164,24 @@ const router = createBrowserRouter([
           // ── Operations ────────────────────────────────────────────────────
           { path: "notifications",    element: <NotificationsPage /> },
 
-          // ── Admin ─────────────────────────────────────────────────────────
-          { path: "users",      element: <UsersPage /> },
-          { path: "stores",     element: <StoresPage /> },
-          { path: "stores/:id", element: <StoreDetailPage /> },
-          { path: "settings",   element: <SettingsPage /> },
-          { path: "audit",      element: <AuditPage /> },
+          // ── Admin (super_admin + admin only) ──────────────────────────
+          {
+            element: <RequireRole roles={["super_admin", "admin", "gm"]} />,
+            children: [
+              { path: "users",      element: <UsersPage /> },
+              { path: "audit",      element: <AuditPage /> },
+            ],
+          },
+
+          // ── Settings (admin + manager) ────────────────────────────────
+          {
+            element: <RequireRole roles={["super_admin", "admin", "gm", "manager"]} />,
+            children: [
+              { path: "settings", element: <SettingsPage /> },
+            ],
+          },
 
           // ── 404 catch-all ─────────────────────────────────────────────────
-          // Matches any path not handled above. Renders inside AppShell so
-          // the sidebar, title bar and notification bell remain accessible.
           { path: "*",        element: <NotFoundPage /> },
         ],
       },

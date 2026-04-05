@@ -1,11 +1,11 @@
 -- ============================================================================
--- MIGRATION 0022: Fix admin seed password
--- The original seed in 0003 used a Laravel test hash (password: "password").
--- This migration corrects it to Admin@123.
--- Safe to run multiple times: only updates if the old hash is still present.
+-- MIGRATION 0022: Fix admin seed password (superseded — no-op)
+-- The admin user is no longer seeded by migrations. It is created during
+-- onboarding via the setup_super_admin RPC command, which is gated to run
+-- only once and only while onboarding is in progress.
+-- This migration is kept as a placeholder so the migration hash runner does
+-- not detect a gap in the sequence.
 -- ============================================================================
 
-UPDATE users
-SET    password_hash = '$2b$10$faxjNIj4d/Gf0agqXIEiguXY.jUgwSXlPtnUIaaYhWfGb2rFCxzim'
-WHERE  username      = 'admin'
-  AND  password_hash = '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi';
+-- No-op: safe to run any number of times.
+SELECT 1;

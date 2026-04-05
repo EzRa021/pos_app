@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Loader2, CheckCircle2, AlertCircle, Settings2,
-  DollarSign, ShieldCheck, Receipt, Package, CreditCard, Timer,
+  DollarSign, ShieldCheck, Receipt, Package, CreditCard, Timer, Globe,
 } from "lucide-react";
 import { toastSuccess, onMutationError } from "@/lib/toast";
 import { Button }        from "@/components/ui/button";
@@ -91,6 +91,16 @@ function TextField({ label, description, value, onChange, placeholder }) {
 
 // ── StoreSettingsPanel ────────────────────────────────────────────────────────
 
+const CURRENCIES = [
+  { code: "NGN", label: "₦ Nigerian Naira (NGN)",    locale: "en-NG" },
+  { code: "USD", label: "$ US Dollar (USD)",          locale: "en-US" },
+  { code: "GBP", label: "£ British Pound (GBP)",      locale: "en-GB" },
+  { code: "EUR", label: "€ Euro (EUR)",               locale: "de-DE" },
+  { code: "GHS", label: "₵ Ghanaian Cedi (GHS)",      locale: "en-GH" },
+  { code: "KES", label: "KSh Kenyan Shilling (KES)",  locale: "en-KE" },
+  { code: "ZAR", label: "R South African Rand (ZAR)", locale: "en-ZA" },
+];
+
 const DEFAULTS = {
   allow_price_override: true,
   max_discount_percent: null,
@@ -103,6 +113,7 @@ const DEFAULTS = {
   require_manager_approval_void_above: null,
   receipt_header_text: null,
   receipt_footer_text: null,
+  tax_inclusive: true,
   show_vat_on_receipt: true,
   show_cashier_on_receipt: true,
   receipt_copies: 1,
@@ -111,6 +122,8 @@ const DEFAULTS = {
   min_opening_float: null,
   max_credit_days: 30,
   auto_flag_overdue_after_days: 7,
+  currency: "NGN",
+  locale: "en-NG",
 };
 
 export function StoreSettingsPanel() {
@@ -154,6 +167,16 @@ export function StoreSettingsPanel() {
   return (
     <div className="space-y-5">
 
+      {/* Tax / VAT */}
+      <SectionCard title="Tax / VAT" icon={DollarSign}>
+        <Toggle
+          label="Tax-Inclusive Pricing"
+          description="Prices already include VAT (e.g. ₦1,075 = ₦1,000 + 7.5% VAT). The POS extracts and displays the tax component. Disable this if your item prices are tax-exclusive and VAT should be added on top at checkout."
+          checked={form.tax_inclusive}
+          onChange={set("tax_inclusive")}
+        />
+      </SectionCard>
+
       {/* Pricing Rules */}
       <SectionCard title="Pricing Rules" icon={DollarSign}>
         <Toggle label="Allow Price Override at POS" description="Cashiers can change the selling price during a sale." checked={form.allow_price_override} onChange={set("allow_price_override")} />
@@ -195,6 +218,34 @@ export function StoreSettingsPanel() {
       <SectionCard title="Credit Rules" icon={CreditCard}>
         <NumberField label="Max Credit Days" description="Default maximum number of days before a credit sale is overdue." value={form.max_credit_days} onChange={set("max_credit_days")} placeholder="30" min="1" step="1" unit="days" />
         <NumberField label="Auto-Flag Overdue After (days)" description="Automatically mark credit sales as overdue after this many days past due date." value={form.auto_flag_overdue_after_days} onChange={set("auto_flag_overdue_after_days")} placeholder="7" min="1" step="1" unit="days" />
+      </SectionCard>
+
+      {/* Currency */}
+      <SectionCard title="Currency" icon={Globe}>
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+            Display Currency
+          </label>
+          <p className="text-[11px] text-muted-foreground">
+            All prices and totals across the POS, receipts, and reports will use this currency.
+          </p>
+          <select
+            value={form.currency ?? "NGN"}
+            onChange={(e) => {
+              const entry = CURRENCIES.find((c) => c.code === e.target.value);
+              setForm((f) => ({
+                ...f,
+                currency: entry?.code ?? "NGN",
+                locale:   entry?.locale ?? "en-NG",
+              }));
+            }}
+            className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {CURRENCIES.map((c) => (
+              <option key={c.code} value={c.code}>{c.label}</option>
+            ))}
+          </select>
+        </div>
       </SectionCard>
 
       {/* Save bar */}

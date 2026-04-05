@@ -37,17 +37,20 @@ pub struct TokenPair {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct AuthUser {
-    pub id:         i32,
-    pub username:   String,
-    pub email:      String,
-    pub first_name: String,
-    pub last_name:  String,
-    pub role_id:    i32,
-    pub role_slug:  String,
-    pub role_name:  String,
-    pub store_id:   Option<i32>,
-    pub is_global:  bool,
-    pub is_active:  bool,
+    pub id:          i32,
+    pub username:    String,
+    pub email:       String,
+    pub first_name:  String,
+    pub last_name:   String,
+    pub role_id:     i32,
+    pub role_slug:   String,
+    pub role_name:   String,
+    pub store_id:    Option<i32>,
+    pub is_global:   bool,
+    pub is_active:   bool,
+    /// Permission slugs granted to this user's role. Sent to the frontend so
+    /// usePermission() can gate UI controls without an extra round-trip.
+    pub permissions: Vec<String>,
 }
 
 // ── JWT Claims ────────────────────────────────────────────────────────────────

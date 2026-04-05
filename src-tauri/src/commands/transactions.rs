@@ -25,6 +25,8 @@ use crate::{
     state::AppState,
 };
 use super::auth::{guard, guard_permission};
+use super::audit::write_audit_log;
+use crate::utils::ref_no::{next_txn_ref_no, next_ret_ref_no, store_txn_slug};
 
 // ── VAT helpers (inclusive pricing — Nigeria standard) ────────────────────────
 
@@ -148,13 +150,14 @@ pub async fn create_transaction(
     let item_ids: Vec<Uuid> = payload.items.iter().map(|i| i.item_id).collect();
     let rows = sqlx::query!(
         r#"SELECT
-               i.id                     AS "id: Uuid",
+               i.id                          AS "id: Uuid",
                i.item_name,
                i.sku,
-               i.cost_price             AS "cost_price: Decimal",
-               i.selling_price          AS "selling_price: Decimal",
-               i.discount_price         AS "discount_price: Decimal",
-               ist.is_active            AS "is_active!: bool",
+               i.cost_price                  AS "cost_price: Decimal",
+               i.selling_price               AS "selling_price: Decimal",
+               i.discount_price              AS "discount_price: Decimal",
+               i.discount_price_enabled      AS "discount_price_enabled!: bool",
+               ist.is_active                 AS "is_active!: bool",
                ist.sellable             AS "sellable!: bool",
                ist.available_for_pos    AS "available_for_pos!: bool",
                ist.track_stock          AS "track_stock!: bool",
@@ -190,8 +193,9 @@ pub async fn create_transaction(
                 // cost_price fetched in the initial bulk query — no N+1 needed
                 cost_price:           r.cost_price,
                 selling_price:        r.selling_price,
-                discount_price:       r.discount_price,
-                is_active:            r.is_active,
+                discount_price:         r.discount_price,
+                discount_price_enabled: r.discount_price_enabled,
+                is_active:              r.is_active,
                 sellable:             r.sellable,
                 available_for_pos:    r.available_for_pos,
                 track_stock:          r.track_stock,
@@ -215,6 +219,7 @@ pub async fn create_transaction(
         sku:              String,
         quantity:         Decimal,
         unit_price:       Decimal,
+        item_discount:    Decimal,
         cost_price:       Decimal,
         net_amount:       Decimal,
         vat_amount:       Decimal,
@@ -249,7 +254,12 @@ pub async fn create_transaction(
             )));
         }
 
-        let unit_price          = item.discount_price.unwrap_or(item.selling_price);
+        // Only use discount_price when the toggle is explicitly enabled.
+        let unit_price = if item.discount_price_enabled {
+            item.discount_price.unwrap_or(item.selling_price)
+        } else {
+            item.selling_price
+        };
         // cost_price was fetched in the bulk item query — no extra round-trip needed
         let cost_price_for_item = item.cost_price;
 
@@ -273,10 +283,13 @@ pub async fn create_transaction(
             }
         }
 
-        let tax_rate   = if item.taxable { item.tax_rate } else { Decimal::ZERO };
-        let gross      = unit_price * qty;
-        let vat_amount = vat_from_inclusive(gross, tax_rate);
-        let net_amount = net_from_inclusive(gross, vat_amount);
+        let tax_rate    = if item.taxable { item.tax_rate } else { Decimal::ZERO };
+        // Apply the cashier's per-line discount (flat amount) before VAT extraction
+        // so VAT is correctly computed on the actual charged amount, not the full price.
+        let item_discount = to_dec(dto_item.discount.unwrap_or(0.0)).max(Decimal::ZERO);
+        let gross         = ((unit_price * qty) - item_discount).max(Decimal::ZERO);
+        let vat_amount    = vat_from_inclusive(gross, tax_rate);
+        let net_amount    = net_from_inclusive(gross, vat_amount);
 
         line_items.push(LineItem {
             item_id:          item.id,
@@ -284,6 +297,7 @@ pub async fn create_transaction(
             sku:              item.sku.clone(),
             quantity:         qty,
             unit_price,
+            item_discount,
             cost_price:       cost_price_for_item,
             net_amount,
             vat_amount,
@@ -378,15 +392,20 @@ pub async fn create_transaction(
     // ── STEP 8: Begin DB transaction ──────────────────────────────────────────
     let mut db_tx = pool.begin().await?;
 
-    // ── STEP 9: Generate reference number ─────────────────────────────────────
-    let ref_no: String = sqlx::query_scalar!(
-        "SELECT 'TXN-' || LPAD(NEXTVAL('transaction_ref_seq')::text, 6, '0')"
+    // ── STEP 9: Generate reference number (per-store sequential) ──────────────
+    let store_row = sqlx::query!(
+        "SELECT store_name, store_code FROM stores WHERE id = $1",
+        payload.store_id
     )
-    .fetch_one(&mut *db_tx)
+    .fetch_optional(&pool)
     .await
     .ok()
-    .flatten()
-    .unwrap_or_else(|| format!("TXN-{}", Utc::now().timestamp()));
+    .flatten();
+    let txn_slug = store_txn_slug(
+        store_row.as_ref().and_then(|r| r.store_code.as_deref()),
+        store_row.as_ref().map(|r| r.store_name.as_str()).unwrap_or("STR"),
+    );
+    let ref_no = next_txn_ref_no(&pool, payload.store_id, &txn_slug).await;
 
     // ── STEP 10: Insert transaction record ────────────────────────────────────
     let is_credit      = payload.payment_method == "credit";
@@ -424,7 +443,7 @@ pub async fn create_transaction(
             line.sku,
             line.quantity,
             line.unit_price,
-            Decimal::ZERO,
+            line.item_discount,
             line.vat_amount,
             line.net_amount,
             line.line_total,
@@ -647,6 +666,97 @@ pub async fn create_transaction(
     db_tx.commit().await?;
 
     // ════════════════════════════════════════════════════════════════════════════
+    // CLOUD SYNC — queue this transaction for replication (non-fatal)
+    // ════════════════════════════════════════════════════════════════════════════
+    {
+        let sync_data = serde_json::json!({
+            "id":             tx_id,
+            "reference_no":   ref_no,
+            "store_id":       payload.store_id,
+            "cashier_id":     claims.user_id,
+            "customer_id":    payload.customer_id,
+            "subtotal":       subtotal.to_string(),
+            "discount_amount": discount_amount.to_string(),
+            "tax_amount":     total_tax.to_string(),
+            "total_amount":   total_amount.to_string(),
+            "payment_method": payload.payment_method,
+            "payment_status": payment_status,
+            "status":         "completed",
+            "notes":          payload.notes,
+            "offline_sale":   offline_sale,
+        });
+        crate::database::sync::queue_row(
+            &pool,
+            "transactions",
+            "INSERT",
+            &tx_id.to_string(),
+            sync_data,
+            Some(payload.store_id),
+        )
+        .await;
+
+        // Queue each transaction_item row
+        for line in &line_items {
+            crate::database::sync::queue_row(
+                &pool,
+                "transaction_items",
+                "INSERT",
+                &format!("{}:{}", tx_id, line.item_id),
+                serde_json::json!({
+                    "tx_id":       tx_id,
+                    "item_id":     line.item_id,
+                    "item_name":   line.item_name,
+                    "sku":         line.sku,
+                    "quantity":    line.quantity,
+                    "unit_price":  line.unit_price,
+                    "line_total":  line.line_total,
+                }),
+                Some(payload.store_id),
+            )
+            .await;
+        }
+
+        // Queue payment row(s)
+        crate::database::sync::queue_row(
+            &pool,
+            "payments",
+            "INSERT",
+            &format!("tx:{}", tx_id),
+            serde_json::json!({
+                "transaction_id":   tx_id,
+                "payment_method":   payload.payment_method,
+                "amount":           amount_paid.to_string(),
+                "status":           "completed",
+            }),
+            Some(payload.store_id),
+        )
+        .await;
+
+        // Queue credit_sale row if this was a credit transaction
+        if is_credit {
+            if let Some(customer_id) = payload.customer_id {
+                crate::database::sync::queue_row(
+                    &pool,
+                    "credit_sales",
+                    "INSERT",
+                    &format!("tx:{}", tx_id),
+                    serde_json::json!({
+                        "transaction_id": tx_id,
+                        "store_id":       payload.store_id,
+                        "customer_id":    customer_id,
+                        "total_amount":   total_amount.to_string(),
+                        "amount_paid":    "0",
+                        "outstanding":    total_amount.to_string(),
+                        "status":         "open",
+                    }),
+                    Some(payload.store_id),
+                )
+                .await;
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
     // POST-COMMIT HOOKS (non-fatal — errors are logged, sale already committed)
     // ════════════════════════════════════════════════════════════════════════════
 
@@ -717,6 +827,8 @@ pub async fn create_transaction(
     let transaction = fetch_transaction(&pool, tx_id).await?;
     let items       = fetch_transaction_items(&pool, tx_id).await?;
     let payments    = fetch_transaction_payments(&pool, tx_id).await?;
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "transaction",
+        &format!("Transaction {} — ₦{:.2}", transaction.reference_no, transaction.total_amount), "info").await;
     Ok(TransactionDetail { transaction, items, payments })
 }
 
@@ -903,6 +1015,14 @@ pub async fn void_transaction(
 
     let tx = fetch_transaction(&pool, id).await?;
 
+    // Scope check: non-global users can only void transactions within their own store
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if tx.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+
     if tx.status == "voided" || tx.status == "cancelled" {
         return Err(AppError::Validation("Transaction is already voided".into()));
     }
@@ -1003,7 +1123,10 @@ pub async fn void_transaction(
     .await
     .ok();
 
-    fetch_transaction(&pool, id).await
+    let voided = fetch_transaction(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, Some(voided.store_id), "void", "transaction",
+        &format!("Voided transaction {} — reason: {}", voided.reference_no, payload.reason), "warning").await;
+    Ok(voided)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1020,6 +1143,14 @@ pub async fn partial_refund(
     let pool   = state.pool().await?;
 
     let tx = fetch_transaction(&pool, id).await?;
+
+    // Scope check: non-global users can only refund transactions within their own store
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if tx.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     if tx.status == "voided" || tx.status == "cancelled" {
         return Err(AppError::Validation("Cannot refund a voided transaction".into()));
@@ -1090,15 +1221,20 @@ pub async fn partial_refund(
     let refund_ref = format!("REF-{}-{}", tx.reference_no, Utc::now().timestamp());
     let mut db_tx  = pool.begin().await?;
 
-    // Generate a reference number for this return record
-    let return_ref_no: String = sqlx::query_scalar!(
-        "SELECT 'RET-' || LPAD(NEXTVAL('return_ref_seq')::text, 6, '0')"
+    // Generate a per-store reference number for this return record
+    let refund_store_row = sqlx::query!(
+        "SELECT store_name, store_code FROM stores WHERE id = $1",
+        tx.store_id
     )
-    .fetch_one(&mut *db_tx)
+    .fetch_optional(&pool)
     .await
     .ok()
-    .flatten()
-    .unwrap_or_else(|| format!("RET-{}", chrono::Utc::now().timestamp()));
+    .flatten();
+    let refund_slug = store_txn_slug(
+        refund_store_row.as_ref().and_then(|r| r.store_code.as_deref()),
+        refund_store_row.as_ref().map(|r| r.store_name.as_str()).unwrap_or("STR"),
+    );
+    let return_ref_no = next_ret_ref_no(&pool, tx.store_id, &refund_slug).await;
 
     let return_reason = payload.notes.as_deref().unwrap_or("Partial refund");
 
@@ -1188,6 +1324,9 @@ pub async fn partial_refund(
 
     db_tx.commit().await?;
 
+    write_audit_log(&pool, claims.user_id, Some(tx.store_id), "partial_refund", "transaction",
+        &format!("Partial refund ₦{} on transaction {}", total_refund.round_dp(2), tx.reference_no), "warning").await;
+
     Ok(RefundResult {
         success:        true,
         tx_id:          id,
@@ -1218,6 +1357,14 @@ pub async fn full_refund(
     let pool   = state.pool().await?;
 
     let tx = fetch_transaction(&pool, id).await?;
+
+    // Scope check: non-global users can only refund transactions within their own store
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if tx.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     if tx.status == "voided" || tx.status == "cancelled" {
         return Err(AppError::Validation("Cannot refund a voided transaction".into()));
@@ -1290,6 +1437,9 @@ pub async fn full_refund(
     .ok();
 
     db_tx.commit().await?;
+
+    write_audit_log(&pool, claims.user_id, Some(tx.store_id), "full_refund", "transaction",
+        &format!("Full refund ₦{} on transaction {}", tx.total_amount.round_dp(2), tx.reference_no), "warning").await;
 
     Ok(RefundResult {
         success:        true,

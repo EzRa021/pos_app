@@ -12,6 +12,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
@@ -22,8 +23,8 @@ async fn fetch_customer(pool: &sqlx::PgPool, id: i32) -> AppResult<Customer> {
     sqlx::query_as!(
         Customer,
         r#"SELECT id, store_id, first_name, last_name, email, phone,
-                  address, city, loyalty_points, credit_limit,
-                  outstanding_balance, customer_type, credit_enabled,
+                  address, city, loyalty_points, wallet_balance,
+                  credit_limit, outstanding_balance, customer_type, credit_enabled,
                   is_active, created_at, updated_at
            FROM   customers WHERE id = $1"#,
         id
@@ -67,8 +68,8 @@ pub async fn get_customers(
     let customers = sqlx::query_as!(
         Customer,
         r#"SELECT id, store_id, first_name, last_name, email, phone,
-                  address, city, loyalty_points, credit_limit,
-                  outstanding_balance, customer_type, credit_enabled,
+                  address, city, loyalty_points, wallet_balance,
+                  credit_limit, outstanding_balance, customer_type, credit_enabled,
                   is_active, created_at, updated_at
            FROM   customers
            WHERE ($1::int  IS NULL OR store_id       = $1)
@@ -108,8 +109,8 @@ pub async fn search_customers(
     sqlx::query_as!(
         Customer,
         r#"SELECT id, store_id, first_name, last_name, email, phone,
-                  address, city, loyalty_points, credit_limit,
-                  outstanding_balance, customer_type, credit_enabled,
+                  address, city, loyalty_points, wallet_balance,
+                  credit_limit, outstanding_balance, customer_type, credit_enabled,
                   is_active, created_at, updated_at
            FROM   customers
            WHERE  is_active = TRUE
@@ -267,7 +268,7 @@ pub async fn create_customer(
     token:   String,
     payload: CreateCustomerDto,
 ) -> AppResult<Customer> {
-    guard_permission(&state, &token, "customers.create").await?;
+    let claims = guard_permission(&state, &token, "customers.create").await?;
     let pool    = state.pool().await?;
     // credit_limit is NOT NULL in the DB — default to 0 when caller omits it.
     let limit = payload.credit_limit.map(to_dec).unwrap_or(Decimal::ZERO);
@@ -294,6 +295,17 @@ pub async fn create_customer(
     .fetch_one(&pool)
     .await?;
 
+    crate::database::sync::queue_row(
+        &pool, "customers", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": payload.store_id,
+                            "first_name": payload.first_name, "last_name": payload.last_name,
+                            "phone": payload.phone, "email": payload.email,
+                            "credit_limit": limit, "is_active": true }),
+        Some(payload.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "customer",
+        &format!("Created customer '{} {}'", payload.first_name, payload.last_name), "info").await;
     fetch_customer(&pool, id).await
 }
 
@@ -304,7 +316,7 @@ pub async fn update_customer(
     id:      i32,
     payload: UpdateCustomerDto,
 ) -> AppResult<Customer> {
-    guard_permission(&state, &token, "customers.update").await?;
+    let claims = guard_permission(&state, &token, "customers.update").await?;
     let pool  = state.pool().await?;
     let limit = payload.credit_limit.map(to_dec);
 
@@ -337,7 +349,20 @@ pub async fn update_customer(
     .execute(&pool)
     .await?;
 
-    fetch_customer(&pool, id).await
+    let result = fetch_customer(&pool, id).await?;
+
+    crate::database::sync::queue_row(
+        &pool, "customers", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": result.store_id,
+                            "first_name": result.first_name, "last_name": result.last_name,
+                            "phone": result.phone, "email": result.email,
+                            "is_active": result.is_active }),
+        Some(result.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, None, "update", "customer",
+        &format!("Updated customer id {id}"), "info").await;
+    Ok(result)
 }
 
 // ── Activate / Deactivate / Delete ────────────────────────────────────────────
@@ -380,7 +405,7 @@ pub async fn delete_customer(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard_permission(&state, &token, "customers.delete").await?;
+    let claims = guard_permission(&state, &token, "customers.delete").await?;
     let pool = state.pool().await?;
 
     // Block delete if outstanding balance
@@ -402,5 +427,7 @@ pub async fn delete_customer(
     )
     .execute(&pool)
     .await?;
+    write_audit_log(&pool, claims.user_id, None, "delete", "customer",
+        &format!("Deleted customer id {id}"), "warning").await;
     Ok(())
 }

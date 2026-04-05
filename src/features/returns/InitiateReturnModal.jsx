@@ -6,7 +6,7 @@
 // choose refund method, and enter a reason.
 // ============================================================================
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import {
   RotateCcw,
@@ -15,6 +15,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   XCircle,
+  ScanBarcode,
+  X,
 } from "lucide-react";
 
 import {
@@ -40,6 +42,7 @@ import { useCreateReturn } from "@/features/returns/useReturns";
 // handles all success feedback using formatCurrency (no hardcoded symbols).
 import { formatCurrency, formatRef, stepForType } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useBranchStore } from "@/stores/branch.store";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const REFUND_METHODS = [
@@ -98,7 +101,7 @@ function ConditionChip({ value, selected, onClick }) {
 }
 
 // ── ItemRow ────────────────────────────────────────────────────────────────────
-function ItemRow({ item, state, onChange, alreadyReturned = 0 }) {
+function ItemRow({ item, state, onChange, alreadyReturned = 0, highlighted = false }) {
   const soldQty  = parseFloat(item.quantity ?? 1);
   // Cap max returnable qty to what hasn't been returned yet
   const remaining = Math.max(0, soldQty - alreadyReturned);
@@ -116,6 +119,7 @@ function ItemRow({ item, state, onChange, alreadyReturned = 0 }) {
     <div
       className={cn(
         "rounded-xl border p-3.5 transition-all duration-150",
+        highlighted && "ring-2 ring-success/50 ring-offset-1 ring-offset-card",
         isFullyReturned
           ? "border-border/40 bg-muted/20 opacity-60"
           : state.enabled
@@ -297,6 +301,10 @@ export function InitiateReturnModal({
   const [reason, setReason] = useState("");
   const [customReason, setCustomReason] = useState("");
   const [notes, setNotes] = useState("");
+  const [barcodeInput, setBarcodeInput] = useState("");
+  const [barcodeHighlight, setBarcodeHighlight] = useState(null); // item_id
+  const barcodeRef = useRef(null);
+  const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const createReturnMutation = useCreateReturn();
 
@@ -330,6 +338,47 @@ export function InitiateReturnModal({
 
   const updateItem = (id, patch) =>
     setItemState((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
+  // Barcode scan — match against txItems by barcode or SKU, auto-enable matched item
+  const handleBarcodeSearch = useCallback((value) => {
+    const query = value.trim().toLowerCase();
+    if (!query) { setBarcodeHighlight(null); return; }
+    const match = txItems.find(
+      (it) =>
+        (it.barcode && it.barcode.toLowerCase() === query) ||
+        (it.sku   && it.sku.toLowerCase()     === query)
+    );
+    if (match) {
+      const alreadyRet = returnedQtyMap[match.item_id] ?? 0;
+      const soldQty    = parseFloat(match.quantity ?? 1);
+      if (alreadyRet < soldQty) {
+        updateItem(match.item_id, { enabled: true });
+        setBarcodeHighlight(match.item_id);
+        // Flash highlight for 2 s then clear
+        setTimeout(() => setBarcodeHighlight(null), 2000);
+      } else {
+        toast.warning(`${match.item_name} has already been fully returned`);
+      }
+      setBarcodeInput("");
+    } else {
+      toast.error("Item not found in this transaction");
+    }
+  }, [txItems, returnedQtyMap]);
+
+  // Debounce: auto-search 400 ms after last keypress (for scanner devices)
+  const debounceRef = useRef(null);
+  const onBarcodeChange = (e) => {
+    const val = e.target.value;
+    setBarcodeInput(val);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => handleBarcodeSearch(val), 400);
+  };
+  const onBarcodeKeyDown = (e) => {
+    if (e.key === "Enter") {
+      clearTimeout(debounceRef.current);
+      handleBarcodeSearch(barcodeInput);
+    }
+  };
 
   // Computed totals
   const { selectedCount, returnTotal, selectedItems } = useMemo(() => {
@@ -427,6 +476,28 @@ export function InitiateReturnModal({
 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {/* Barcode scanner input */}
+          <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+            <ScanBarcode className="h-4 w-4 text-muted-foreground shrink-0" />
+            <Input
+              ref={barcodeRef}
+              value={barcodeInput}
+              onChange={onBarcodeChange}
+              onKeyDown={onBarcodeKeyDown}
+              placeholder="Scan barcode or type SKU to select item…"
+              className="h-7 border-0 bg-transparent p-0 text-sm focus-visible:ring-0 placeholder:text-muted-foreground/60"
+            />
+            {barcodeInput && (
+              <button
+                type="button"
+                onClick={() => { setBarcodeInput(""); barcodeRef.current?.focus(); }}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
           {/* Items */}
           <div>
             <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2.5 flex items-center gap-2">
@@ -454,6 +525,7 @@ export function InitiateReturnModal({
                     }
                     alreadyReturned={returnedQtyMap[item.item_id] ?? 0}
                     onChange={(patch) => updateItem(item.item_id, patch)}
+                    highlighted={barcodeHighlight === item.item_id}
                   />
                 ))}
               </div>

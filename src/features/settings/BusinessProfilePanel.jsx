@@ -12,6 +12,7 @@ import { Button }            from '@/components/ui/button';
 import { Input }             from '@/components/ui/input';
 import { rpc }               from '@/lib/apiClient';
 import { useBusinessInfo }   from '@/hooks/useBusinessInfo';
+import { LogoUpload }        from '@/components/shared/LogoUpload';
 import { BUSINESS_TYPES, CURRENCIES, TIMEZONES } from '@/features/onboarding/constants';
 import { cn }                from '@/lib/utils';
 
@@ -84,6 +85,7 @@ export function BusinessProfilePanel() {
       address:       business.address       ?? '',
       currency:      business.currency      ?? 'NGN',
       timezone:      business.timezone      ?? 'Africa/Lagos',
+      logo_data:     business.logo_data     ?? null,
     });
     setError('');
     setEditing(true);
@@ -114,6 +116,7 @@ export function BusinessProfilePanel() {
         address:       form.address.trim() || null,
         currency:      form.currency       || null,
         timezone:      form.timezone       || null,
+        logo_data:     form.logo_data      || null,
       });
       // Refresh sidebar, badge, and this panel
       await queryClient.invalidateQueries({ queryKey: ['business-info'] });
@@ -177,8 +180,21 @@ export function BusinessProfilePanel() {
 
         {/* Profile details */}
         <div className="rounded-xl border border-border bg-card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs font-bold text-foreground uppercase tracking-wider">Profile</p>
+          <div className="flex items-start justify-between mb-4">
+            <div className="flex items-center gap-3">
+              {/* Business logo */}
+              <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-border bg-muted/20 flex items-center justify-center">
+                {business.logo_data ? (
+                  <img src={business.logo_data} alt="business logo" className="h-full w-full object-cover" />
+                ) : (
+                  <img src="/quantum-logo.svg" alt="Quantum POS" className="h-8 w-8 opacity-40" />
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-bold text-foreground">{business.name}</p>
+                <p className="text-[11px] text-muted-foreground">{typeLabel}</p>
+              </div>
+            </div>
             <Button size="sm" variant="outline" onClick={startEdit} className="gap-1.5 h-7 text-xs">
               <Pencil className="h-3 w-3" />
               Edit
@@ -217,6 +233,15 @@ export function BusinessProfilePanel() {
         </div>
 
         <div className="flex flex-col gap-4">
+          {/* Logo */}
+          <LogoUpload
+            value={form.logo_data}
+            onChange={(v) => set('logo_data', v)}
+            label="Business Logo"
+            hint="Shown in the sidebar and on receipts. Max 400×400 px — larger images are compressed automatically."
+            size="lg"
+          />
+
           {/* Name */}
           <div>
             <label className="block text-xs font-medium text-foreground mb-1.5">

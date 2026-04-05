@@ -1,5 +1,5 @@
 // ============================================================================
-// STORE MODELS — matches migration 0002_stores.sql + 0057
+// STORE MODELS — matches migration 0002_stores.sql + 0057 + 0065
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,8 @@ pub struct Store {
     pub receipt_footer: Option<String>,
     pub logo_data:      Option<String>,
     pub is_active:      bool,
+    pub theme:          String,
+    pub accent_color:   String,
     pub created_at:     DateTime<Utc>,
     pub updated_at:     DateTime<Utc>,
 }
@@ -57,4 +59,6 @@ pub struct UpdateStoreDto {
     pub receipt_footer: Option<String>,
     pub logo_data:      Option<String>,
     pub is_active:      Option<bool>,
+    pub theme:          Option<String>,
+    pub accent_color:   Option<String>,
 }

@@ -1,8 +1,9 @@
 // ============================================================================
 // features/customers/CustomersPanel.jsx
 // ============================================================================
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { usePaginationParams } from "@/hooks/usePaginationParams";
 import {
   Users, Search, X, UserPlus, Edit3, Power, PowerOff, Trash2,
   CreditCard, Star, AlertTriangle, Phone, Mail,
@@ -460,16 +461,17 @@ export function CustomersPanel() {
   // Show the actions column if the user can do anything
   const hasActions = canUpdate || canDelete;
 
-  const [search,          setSearch]          = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusTab,       setStatusTab]       = useState("all");
-  const [typeTab,         setTypeTab]         = useState("");
-  const [page,            setPage]            = useState(1);
+  const { page, pageSize, search, setPage, setPageSize, setSearch: setUrlSearch } =
+    usePaginationParams({ defaultPageSize: 25 });
+  const [statusTab, setStatusTab] = useState("all");
+  const [typeTab,   setTypeTab]   = useState("");
 
-  useEffect(() => {
-    const id = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
-    return () => clearTimeout(id);
-  }, [search]);
+  const debounceRef = useRef(null);
+  const handleSearchChange = useCallback((e) => {
+    const q = e.target.value;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setUrlSearch(q), 300);
+  }, [setUrlSearch]);
   const [formOpen,     setFormOpen]     = useState(false);
   const [editTarget,   setEditTarget]   = useState(null);
   const [toggleTarget, setToggleTarget] = useState(null);
@@ -478,7 +480,7 @@ export function CustomersPanel() {
   const isActive = statusTab === "active" ? true : statusTab === "inactive" ? false : undefined;
 
   const { items, total, totalPages, isLoading, error, create, update, activate, deactivate, remove } =
-    useCustomers({ search: debouncedSearch || undefined, isActive, customerType: typeTab || undefined, page });
+    useCustomers({ search: search || undefined, isActive, customerType: typeTab || undefined, page });
 
   const { activeCount, inactiveCount, vipCount, wholesaleCount, regularCount } = useMemo(() => {
     const active    = items.filter((i) =>  i.is_active).length;
@@ -674,15 +676,16 @@ export function CustomersPanel() {
             <div className="relative mb-4">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                key={search}
+                defaultValue={search}
+                onChange={handleSearchChange}
                 placeholder="Search by name, phone or email…"
                 className="pl-9 pr-9 h-8 text-sm"
               />
               {search && (
                 <button
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  onClick={() => { setSearch(""); setPage(1); }}
+                  onClick={() => setUrlSearch("")}
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -694,13 +697,13 @@ export function CustomersPanel() {
               data={items}
               isLoading={isLoading}
               onRowClick={(row) => navigate(`/customers/${row.id}`)}
-              pagination={{ page, pageSize: 25, total, onPageChange: setPage }}
+              pagination={{ page, pageSize, total, onPageChange: setPage, onPageSizeChange: setPageSize }}
               emptyState={
                 <EmptyState
                   icon={Users}
                   title="No customers found"
-                  description={debouncedSearch ? "Try a different search term." : "Add your first customer to get started."}
-                  action={canCreate && !debouncedSearch && (
+                  description={search ? "Try a different search term." : "Add your first customer to get started."}
+                  action={canCreate && !search && (
                     <Button size="sm" onClick={openCreate}>
                       <UserPlus className="h-3.5 w-3.5 mr-1.5" />
                       New Customer

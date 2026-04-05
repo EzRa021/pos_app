@@ -47,8 +47,8 @@ export function OpenShiftModal({ open, onOpenChange }) {
 
   const parsedBalance = parseFloat(balance) || 0;
   const isZero        = parsedBalance === 0;
-  // Can submit if: amount > 0, OR amount is 0 and cashier confirmed it
-  const canSubmit     = !isZero || zeroConfirmed;
+  // Can submit if: store is selected, AND (amount > 0, OR amount is 0 and confirmed)
+  const canSubmit     = !!storeId && (!isZero || zeroConfirmed);
 
   // Reset zero-confirmation whenever the amount changes
   function handleBalanceChange(e) {
@@ -167,6 +167,12 @@ export function OpenShiftModal({ open, onOpenChange }) {
                   </p>
                 </div>
               </button>
+            )}
+
+            {!storeId && (
+              <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                No store selected. Please select a store before opening a shift.
+              </p>
             )}
 
             {mutation.error && (

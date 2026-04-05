@@ -15,6 +15,8 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
+use crate::utils::ref_no::{next_item_sku, store_slug};
 
 fn to_dec(v: f64) -> Decimal {
     Decimal::try_from(v).unwrap_or_default()
@@ -28,6 +30,7 @@ pub(crate) async fn fetch_item(pool: &sqlx::PgPool, id: Uuid) -> AppResult<Item>
         r#"SELECT i.id, i.store_id, i.category_id, i.department_id,
                   i.sku, i.barcode, i.item_name, i.description,
                   i.cost_price, i.selling_price, i.discount_price,
+                  i.discount_price_enabled,
                   s.store_name       AS branch_name,
                   c.category_name,
                   d.department_name,
@@ -72,7 +75,7 @@ pub(crate) async fn search_items_inner(
     sqlx::query_as!(
         ItemSearchResult,
         r#"SELECT i.id, i.sku, i.barcode, i.item_name, i.description,
-                  i.selling_price, i.discount_price,
+                  i.selling_price, i.discount_price, i.discount_price_enabled,
                   ist.is_active, ist.available_for_pos,
                   istock.quantity, istock.available_quantity,
                   c.category_name,
@@ -113,6 +116,8 @@ pub(crate) async fn activate_item_inner(
            VALUES ($1, $2, 'STATUS_CHANGE', 'Item activated', $3)"#,
         id, item.store_id, claims.user_id
     ).execute(&pool).await?;
+    write_audit_log(&pool, claims.user_id, Some(item.store_id), "activate", "item",
+        &format!("Activated item '{}' (id: {})", item.item_name, id), "info").await;
     Ok(item)
 }
 
@@ -134,6 +139,8 @@ pub(crate) async fn deactivate_item_inner(
            VALUES ($1, $2, 'STATUS_CHANGE', 'Item deactivated', $3)"#,
         id, item.store_id, claims.user_id
     ).execute(&pool).await?;
+    write_audit_log(&pool, claims.user_id, Some(item.store_id), "deactivate", "item",
+        &format!("Deactivated item '{}' (id: {})", item.item_name, id), "warning").await;
     Ok(item)
 }
 
@@ -201,6 +208,7 @@ pub(crate) async fn get_items_inner(
         r#"SELECT i.id, i.store_id, i.category_id, i.department_id,
                   i.sku, i.barcode, i.item_name, i.description,
                   i.cost_price, i.selling_price, i.discount_price,
+                  i.discount_price_enabled,
                   s.store_name AS branch_name, c.category_name, d.department_name,
                   ist.is_active, ist.sellable, ist.available_for_pos,
                   ist.track_stock, ist.taxable, ist.min_stock_level,
@@ -261,6 +269,7 @@ pub(crate) async fn get_item_by_barcode_inner(
         r#"SELECT i.id, i.store_id, i.category_id, i.department_id,
                   i.sku, i.barcode, i.item_name, i.description,
                   i.cost_price, i.selling_price, i.discount_price,
+                  i.discount_price_enabled,
                   s.store_name AS branch_name, c.category_name, d.department_name,
                   ist.is_active, ist.sellable, ist.available_for_pos,
                   ist.track_stock, ist.taxable, ist.min_stock_level,
@@ -301,6 +310,7 @@ pub(crate) async fn get_item_by_sku_inner(
         r#"SELECT i.id, i.store_id, i.category_id, i.department_id,
                   i.sku, i.barcode, i.item_name, i.description,
                   i.cost_price, i.selling_price, i.discount_price,
+                  i.discount_price_enabled,
                   s.store_name AS branch_name, c.category_name, d.department_name,
                   ist.is_active, ist.sellable, ist.available_for_pos,
                   ist.track_stock, ist.taxable, ist.min_stock_level,
@@ -349,6 +359,8 @@ pub(crate) async fn delete_item_inner(
     )
     .execute(&pool)
     .await?;
+    write_audit_log(&pool, claims.user_id, Some(item.store_id), "archive", "item",
+        &format!("Archived item '{}' (id: {})", item.item_name, id), "warning").await;
     Ok(())
 }
 
@@ -359,6 +371,27 @@ pub(crate) async fn adjust_stock_inner(
 ) -> AppResult<Item> {
     let claims = guard_permission(state, &token, "inventory.adjust").await?;
     let pool   = state.pool().await?;
+
+    // Block manual stock adjustments while an active count session is in progress
+    // for this store. Allowing adjustments during a count produces phantom variances
+    // in the variance report because the expected quantities diverge mid-count.
+    let active_count: Option<i32> = sqlx::query_scalar!(
+        "SELECT id FROM stock_count_sessions
+         WHERE store_id = $1 AND status IN ('pending', 'in_progress')
+         LIMIT 1",
+        payload.store_id,
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    if active_count.is_some() {
+        return Err(AppError::Conflict(
+            "A stock count is currently in progress for this store. \
+             Manual stock adjustments are blocked until the count is completed or cancelled \
+             to prevent variance report discrepancies.".into()
+        ));
+    }
+
     let mut tx = pool.begin().await?;
 
     // Fetch measurement_type for qty validation
@@ -419,6 +452,18 @@ pub(crate) async fn adjust_stock_inner(
     .await?;
 
     tx.commit().await?;
+
+    // Queue item_stock row to cloud sync
+    crate::database::sync::queue_row(
+        &pool, "item_stock", "UPDATE",
+        &format!("{}:{}", payload.item_id, payload.store_id),
+        serde_json::json!({ "item_id": payload.item_id, "store_id": payload.store_id,
+                            "quantity": qty_after, "available_quantity": qty_after }),
+        Some(payload.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "stock_adjust", "item",
+        &format!("Stock adjusted by {} for item id {}", payload.adjustment, payload.item_id), "info").await;
     fetch_item(&pool, payload.item_id).await
 }
 
@@ -537,7 +582,7 @@ pub async fn search_items(
     sqlx::query_as!(
         ItemSearchResult,
         r#"SELECT i.id, i.sku, i.barcode, i.item_name, i.description,
-                  i.selling_price, i.discount_price,
+                  i.selling_price, i.discount_price, i.discount_price_enabled,
                   ist.is_active, ist.available_for_pos,
                   istock.quantity, istock.available_quantity,
                   c.category_name,
@@ -569,18 +614,22 @@ pub async fn create_item(
     let claims = guard_permission(&state, &token, "items.create").await?;
     let pool   = state.pool().await?;
 
-    // ── Uniqueness checks ──────────────────────────────────────────────────
-    let sku_taken: bool = sqlx::query_scalar!(
-        "SELECT EXISTS(SELECT 1 FROM items WHERE sku = $1)",
-        payload.sku
+    // ── Auto-generate unique SKU: ITEM-{STORE_SLUG}-{N} ────────────────────
+    let store_row = sqlx::query!(
+        "SELECT store_name, store_code FROM stores WHERE id = $1",
+        payload.store_id
     )
-    .fetch_one(&pool)
+    .fetch_optional(&pool)
     .await?
-    .unwrap_or(false);
-    if sku_taken {
-        return Err(AppError::Validation(format!("SKU '{}' already exists", payload.sku)));
-    }
+    .ok_or_else(|| AppError::Validation(format!("Store {} not found", payload.store_id)))?;
 
+    let slug = store_slug(
+        store_row.store_code.as_deref(),
+        &store_row.store_name,
+    );
+    let sku = next_item_sku(&pool, payload.store_id, &slug).await;
+
+    // ── Barcode uniqueness check ───────────────────────────────────────────
     if let Some(ref bc) = payload.barcode {
         let bc_taken: bool = sqlx::query_scalar!(
             "SELECT EXISTS(SELECT 1 FROM items WHERE barcode = $1 AND store_id = $2)",
@@ -610,12 +659,14 @@ pub async fn create_item(
         r#"INSERT INTO items
                (store_id, category_id, department_id, sku, barcode,
                 item_name, description, cost_price, selling_price, discount_price,
-                image_data)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                discount_price_enabled, image_data)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
            RETURNING id"#,
         payload.store_id, payload.category_id, payload.department_id,
-        payload.sku, payload.barcode, payload.item_name, payload.description,
-        cost, sell, disc, payload.image_data,
+        sku, payload.barcode, payload.item_name, payload.description,
+        cost, sell, disc,
+        payload.discount_price_enabled.unwrap_or(false),
+        payload.image_data,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -680,6 +731,25 @@ pub async fn create_item(
     .await?;
 
     tx.commit().await?;
+
+    // Queue items + item_stock rows to cloud sync
+    crate::database::sync::queue_row(
+        &pool, "items", "INSERT", &item_id.to_string(),
+        serde_json::json!({ "id": item_id, "store_id": payload.store_id,
+                            "item_name": payload.item_name, "sku": sku,
+                            "cost_price": cost, "selling_price": sell }),
+        Some(payload.store_id),
+    ).await;
+    crate::database::sync::queue_row(
+        &pool, "item_stock", "INSERT",
+        &format!("{}:{}", item_id, payload.store_id),
+        serde_json::json!({ "item_id": item_id, "store_id": payload.store_id,
+                            "quantity": init_qty, "available_quantity": init_qty }),
+        Some(payload.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "item",
+        &format!("Created item '{}' (SKU: {})", payload.item_name, sku), "info").await;
     fetch_item(&pool, item_id).await
 }
 
@@ -739,20 +809,22 @@ pub async fn update_item(
     // ── Update core items row ─────────────────────────────────────────────
     sqlx::query!(
         r#"UPDATE items SET
-           category_id    = COALESCE($1,  category_id),
-           department_id  = COALESCE($2,  department_id),
-           sku            = COALESCE($3,  sku),
-           barcode        = COALESCE($4,  barcode),
-           item_name      = COALESCE($5,  item_name),
-           description    = COALESCE($6,  description),
-           cost_price     = COALESCE($7,  cost_price),
-           selling_price  = COALESCE($8,  selling_price),
-           discount_price = COALESCE($9,  discount_price),
-           image_data     = COALESCE($10, image_data),
-           updated_at     = NOW()
-           WHERE id = $11"#,
+           category_id           = COALESCE($1,  category_id),
+           department_id         = COALESCE($2,  department_id),
+           sku                   = COALESCE($3,  sku),
+           barcode               = COALESCE($4,  barcode),
+           item_name             = COALESCE($5,  item_name),
+           description           = COALESCE($6,  description),
+           cost_price            = COALESCE($7,  cost_price),
+           selling_price         = COALESCE($8,  selling_price),
+           discount_price        = COALESCE($9,  discount_price),
+           discount_price_enabled = COALESCE($10, discount_price_enabled),
+           image_data            = COALESCE($11, image_data),
+           updated_at            = NOW()
+           WHERE id = $12"#,
         payload.category_id, payload.department_id, payload.sku, payload.barcode,
         payload.item_name, payload.description, cost, sell, disc,
+        payload.discount_price_enabled,
         payload.image_data, id,
     )
     .execute(&pool)
@@ -915,7 +987,20 @@ pub async fn update_item(
         .await?;
     }
 
-    fetch_item(&pool, id).await
+    let result = fetch_item(&pool, id).await?;
+
+    // Queue items row to cloud sync
+    crate::database::sync::queue_row(
+        &pool, "items", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": result.store_id,
+                            "item_name": result.item_name, "sku": result.sku,
+                            "cost_price": result.cost_price, "selling_price": result.selling_price }),
+        Some(result.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(result.store_id), "update", "item",
+        &format!("Updated item '{}' (id: {})", result.item_name, id), "info").await;
+    Ok(result)
 }
 
 #[tauri::command]

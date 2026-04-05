@@ -18,6 +18,7 @@ import { Button }      from "@/components/ui/button";
 import { Input }       from "@/components/ui/input";
 import { cn }          from "@/lib/utils";
 import { formatCurrency, formatDateTime, formatRef } from "@/lib/format";
+import { usePaginationParams } from "@/hooks/usePaginationParams";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const REFUND_METHOD_LABELS = {
@@ -115,8 +116,7 @@ export function ReturnsPanel() {
   const navigate = useNavigate();
 
   // Filter state
-  const [page,             setPage]             = useState(1);
-  const [search,           setSearch]           = useState("");
+  const { page, search, setPage, setSearch } = usePaginationParams({ defaultPageSize: 25 });
   const [debouncedSearch,  setDebouncedSearch]  = useState("");
   const [returnType,       setReturnType]       = useState("");
   const [status,           setStatus]           = useState("");
@@ -126,10 +126,7 @@ export function ReturnsPanel() {
 
   // Debounce search
   useEffect(() => {
-    const id = setTimeout(() => {
-      setDebouncedSearch(search);
-      setPage(1);
-    }, 300);
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(id);
   }, [search]);
 
@@ -337,7 +334,7 @@ export function ReturnsPanel() {
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
                   <Input
                     value={search}
-                    onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                    onChange={(e) => setSearch(e.target.value)}
                     placeholder="Search by return ref, transaction, or customer…"
                     className="pl-9 h-8 text-xs"
                   />

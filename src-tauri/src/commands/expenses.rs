@@ -12,6 +12,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::{guard, guard_permission};
+use super::audit::write_audit_log;
 
 // ── Shared fetch ─────────────────────────────────────────────────────────────
 
@@ -143,8 +144,10 @@ pub async fn create_expense(
     let amount = Decimal::try_from(payload.amount)
         .map_err(|_| AppError::Validation("Invalid amount".into()))?;
 
-    // Default approval_status to 'approved' (auto-approve on create)
-    let approval_status = payload.approval_status.as_deref().unwrap_or("approved");
+    // Auto-approve only for users with expenses.approve permission (managers/admins).
+    // Cashiers and other roles create expenses as 'pending' for approval.
+    let can_approve     = guard_permission(&state, &token, "expenses.approve").await.is_ok();
+    let approval_status = if can_approve { "approved" } else { "pending" };
     let approved_by     = if approval_status == "approved" { Some(claims.user_id) } else { None };
 
     let id: i32 = sqlx::query_scalar!(
@@ -182,7 +185,19 @@ pub async fn create_expense(
     .fetch_one(&pool)
     .await?;
 
-    fetch_expense(&pool, id).await
+    let expense = fetch_expense(&pool, id).await?;
+
+    crate::database::sync::queue_row(
+        &pool, "expenses", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": payload.store_id,
+                            "description": payload.description, "amount": amount,
+                            "category": payload.category }),
+        Some(payload.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "expense",
+        &format!("Expense ₦{} — {}", amount, payload.description), "info").await;
+    Ok(expense)
 }
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -264,7 +279,18 @@ pub async fn approve_expense(
     .execute(&pool)
     .await?;
 
-    fetch_expense(&pool, id).await
+    let expense = fetch_expense(&pool, id).await?;
+
+    crate::database::sync::queue_row(
+        &pool, "expenses", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": expense.store_id,
+                            "approval_status": "approved" }),
+        Some(expense.store_id),
+    ).await;
+
+    write_audit_log(&pool, claims.user_id, Some(expense.store_id), "approve", "expense",
+        &format!("Approved expense id {id}"), "info").await;
+    Ok(expense)
 }
 
 // ── Reject ────────────────────────────────────────────────────────────────────

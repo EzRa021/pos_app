@@ -35,7 +35,7 @@ export function NewBusinessStep({ onSuccess, onBack }) {
     setError('');
     try {
       const result = await rpc('create_business', form);
-      onSuccess(result.name);
+      onSuccess(result.name, result.id);
     } catch (e) {
       setError(typeof e === 'string' ? e : 'Failed to create business. Please try again.');
     } finally {

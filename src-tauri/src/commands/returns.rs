@@ -22,6 +22,8 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
+use crate::utils::ref_no::{next_ret_ref_no, store_txn_slug};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -255,6 +257,14 @@ pub async fn create_return(
     .await?
     .ok_or_else(|| AppError::NotFound("Original transaction not found".into()))?;
 
+    // Scope check: non-global users can only process returns for their own store
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if orig.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+
     match orig.status.as_str() {
         "voided" | "cancelled" => {
             return Err(AppError::Validation(
@@ -272,15 +282,20 @@ pub async fn create_return(
 
     let mut db_tx = pool.begin().await?;
 
-    // ── Generate reference number ─────────────────────────────────────────────
-    let ref_no: String = sqlx::query_scalar!(
-        "SELECT 'RET-' || LPAD(NEXTVAL('return_ref_seq')::text, 6, '0')"
+    // ── Generate per-store reference number (RET-{N:04}-{SLUG}) ──────────────
+    let ret_store_row = sqlx::query!(
+        "SELECT store_name, store_code FROM stores WHERE id = $1",
+        orig.store_id
     )
-    .fetch_one(&mut *db_tx)
+    .fetch_optional(&pool)
     .await
     .ok()
-    .flatten()
-    .unwrap_or_else(|| format!("RET-{}", chrono::Utc::now().timestamp()));
+    .flatten();
+    let ret_slug = store_txn_slug(
+        ret_store_row.as_ref().and_then(|r| r.store_code.as_deref()),
+        ret_store_row.as_ref().map(|r| r.store_name.as_str()).unwrap_or("STR"),
+    );
+    let ref_no = next_ret_ref_no(&pool, orig.store_id, &ret_slug).await;
 
     // ── Struct to carry validated data between passes ─────────────────────────
     struct ValidatedItem {
@@ -541,6 +556,32 @@ pub async fn create_return(
     let ret   = fetch_return(&pool, return_id).await?;
     let items = fetch_return_items(&pool, return_id).await?;
 
+    crate::database::sync::queue_row(
+        &pool, "returns", "INSERT", &return_id.to_string(),
+        serde_json::json!({ "id": return_id, "store_id": orig.store_id,
+                            "reference_no": ret.reference_no,
+                            "total_amount": ret.total_amount,
+                            "refund_method": payload.refund_method,
+                            "status": "completed" }),
+        Some(orig.store_id),
+    ).await;
+    for item in &items {
+        crate::database::sync::queue_row(
+            &pool, "return_items", "INSERT",
+            &item.id.to_string(),
+            serde_json::json!({ "id": item.id, "return_id": return_id,
+                                "item_id":   item.item_id,
+                                "item_name": item.item_name,
+                                "quantity_returned": item.quantity_returned,
+                                "unit_price": item.unit_price,
+                                "line_total": item.line_total }),
+            Some(orig.store_id),
+        ).await;
+    }
+
+    write_audit_log(&pool, claims.user_id, Some(orig.store_id), "create", "return",
+        &format!("Return {} — ₦{}", ret.reference_no, ret.total_amount), "info").await;
+
     Ok(ReturnDetail { ret, items })
 }
 
@@ -717,6 +758,14 @@ pub async fn void_return(
     // Fetch the return to void
     let ret = fetch_return(&pool, id).await?;
 
+    // Scope check: non-global users can only void returns from their own store
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if ret.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+
     if ret.status == "voided" {
         return Err(AppError::Validation("This return has already been voided".into()));
     }
@@ -825,6 +874,8 @@ pub async fn void_return(
 
     let updated_ret   = fetch_return(&pool, id).await?;
     let updated_items = fetch_return_items(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, Some(ret.store_id), "void", "return",
+        &format!("Voided return {}", ret.reference_no), "warning").await;
 
     Ok(ReturnDetail { ret: updated_ret, items: updated_items })
 }

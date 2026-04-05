@@ -22,6 +22,7 @@ import { Input }           from "@/components/ui/input";
 
 import { getShifts }                  from "@/commands/shifts";
 import { useBranchStore }             from "@/stores/branch.store";
+import { usePaginationParams }        from "@/hooks/usePaginationParams";
 import { formatDate, formatDuration } from "@/lib/format";
 import { PAGE_SIZE }                  from "@/lib/constants";
 import { cn }                         from "@/lib/utils";
@@ -136,9 +137,8 @@ function useShiftColumns(navigate) {
 }
 
 export function ShiftHistoryTable() {
-  const [page,       setPage]       = useState(1);
+  const { page, search, setPage, setSearch } = usePaginationParams({ defaultPageSize: PAGE_SIZE });
   const [tabKey,     setTabKey]     = useState("all");
-  const [search,     setSearch]     = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
   const storeId  = useBranchStore((s) => s.activeStore?.id);
@@ -146,7 +146,7 @@ export function ShiftHistoryTable() {
   const columns  = useShiftColumns(navigate);
 
   useEffect(() => {
-    const id = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
+    const id = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(id);
   }, [search]);
 
@@ -186,7 +186,7 @@ export function ShiftHistoryTable() {
           />
           {search && (
             <button
-              onClick={() => { setSearch(""); setDebouncedSearch(""); setPage(1); }}
+              onClick={() => { setSearch(""); setDebouncedSearch(""); }}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
               <X className="h-3 w-3" />

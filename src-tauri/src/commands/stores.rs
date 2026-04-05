@@ -10,6 +10,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 // ── Shared SELECT fragment ────────────────────────────────────────────────────
 // All queries include logo_data so the frontend always gets the full object.
@@ -28,7 +29,7 @@ pub(crate) async fn get_stores_inner(
         Store,
         r#"SELECT id, store_name, address, city, state, country,
                   phone, email, currency, timezone, tax_rate, receipt_footer,
-                  logo_data, is_active, created_at, updated_at
+                  logo_data, is_active, theme, accent_color, created_at, updated_at
            FROM stores
            WHERE ($1::bool IS NULL OR is_active = $1)
            ORDER BY store_name ASC"#,
@@ -67,7 +68,7 @@ pub(crate) async fn get_store_inner(
         Store,
         r#"SELECT id, store_name, address, city, state, country,
                   phone, email, currency, timezone, tax_rate, receipt_footer,
-                  logo_data, is_active, created_at, updated_at
+                  logo_data, is_active, theme, accent_color, created_at, updated_at
            FROM stores WHERE id = $1"#,
         id
     )
@@ -103,7 +104,7 @@ pub(crate) async fn get_my_store_inner(
         Store,
         r#"SELECT id, store_name, address, city, state, country,
                   phone, email, currency, timezone, tax_rate, receipt_footer,
-                  logo_data, is_active, created_at, updated_at
+                  logo_data, is_active, theme, accent_color, created_at, updated_at
            FROM stores WHERE id = $1"#,
         store_id
     )
@@ -129,7 +130,7 @@ pub async fn create_store(
     token:   String,
     payload: CreateStoreDto,
 ) -> AppResult<Store> {
-    guard_permission(&state, &token, "stores.manage").await?;
+    let claims = guard_permission(&state, &token, "stores.manage").await?;
     let pool = state.pool().await?;
 
     let tax = payload.tax_rate
@@ -157,6 +158,15 @@ pub async fn create_store(
     .fetch_one(&pool)
     .await?;
 
+    write_audit_log(&pool, claims.user_id, Some(id), "create", "store",
+        &format!("Created store '{}'", payload.store_name), "info").await;
+
+    crate::database::sync::queue_row(
+        &pool, "stores", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id, "is_active": true }),
+        Some(id),
+    ).await;
+
     get_store(state, token, id).await
 }
 
@@ -169,11 +179,23 @@ pub async fn update_store(
     id:      i32,
     payload: UpdateStoreDto,
 ) -> AppResult<Store> {
-    guard_permission(&state, &token, "stores.manage").await?;
+    let claims = guard_permission(&state, &token, "stores.manage").await?;
     let pool = state.pool().await?;
 
     let tax = payload.tax_rate
         .map(|r| rust_decimal::Decimal::try_from(r).unwrap_or_default());
+
+    let theme = payload.theme.as_deref().and_then(|t| {
+        if t == "light" || t == "dark" { Some(t.to_string()) } else { None }
+    });
+
+    const ACCENT_ALLOWED: &[&str] = &[
+        "blue", "indigo", "violet", "rose", "pink",
+        "orange", "emerald", "teal", "cyan",
+    ];
+    let accent_color = payload.accent_color.as_deref().and_then(|a| {
+        if ACCENT_ALLOWED.contains(&a) { Some(a.to_string()) } else { None }
+    });
 
     sqlx::query!(
         r#"UPDATE stores SET
@@ -190,15 +212,30 @@ pub async fn update_store(
            receipt_footer = COALESCE($11, receipt_footer),
            is_active      = COALESCE($12, is_active),
            logo_data      = COALESCE($13, logo_data),
+           theme          = COALESCE($14, theme),
+           accent_color   = COALESCE($15, accent_color),
            updated_at     = NOW()
-           WHERE id = $14"#,
+           WHERE id = $16"#,
         payload.store_name, payload.address, payload.city, payload.state,
         payload.country, payload.phone, payload.email,
         payload.currency, payload.timezone, tax, payload.receipt_footer,
-        payload.is_active, payload.logo_data, id
+        payload.is_active, payload.logo_data, theme, accent_color, id
     )
     .execute(&pool)
     .await?;
+
+    write_audit_log(&pool, claims.user_id, Some(id), "update", "store",
+        &format!("Updated store id {id}"), "info").await;
+
+    crate::database::sync::queue_row(
+        &pool, "stores", "UPDATE", &id.to_string(),
+        serde_json::json!({
+            "id": id,
+            "store_name": payload.store_name,
+            "is_active": payload.is_active,
+        }),
+        Some(id),
+    ).await;
 
     get_store(state, token, id).await
 }
