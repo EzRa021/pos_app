@@ -5,10 +5,12 @@ import { useState, useMemo, useCallback, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { usePaginationParams } from "@/hooks/usePaginationParams";
 import {
-  Receipt, Search, X, Calendar, TrendingUp,
+  Receipt, Search, X, Calendar as CalendarIcon, TrendingUp,
   CheckCircle2, Ban, RefreshCw, ArrowUpRight, User, Filter,
   Zap, Clock, CreditCard, Wallet,
 } from "lucide-react";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 import { useTransactions, useTransactionStats } from "./useTransactions";
 import { PageHeader }    from "@/components/shared/PageHeader";
@@ -145,8 +147,55 @@ function PaymentBadge({ method }) {
   );
 }
 
+// ── Date label helper ─────────────────────────────────────────────────────────
+function fmtDate(iso) {
+  if (!iso) return null;
+  // Parse as local date to avoid UTC-offset day shifts
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-GB", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
+}
+
 // ── Filter Bar ────────────────────────────────────────────────────────────────
-function FilterBar({ search, paymentMethod, dateFrom, dateTo, hasFilters, onSearchChange, onPaymentChange, onDateFromChange, onDateToChange, onClear }) {
+function FilterBar({ search, paymentMethod, dateFrom, dateTo, hasFilters, onSearchChange, onPaymentChange, onDateRangeChange, onClear }) {
+  const [calOpen, setCalOpen] = useState(false);
+
+  // Convert ISO strings → Date objects for react-day-picker
+  function toLocalDate(iso) {
+    if (!iso) return undefined;
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  const range = { from: toLocalDate(dateFrom), to: toLocalDate(dateTo) };
+
+  // Convert a Date → "YYYY-MM-DD" in local timezone
+  function toIso(date) {
+    if (!date) return "";
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
+  function handleSelect(sel) {
+    const from = toIso(sel?.from);
+    const to   = toIso(sel?.to);
+    onDateRangeChange(from, to);
+    // Close when a full range is chosen; keep open for single-click
+    if (sel?.from && sel?.to) setCalOpen(false);
+  }
+
+  // Build the trigger label
+  const fromLabel = fmtDate(dateFrom);
+  const toLabel   = fmtDate(dateTo);
+  const dateLabel =
+    fromLabel && toLabel   ? `${fromLabel} – ${toLabel}` :
+    fromLabel              ? `From ${fromLabel}` :
+    toLabel                ? `To ${toLabel}` :
+    "Pick date range";
+  const hasDate = !!(dateFrom || dateTo);
+
   return (
     <div className="flex flex-col gap-2.5 pb-4 border-b border-border/50">
       <div className="flex flex-wrap items-center gap-2">
@@ -179,25 +228,93 @@ function FilterBar({ search, paymentMethod, dateFrom, dateTo, hasFilters, onSear
           </SelectContent>
         </Select>
 
-        {/* Date range */}
-        <div className="flex items-center gap-1.5">
-          <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <Input
-            type="date"
-            value={dateFrom}
-            onChange={onDateFromChange}
-            className="h-8 text-xs w-[128px] bg-muted/30 border-border/60"
-          />
-          <span className="text-[11px] text-muted-foreground font-medium">→</span>
-          <Input
-            type="date"
-            value={dateTo}
-            onChange={onDateToChange}
-            className="h-8 text-xs w-[128px] bg-muted/30 border-border/60"
-          />
-        </div>
+        {/* Date range — calendar popover */}
+        <Popover open={calOpen} onOpenChange={setCalOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium",
+                "transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-primary",
+                hasDate
+                  ? "border-primary/40 bg-primary/8 text-primary hover:bg-primary/15"
+                  : "border-border/60 bg-muted/30 text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              )}
+            >
+              <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
+              <span className={cn("max-w-[220px] truncate", !hasDate && "text-muted-foreground")}>
+                {dateLabel}
+              </span>
+              {hasDate && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); onDateRangeChange("", ""); }}
+                  onKeyDown={(e) => e.key === "Enter" && (e.stopPropagation(), onDateRangeChange("", ""))}
+                  className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-primary/60 hover:text-primary hover:bg-primary/15 transition-colors"
+                  title="Clear dates"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </span>
+              )}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            side="bottom"
+            sideOffset={6}
+            className="w-auto p-0 bg-card border-border shadow-xl shadow-black/40"
+          >
+            {/* Quick preset row */}
+            <div className="flex flex-wrap gap-1.5 px-3 pt-3 pb-2 border-b border-border/50">
+              {[
+                { label: "Today",      fn: () => { const t = toIso(new Date()); onDateRangeChange(t, t); setCalOpen(false); } },
+                { label: "Yesterday",  fn: () => { const y = new Date(); y.setDate(y.getDate() - 1); const s = toIso(y); onDateRangeChange(s, s); setCalOpen(false); } },
+                { label: "This week",  fn: () => { const now = new Date(); const mon = new Date(now); mon.setDate(now.getDate() - ((now.getDay() + 6) % 7)); onDateRangeChange(toIso(mon), toIso(now)); setCalOpen(false); } },
+                { label: "This month", fn: () => { const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), 1); onDateRangeChange(toIso(start), toIso(now)); setCalOpen(false); } },
+                { label: "Last 30 d",  fn: () => { const now = new Date(); const ago = new Date(); ago.setDate(now.getDate() - 29); onDateRangeChange(toIso(ago), toIso(now)); setCalOpen(false); } },
+              ].map(({ label, fn }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={fn}
+                  className="rounded-md bg-muted/50 border border-border/50 px-2.5 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 transition-colors"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <Calendar
+              mode="range"
+              selected={range}
+              onSelect={handleSelect}
+              numberOfMonths={2}
+              disabled={{ after: new Date() }}
+              initialFocus
+            />
+            {/* Footer */}
+            <div className="flex items-center justify-between px-3 py-2 border-t border-border/50 bg-muted/10">
+              <span className="text-[10px] text-muted-foreground">
+                {fromLabel && toLabel
+                  ? `${fromLabel} → ${toLabel}`
+                  : fromLabel
+                  ? `From ${fromLabel} — pick end date`
+                  : "Click a start date"}
+              </span>
+              {hasDate && (
+                <button
+                  type="button"
+                  onClick={() => { onDateRangeChange("", ""); }}
+                  className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
 
-        {/* Clear */}
+        {/* Clear all filters */}
         {hasFilters && (
           <Button
             variant="ghost"
@@ -230,6 +347,10 @@ export function TransactionsPanel() {
     clearTimeout(debounceTimer.current);
     debounceTimer.current = setTimeout(() => setUrlSearch(val), 400);
   }, [setUrlSearch]);
+
+  const handleDateRangeChange = useCallback((from, to) => {
+    setDateFrom(from); setDateTo(to); setPage(1);
+  }, [setPage]);
 
   const clearFilters = useCallback(() => {
     clearTimeout(debounceTimer.current);
@@ -418,8 +539,7 @@ export function TransactionsPanel() {
                 hasFilters={hasFilters}
                 onSearchChange={handleSearchChange}
                 onPaymentChange={(v) => { setPaymentMethod(v); setPage(1); }}
-                onDateFromChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                onDateToChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                onDateRangeChange={handleDateRangeChange}
                 onClear={clearFilters}
               />
 

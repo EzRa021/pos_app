@@ -6,8 +6,10 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   RotateCcw, Search, X, TrendingDown,
-  ArrowUpRight, Calendar, CheckCircle2, Ban,
+  ArrowUpRight, Calendar as CalendarIcon, CheckCircle2, Ban,
 } from "lucide-react";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 import { useReturns, useReturnStats } from "@/features/returns/useReturns";
 import { PageHeader }  from "@/components/shared/PageHeader";
@@ -90,6 +92,137 @@ function RefundMethodChip({ method }) {
   );
 }
 
+// ── Date label helper ─────────────────────────────────────────────────────────
+function fmtDate(iso) {
+  if (!iso) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-GB", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
+}
+
+function toIso(date) {
+  if (!date) return "";
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function toLocalDate(iso) {
+  if (!iso) return undefined;
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+// ── Date Range Picker ─────────────────────────────────────────────────────
+function DateRangePicker({ dateFrom, dateTo, onDateRangeChange }) {
+  const [calOpen, setCalOpen] = useState(false);
+  const range = { from: toLocalDate(dateFrom), to: toLocalDate(dateTo) };
+
+  function handleSelect(sel) {
+    onDateRangeChange(toIso(sel?.from), toIso(sel?.to));
+    if (sel?.from && sel?.to) setCalOpen(false);
+  }
+
+  const fromLabel = fmtDate(dateFrom);
+  const toLabel   = fmtDate(dateTo);
+  const dateLabel =
+    fromLabel && toLabel ? `${fromLabel} – ${toLabel}` :
+    fromLabel            ? `From ${fromLabel}` :
+    toLabel              ? `To ${toLabel}` :
+    "Pick date range";
+  const hasDate = !!(dateFrom || dateTo);
+
+  return (
+    <Popover open={calOpen} onOpenChange={setCalOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium",
+            "transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-primary",
+            hasDate
+              ? "border-primary/40 bg-primary/8 text-primary hover:bg-primary/15"
+              : "border-border/60 bg-muted/30 text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+          )}
+        >
+          <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
+          <span className={cn("max-w-[220px] truncate", !hasDate && "text-muted-foreground")}>
+            {dateLabel}
+          </span>
+          {hasDate && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => { e.stopPropagation(); onDateRangeChange("", ""); }}
+              onKeyDown={(e) => e.key === "Enter" && (e.stopPropagation(), onDateRangeChange("", ""))}
+              className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-primary/60 hover:text-primary hover:bg-primary/15 transition-colors"
+              title="Clear dates"
+            >
+              <X className="h-2.5 w-2.5" />
+            </span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={6}
+        className="w-auto p-0 bg-card border-border shadow-xl shadow-black/40"
+      >
+        {/* Quick presets */}
+        <div className="flex flex-wrap gap-1.5 px-3 pt-3 pb-2 border-b border-border/50">
+          {[
+            { label: "Today",      fn: () => { const t = toIso(new Date()); onDateRangeChange(t, t); setCalOpen(false); } },
+            { label: "Yesterday",  fn: () => { const y = new Date(); y.setDate(y.getDate() - 1); const s = toIso(y); onDateRangeChange(s, s); setCalOpen(false); } },
+            { label: "This week",  fn: () => { const now = new Date(); const mon = new Date(now); mon.setDate(now.getDate() - ((now.getDay() + 6) % 7)); onDateRangeChange(toIso(mon), toIso(now)); setCalOpen(false); } },
+            { label: "This month", fn: () => { const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), 1); onDateRangeChange(toIso(start), toIso(now)); setCalOpen(false); } },
+            { label: "Last 30 d",  fn: () => { const now = new Date(); const ago = new Date(); ago.setDate(now.getDate() - 29); onDateRangeChange(toIso(ago), toIso(now)); setCalOpen(false); } },
+          ].map(({ label, fn }) => (
+            <button
+              key={label}
+              type="button"
+              onClick={fn}
+              className="rounded-md bg-muted/50 border border-border/50 px-2.5 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-primary/10 hover:text-primary hover:border-primary/30 transition-colors"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <Calendar
+          mode="range"
+          selected={range}
+          onSelect={handleSelect}
+          numberOfMonths={2}
+          disabled={{ after: new Date() }}
+          initialFocus
+        />
+        {/* Footer */}
+        <div className="flex items-center justify-between px-3 py-2 border-t border-border/50 bg-muted/10">
+          <span className="text-[10px] text-muted-foreground">
+            {fromLabel && toLabel
+              ? `${fromLabel} → ${toLabel}`
+              : fromLabel
+              ? `From ${fromLabel} — pick end date`
+              : "Click a start date"}
+          </span>
+          {hasDate && (
+            <button
+              type="button"
+              onClick={() => onDateRangeChange("", "")}
+              className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ── Tab Group ────────────────────────────────────────────────────────────────
 function TabGroup({ tabs, active, onChange }) {
   return (
     <div className="flex items-center gap-0.5 rounded-lg bg-muted/50 p-1 border border-border/60">
@@ -122,7 +255,6 @@ export function ReturnsPanel() {
   const [status,           setStatus]           = useState("");
   const [dateFrom,         setDateFrom]         = useState("");
   const [dateTo,           setDateTo]           = useState("");
-  const [showDateFilter,   setShowDateFilter]   = useState(false);
 
   // Debounce search
   useEffect(() => {
@@ -153,6 +285,10 @@ export function ReturnsPanel() {
   } = useReturnStats();
 
   const hasActiveFilters = search || returnType || status || dateFrom || dateTo;
+
+  const handleDateRangeChange = useCallback((from, to) => {
+    setDateFrom(from); setDateTo(to); setPage(1);
+  }, [setPage]);
 
   const handleClearFilters = useCallback(() => {
     setSearch("");
@@ -316,21 +452,12 @@ export function ReturnsPanel() {
               <h2 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
                 Return History
               </h2>
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => setShowDateFilter((v) => !v)}
-                className={cn("h-7 gap-1.5 text-[11px]", showDateFilter && "text-primary")}
-              >
-                <Calendar className="h-3 w-3" />
-                {showDateFilter ? "Hide Date Filter" : "Date Filter"}
-              </Button>
             </div>
 
             <div className="p-5 space-y-3">
-              {/* Search row */}
-              <div className="flex items-center gap-3">
-                <div className="relative flex-1">
+              {/* Search + date row */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative flex-1 min-w-[220px]">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
                   <Input
                     value={search}
@@ -347,6 +474,14 @@ export function ReturnsPanel() {
                     </button>
                   )}
                 </div>
+
+                {/* Date range — calendar popover */}
+                <DateRangePicker
+                  dateFrom={dateFrom}
+                  dateTo={dateTo}
+                  onDateRangeChange={handleDateRangeChange}
+                />
+
                 {hasActiveFilters && (
                   <Button
                     variant="ghost"
@@ -359,40 +494,6 @@ export function ReturnsPanel() {
                   </Button>
                 )}
               </div>
-
-              {/* Date filter (collapsible) */}
-              {showDateFilter && (
-                <div className="flex items-center gap-3 p-3 rounded-lg border border-border/60 bg-muted/20">
-                  <span className="text-[11px] text-muted-foreground shrink-0">
-                    Date range:
-                  </span>
-                  <div className="flex items-center gap-2 flex-1">
-                    <Input
-                      type="date"
-                      value={dateFrom}
-                      onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                      className="h-7 text-xs flex-1"
-                    />
-                    <span className="text-muted-foreground text-xs shrink-0">→</span>
-                    <Input
-                      type="date"
-                      value={dateTo}
-                      onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                      className="h-7 text-xs flex-1"
-                    />
-                    {(dateFrom || dateTo) && (
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        onClick={() => { setDateFrom(""); setDateTo(""); setPage(1); }}
-                        className="h-7 text-[10px] shrink-0"
-                      >
-                        Clear dates
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
 
               {/* Type + Status tabs */}
               <div className="flex items-center gap-3 flex-wrap">

@@ -14,7 +14,6 @@ import { getItems, getItemByBarcode } from "@/commands/items";
 import { getCategories } from "@/commands/categories";
 import { getCustomers }  from "@/commands/customers";
 import { createTransaction } from "@/commands/transactions";
-import { earnPoints }        from "@/commands/loyalty";
 import { checkReorderAlerts } from "@/commands/reorder_alerts";
 import { invalidateAfterSale } from "@/lib/invalidations";
 import { queryClient } from "@/lib/queryClient";
@@ -104,7 +103,7 @@ export function usePos({
       discount_amount: discountAmt > 0.001 ? discountAmt : null,
       // Per-leg breakdown for split so backend creates one Payment row per method
       split_payments: paymentMethod === "split"
-        ? mainPayments.map((p) => ({ method: p.type, amount: p.amount }))
+        ? mainPayments.map((p) => ({ method: p.type, amount: p.amount, ...(p.reference ? { reference: p.reference } : {}) }))
         : undefined,
       wallet_amount:           walletAmount,
       loyalty_points_redeemed: loyaltyPointsRedeemed ?? null,
@@ -118,20 +117,6 @@ export function usePos({
         discount:   item.discount ?? 0,
       })),
     });
-
-    // ── Earn loyalty points ───────────────────────────────────────────────────
-    // Fire-and-forget: a loyalty failure must never block the receipt flow.
-    // Credit sales are excluded — the customer hasn't actually paid yet.
-    // The backend earn_points command checks whether the programme is active
-    // and silently ignores stores with no loyalty settings configured.
-    if (customer?.id && paymentMethod !== "credit") {
-      earnPoints({
-        customer_id:    customer.id,
-        store_id:       storeId,
-        transaction_id: result?.transaction?.id ?? null,
-        sale_amount:    parseFloat(result?.transaction?.total_amount ?? 0),
-      }).catch(() => {}); // silent — loyalty errors must never surface to cashier
-    }
 
     // ── Sale complete toast ──────────────────────────────────────────────────────────────
     const txTotal = parseFloat(result?.transaction?.total_amount ?? 0);

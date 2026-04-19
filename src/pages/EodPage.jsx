@@ -1,10 +1,11 @@
-// pages/EodPage.jsx — End-of-Day Reports (full breakdown edition)
+// pages/EodPage.jsx — End-of-Day Reports
 import { useState, useRef, useMemo } from "react";
 import {
   FileText, Download, Lock, RefreshCw, Loader2,
   DollarSign, ShoppingCart, RotateCcw, TrendingUp,
   Package, Users, Clock, Award, Tag,
   BarChart3, Star, ChevronDown, ChevronUp,
+  AlertTriangle, Percent, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { toast }           from "sonner";
 import { save }            from "@tauri-apps/plugin-dialog";
@@ -16,6 +17,10 @@ import { EmptyState }      from "@/components/shared/EmptyState";
 import { StatusBadge }     from "@/components/shared/StatusBadge";
 import { Button }          from "@/components/ui/button";
 import { Input }           from "@/components/ui/input";
+import {
+  Dialog, DialogContent, DialogHeader,
+  DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { cn }              from "@/lib/utils";
 import { useEodReport, useEodBreakdown, useEodHistory } from "@/features/shifts/useEod";
 import { formatCurrency, formatDate }                  from "@/lib/format";
@@ -104,6 +109,57 @@ function SubTabs({ tabs, active, onChange }) {
   );
 }
 
+// ── Lock Confirmation Dialog ───────────────────────────────────────────────────
+
+function LockConfirmDialog({ open, onOpenChange, reportDate, onConfirm, isLoading }) {
+  return (
+    <Dialog open={open} onOpenChange={(v) => !isLoading && onOpenChange(v)}>
+      <DialogContent className="max-w-md border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/50">
+        <div className="h-[3px] w-full bg-gradient-to-r from-destructive/80 via-destructive to-destructive/80" />
+        <div className="px-6 pt-5 pb-6 space-y-4">
+          <DialogHeader>
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-destructive/20 bg-destructive/8">
+                <Lock className="h-5 w-5 text-destructive" />
+              </div>
+              <div className="pt-0.5">
+                <DialogTitle className="text-[14px] font-bold leading-tight">Lock EOD Report?</DialogTitle>
+                <DialogDescription className="text-[11px] mt-1 text-muted-foreground">
+                  {formatDate(reportDate + "T00:00:00")}
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="flex items-start gap-2.5 rounded-lg border border-warning/20 bg-warning/6 px-3.5 py-3">
+            <AlertTriangle className="h-3.5 w-3.5 text-warning mt-0.5 shrink-0" />
+            <p className="text-[11px] text-warning/90 leading-relaxed">
+              Locking this report is <span className="font-bold">permanent and irreversible</span>.
+              Once locked it cannot be regenerated or edited — only read.
+              Make sure all transactions, returns, and expenses for this day are finalised first.
+            </p>
+          </div>
+
+          <DialogFooter className="flex gap-2 pt-1">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isLoading} className="flex-1 text-xs">
+              Cancel
+            </Button>
+            <Button
+              onClick={onConfirm}
+              disabled={isLoading}
+              className="flex-1 text-xs bg-destructive hover:bg-destructive/90 text-white"
+            >
+              {isLoading
+                ? <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />Locking…</>
+                : <><Lock className="h-3.5 w-3.5 mr-1" />Lock Report</>}
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Summary tab ───────────────────────────────────────────────────────────────
 
 function SummaryTab({ report: r, breakdown, printRef }) {
@@ -116,7 +172,6 @@ function SummaryTab({ report: r, breakdown, printRef }) {
         count:  pm.count,
       }));
     }
-    // Fall back to flat fields on EodReport
     return [
       { method: "cash",     label: PAYMENT_METHOD_LABELS.cash     ?? "Cash",          total: r.cash_collected     ?? 0, count: null },
       { method: "card",     label: PAYMENT_METHOD_LABELS.card     ?? "Card",          total: r.card_collected     ?? 0, count: null },
@@ -125,9 +180,18 @@ function SummaryTab({ report: r, breakdown, printRef }) {
     ].filter((pm) => parseFloat(pm.total) > 0);
   }, [breakdown, r]);
 
-  const cashiers = breakdown?.cashiers ?? [];
-  const variance = parseFloat(r.cash_difference ?? 0);
-  const hasShift = r.opening_float != null;
+  const cashiers   = breakdown?.cashiers ?? [];
+  const hasShift   = r.opening_float != null;
+  const netSales   = parseFloat(r.net_sales ?? 0);
+
+  // Pre-compute expected cash for the reconciliation section
+  const openingFloat  = parseFloat(r.opening_float ?? 0);
+  const cashCollected = parseFloat(r.cash_collected ?? 0);
+  const cashIn        = parseFloat(r.cash_in ?? 0);
+  const cashOut       = parseFloat(r.cash_out ?? 0);
+  const closingCash   = parseFloat(r.closing_cash ?? 0);
+  const expectedCash  = openingFloat + cashCollected + cashIn - cashOut;
+  const variance      = parseFloat(r.cash_difference ?? 0);
 
   return (
     <div className="space-y-4">
@@ -168,20 +232,31 @@ function SummaryTab({ report: r, breakdown, printRef }) {
             <div className="p-5">
               {paymentBreakdown.length === 0 ? (
                 <p className="text-xs text-muted-foreground py-4 text-center">No payment data</p>
-              ) : paymentBreakdown.map((pm) => (
-                <div key={pm.method} className="flex items-center justify-between py-2 border-b border-border/30 last:border-0">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary/60" />
-                    <p className="text-xs font-semibold">{pm.label}</p>
-                    {pm.count != null && (
-                      <span className="text-[10px] text-muted-foreground tabular-nums">
-                        {pm.count} txn{pm.count !== 1 ? "s" : ""}
-                      </span>
-                    )}
+              ) : paymentBreakdown.map((pm) => {
+                const pmTotal = parseFloat(pm.total ?? 0);
+                const pct     = netSales > 0 ? ((pmTotal / netSales) * 100).toFixed(1) : null;
+                return (
+                  <div key={pm.method} className="flex items-center justify-between py-2 border-b border-border/30 last:border-0">
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-1.5 rounded-full bg-primary/60" />
+                      <p className="text-xs font-semibold">{pm.label}</p>
+                      {pm.count != null && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          {pm.count} txn{pm.count !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {pct && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums bg-muted/50 rounded px-1.5 py-0.5">
+                          {pct}%
+                        </span>
+                      )}
+                      <span className="text-xs font-mono font-bold tabular-nums">{formatCurrency(pmTotal)}</span>
+                    </div>
                   </div>
-                  <span className="text-xs font-mono font-bold tabular-nums">{formatCurrency(parseFloat(pm.total ?? 0))}</span>
-                </div>
-              ))}
+                );
+              })}
               {parseFloat(r.credit_collected ?? 0) > 0 && (
                 <div className="mt-3 pt-3 border-t border-border/40 flex items-center justify-between">
                   <span className="text-[10px] text-muted-foreground">Credit Collected (debt recovery)</span>
@@ -226,25 +301,47 @@ function SummaryTab({ report: r, breakdown, printRef }) {
         </div>
       </div>
 
-      {/* Shift Cash Reconciliation */}
+      {/* Shift Cash Reconciliation — full formula */}
       {hasShift && (
         <div className="rounded-xl border border-border bg-card overflow-hidden">
           <div className="px-5 py-3 border-b border-border bg-muted/20 flex items-center gap-2">
             <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Shift Cash Reconciliation</span>
           </div>
-          <div className="p-5 grid grid-cols-3 gap-4">
-            {[
-              { label: "Opening Float", value: formatCurrency(parseFloat(r.opening_float ?? 0)), accent: "" },
-              { label: "Closing Cash",  value: formatCurrency(parseFloat(r.closing_cash  ?? 0)), accent: "" },
-              { label: "Variance",      value: `${variance >= 0 ? "+" : ""}${formatCurrency(variance)}`,
-                accent: variance > 0 ? "text-success" : variance < 0 ? "text-destructive" : "text-foreground" },
-            ].map((item) => (
-              <div key={item.label} className="text-center">
-                <p className="text-[10px] text-muted-foreground mb-1">{item.label}</p>
-                <p className={cn("text-sm font-bold tabular-nums font-mono", item.accent || "text-foreground")}>{item.value}</p>
+          <div className="p-5">
+            <div className="max-w-sm space-y-0">
+              <PLRow label="Opening Float"              value={formatCurrency(openingFloat)} bold />
+              <PLRow label="+ Cash Sales"               value={`+${formatCurrency(cashCollected)}`} indent accent="success" />
+              {cashIn > 0 && (
+                <PLRow label="+ Cash In (top-ups)"      value={`+${formatCurrency(cashIn)}`} indent accent="success" />
+              )}
+              {cashOut > 0 && (
+                <PLRow label="− Cash Out (withdrawals)" value={`-${formatCurrency(cashOut)}`} indent accent="destructive" />
+              )}
+              <PLRow label="Expected in Drawer"         value={formatCurrency(expectedCash)} bold />
+              <PLRow label="Actual Cash (counted)"      value={formatCurrency(closingCash)} bold />
+              <PLRow
+                label="Variance"
+                value={`${variance >= 0 ? "+" : ""}${formatCurrency(variance)}`}
+                bold
+                accent={variance > 0 ? "success" : variance < 0 ? "destructive" : undefined}
+              />
+            </div>
+            {variance !== 0 && (
+              <div className={cn(
+                "mt-4 flex items-start gap-2.5 rounded-lg border px-3.5 py-3",
+                variance < 0
+                  ? "border-destructive/20 bg-destructive/6"
+                  : "border-warning/20 bg-warning/6",
+              )}>
+                <AlertTriangle className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", variance < 0 ? "text-destructive" : "text-warning")} />
+                <p className={cn("text-[11px] leading-relaxed", variance < 0 ? "text-destructive/90" : "text-warning/90")}>
+                  {variance < 0
+                    ? `Cash shortage of ${formatCurrency(Math.abs(variance))}. Investigate before closing.`
+                    : `Cash surplus of ${formatCurrency(variance)}. Verify shift notes and drawer count.`}
+                </p>
               </div>
-            ))}
+            )}
           </div>
         </div>
       )}
@@ -274,10 +371,74 @@ function SummaryTab({ report: r, breakdown, printRef }) {
   );
 }
 
+// ── Hierarchy builder ────────────────────────────────────────────────────────
+
+/**
+ * Groups top_items into a three-level tree: Department → Category → Item.
+ * Uses the categories array to resolve department when the item itself
+ * doesn't carry department_name. Falls back to "Uncategorized" at each level.
+ */
+function buildSalesHierarchy(items, categories) {
+  // category_name → department_name reverse-lookup
+  const catDeptMap = new Map();
+  for (const cat of (categories ?? [])) {
+    if (cat.category_name) {
+      catDeptMap.set(cat.category_name, cat.department_name ?? null);
+    }
+  }
+
+  const deptMap = new Map();
+
+  for (const item of items) {
+    const deptName =
+      item.department_name ??
+      catDeptMap.get(item.category_name) ??
+      "Uncategorized";
+    const catName = item.category_name ?? "Uncategorized";
+
+    if (!deptMap.has(deptName)) {
+      deptMap.set(deptName, { name: deptName, categories: new Map(), qty: 0, revenue: 0 });
+    }
+    const dept = deptMap.get(deptName);
+
+    if (!dept.categories.has(catName)) {
+      dept.categories.set(catName, { name: catName, items: [], qty: 0, revenue: 0 });
+    }
+    const cat = dept.categories.get(catName);
+
+    const qty     = parseFloat(item.qty_sold    ?? 0);
+    const revenue = parseFloat(item.gross_sales ?? 0);
+
+    cat.items.push({ ...item, qty, revenue });
+    cat.qty     += qty;
+    cat.revenue += revenue;
+    dept.qty    += qty;
+    dept.revenue += revenue;
+  }
+
+  return Array.from(deptMap.values())
+    .map((dept) => ({
+      ...dept,
+      categories: Array.from(dept.categories.values()).sort((a, b) => b.revenue - a.revenue),
+    }))
+    .sort((a, b) => b.revenue - a.revenue);
+}
+
 // ── Products tab ──────────────────────────────────────────────────────────────
 
 function ProductsTab({ breakdown }) {
-  const [showAllItems, setShowAllItems] = useState(false);
+  const [openDepts, setOpenDepts] = useState(new Set());
+  const [openCats,  setOpenCats]  = useState(new Set());
+
+  const items      = breakdown?.top_items  ?? [];
+  const categories = breakdown?.categories ?? [];
+
+  const hierarchy = useMemo(
+    () => buildSalesHierarchy(items, categories),
+    [items, categories],
+  );
+
+  const topItem = items[0];
 
   if (!breakdown) {
     return (
@@ -287,76 +448,41 @@ function ProductsTab({ breakdown }) {
     );
   }
 
-  const items       = breakdown.top_items   ?? [];
-  const categories  = breakdown.categories  ?? [];
-  const departments = breakdown.departments ?? [];
-  const topItem     = items[0];
+  const toggleDept = (name) => {
+    setOpenDepts((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+        // Collapse all child categories when the department collapses
+        setOpenCats((cp) => {
+          const cn = new Set(cp);
+          for (const k of cn) {
+            if (k.startsWith(name + "::")) cn.delete(k);
+          }
+          return cn;
+        });
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  };
 
-  const displayedItems = showAllItems ? items : items.slice(0, 10);
+  const toggleCat = (key) => {
+    setOpenCats((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
-  const itemColumns = [
-    {
-      key: "rank", header: "#",
-      render: (_, idx) => (
-        <span className={cn(
-          "flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold",
-          idx === 0 ? "bg-warning/20 text-warning border border-warning/30" :
-          idx === 1 ? "bg-muted/50 text-muted-foreground border border-border/50" :
-          idx === 2 ? "bg-amber-900/20 text-amber-600 border border-amber-700/30" :
-                      "text-muted-foreground",
-        )}>{idx + 1}</span>
-      ),
-    },
-    {
-      key: "item_name", header: "Item", sortable: true,
-      render: (row) => (
-        <div>
-          <p className="text-xs font-semibold">{row.item_name}</p>
-          <p className="text-[10px] text-muted-foreground">{row.sku} · {row.category_name}</p>
-        </div>
-      ),
-    },
-    {
-      key: "qty_sold", header: "Qty Sold", align: "right", sortable: true,
-      render: (row) => <span className="text-xs font-mono tabular-nums">{parseFloat(row.qty_sold).toLocaleString(undefined, { maximumFractionDigits: 3 })}</span>,
-    },
-    {
-      key: "avg_price", header: "Avg Price", align: "right",
-      render: (row) => <span className="text-xs font-mono tabular-nums text-muted-foreground">{formatCurrency(parseFloat(row.avg_price ?? 0))}</span>,
-    },
-    {
-      key: "gross_sales", header: "Revenue", align: "right", sortable: true,
-      render: (row) => <span className="text-xs font-mono font-bold tabular-nums">{formatCurrency(parseFloat(row.gross_sales ?? 0))}</span>,
-    },
-  ];
-
-  const catColumns = [
-    {
-      key: "category_name", header: "Category", sortable: true,
-      render: (row) => (
-        <div>
-          <p className="text-xs font-semibold">{row.category_name}</p>
-          {row.department_name && <p className="text-[10px] text-muted-foreground">{row.department_name}</p>}
-        </div>
-      ),
-    },
-    { key: "transaction_count", header: "Txns",    align: "right", render: (row) => <span className="text-xs tabular-nums">{row.transaction_count}</span> },
-    { key: "qty_sold",          header: "Qty",     align: "right", render: (row) => <span className="text-xs font-mono tabular-nums">{parseFloat(row.qty_sold).toLocaleString(undefined, { maximumFractionDigits: 3 })}</span> },
-    { key: "gross_sales",       header: "Revenue", align: "right", sortable: true, render: (row) => <span className="text-xs font-mono font-bold tabular-nums">{formatCurrency(parseFloat(row.gross_sales ?? 0))}</span> },
-    { key: "net_sales",         header: "Net",     align: "right", render: (row) => <span className="text-xs font-mono tabular-nums text-muted-foreground">{formatCurrency(parseFloat(row.net_sales ?? 0))}</span> },
-  ];
-
-  const deptColumns = [
-    { key: "department_name",   header: "Department", sortable: true, render: (row) => <p className="text-xs font-semibold">{row.department_name}</p> },
-    { key: "transaction_count", header: "Txns",       align: "right", render: (row) => <span className="text-xs tabular-nums">{row.transaction_count}</span> },
-    { key: "qty_sold",          header: "Qty",        align: "right", render: (row) => <span className="text-xs font-mono tabular-nums">{parseFloat(row.qty_sold).toLocaleString(undefined, { maximumFractionDigits: 3 })}</span> },
-    { key: "gross_sales",       header: "Revenue",    align: "right", sortable: true, render: (row) => <span className="text-xs font-mono font-bold tabular-nums">{formatCurrency(parseFloat(row.gross_sales ?? 0))}</span> },
-    { key: "net_sales",         header: "Net",        align: "right", render: (row) => <span className="text-xs font-mono tabular-nums text-muted-foreground">{formatCurrency(parseFloat(row.net_sales ?? 0))}</span> },
-  ];
+  const fmtQty = (q) =>
+    parseFloat(q ?? 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
 
   return (
     <div className="space-y-4">
-      {/* Top seller spotlight */}
+      {/* ── Top seller spotlight ── */}
       {topItem && (
         <div className="rounded-xl border border-warning/30 bg-warning/[0.05] overflow-hidden">
           <div className="px-5 py-3 border-b border-warning/20 flex items-center gap-2">
@@ -376,9 +502,7 @@ function ProductsTab({ breakdown }) {
             <div className="flex items-center gap-6">
               <div className="text-right">
                 <p className="text-[10px] text-muted-foreground">Units Sold</p>
-                <p className="text-lg font-bold tabular-nums text-warning">
-                  {parseFloat(topItem.qty_sold).toLocaleString(undefined, { maximumFractionDigits: 3 })}
-                </p>
+                <p className="text-lg font-bold tabular-nums text-warning">{fmtQty(topItem.qty_sold)}</p>
               </div>
               <div className="text-right">
                 <p className="text-[10px] text-muted-foreground">Revenue</p>
@@ -389,42 +513,169 @@ function ProductsTab({ breakdown }) {
         </div>
       )}
 
-      {/* Items sold table */}
-      <Section title={`Items Sold${items.length ? ` (${items.length})` : ""}`} icon={Package}
-        action={
-          items.length > 10 && (
-            <button onClick={() => setShowAllItems((v) => !v)}
-              className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80">
-              {showAllItems
-                ? <><ChevronUp className="h-3 w-3" />Show less</>
-                : <><ChevronDown className="h-3 w-3" />Show all {items.length}</>}
-            </button>
-          )
-        }>
-        <DataTable
-          columns={itemColumns}
-          data={displayedItems}
-          emptyState={<EmptyState icon={Package} title="No items sold" description="No completed transactions for this date." compact />}
-        />
-      </Section>
+      {/* ── Hierarchy table ── */}
+      <Section
+        title={`Sales by Department › Category › Item${items.length ? ` (${items.length} items)` : ""}`}
+        icon={BarChart3}
+      >
+        {hierarchy.length === 0 ? (
+          <EmptyState
+            icon={Package}
+            title="No items sold"
+            description="No completed transactions for this date."
+            compact
+          />
+        ) : (
+          <div className="rounded-lg border border-border overflow-hidden">
 
-      {/* Category + Department */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Section title="By Category" icon={Tag}>
-          <DataTable
-            columns={catColumns}
-            data={categories}
-            emptyState={<EmptyState icon={Tag} title="No category data" compact />}
-          />
-        </Section>
-        <Section title="By Department" icon={BarChart3}>
-          <DataTable
-            columns={deptColumns}
-            data={departments}
-            emptyState={<EmptyState icon={BarChart3} title="No department data" compact />}
-          />
-        </Section>
-      </div>
+            {/* Column header bar */}
+            <div className="grid items-center gap-0 bg-muted/40 border-b border-border px-3 py-2"
+              style={{ gridTemplateColumns: "1fr 80px 48px 112px" }}>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Name</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground text-right">Qty Sold</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground text-right">Unit</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground text-right">Revenue</span>
+            </div>
+
+            {hierarchy.map((dept, di) => {
+              const isDeptOpen = openDepts.has(dept.name);
+              return (
+                <div key={dept.name} className={cn(di > 0 && "border-t border-border")}>
+
+                  {/* ── Department row ── */}
+                  <button
+                    onClick={() => toggleDept(dept.name)}
+                    className="w-full grid items-center gap-0 px-3 py-2.5 bg-muted/60 hover:bg-muted/80 transition-colors text-left"
+                    style={{ gridTemplateColumns: "1fr 80px 48px 112px" }}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <ChevronRight className={cn(
+                        "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-150",
+                        isDeptOpen && "rotate-90",
+                      )} />
+                      <BarChart3 className="h-3 w-3 shrink-0 text-primary/70" />
+                      <span className="text-xs font-bold text-foreground truncate">{dept.name}</span>
+                      <span className="text-[10px] text-muted-foreground shrink-0">
+                        {dept.categories.length} {dept.categories.length !== 1 ? "categories" : "category"}
+                      </span>
+                    </div>
+                    <span className="text-xs font-mono font-bold tabular-nums text-foreground text-right">
+                      {fmtQty(dept.qty)}
+                    </span>
+                    <span />{/* unit spacer */}
+                    <span className="text-xs font-mono font-bold tabular-nums text-primary text-right">
+                      {formatCurrency(dept.revenue)}
+                    </span>
+                  </button>
+
+                  {/* ── Categories (visible when dept is open) ── */}
+                  {isDeptOpen && dept.categories.map((cat) => {
+                    const catKey    = `${dept.name}::${cat.name}`;
+                    const isCatOpen = openCats.has(catKey);
+                    return (
+                      <div key={catKey} className="border-t border-border/50">
+
+                        {/* Category row */}
+                        <button
+                          onClick={() => toggleCat(catKey)}
+                          className="w-full grid items-center gap-0 pl-7 pr-3 py-2 bg-card/60 hover:bg-muted/30 transition-colors text-left"
+                          style={{ gridTemplateColumns: "1fr 80px 48px 112px" }}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <ChevronRight className={cn(
+                              "h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-150",
+                              isCatOpen && "rotate-90",
+                            )} />
+                            <Tag className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <span className="text-[11px] font-semibold text-foreground/90 truncate">{cat.name}</span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              {cat.items.length} {cat.items.length !== 1 ? "items" : "item"}
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-mono font-semibold tabular-nums text-muted-foreground text-right">
+                            {fmtQty(cat.qty)}
+                          </span>
+                          <span />{/* unit spacer */}
+                          <span className="text-[11px] font-mono font-semibold tabular-nums text-foreground text-right">
+                            {formatCurrency(cat.revenue)}
+                          </span>
+                        </button>
+
+                        {/* Item rows (visible when cat is open) */}
+                        {isCatOpen && cat.items.map((item, ii) => (
+                          <div
+                            key={`${item.item_name}-${ii}`}
+                            className={cn(
+                              "grid items-center gap-0 pl-12 pr-3 py-1.5 border-t border-border/30",
+                              ii % 2 === 1 ? "bg-muted/10" : "bg-transparent",
+                            )}
+                            style={{ gridTemplateColumns: "1fr 80px 48px 112px" }}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="h-1 w-1 rounded-full bg-border/70 shrink-0" />
+                              <span className="text-[11px] text-foreground/80 truncate">{item.item_name}</span>
+                              {item.sku && (
+                                <span className="text-[10px] text-muted-foreground shrink-0 font-mono">{item.sku}</span>
+                              )}
+                            </div>
+                            <span className="text-[11px] font-mono tabular-nums text-muted-foreground text-right">
+                              {fmtQty(item.qty_sold)}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground text-right truncate">
+                              {item.measurement_type ?? ""}
+                            </span>
+                            <span className="text-[11px] font-mono tabular-nums text-foreground text-right">
+                              {formatCurrency(item.revenue)}
+                            </span>
+                          </div>
+                        ))}
+
+                        {/* Category subtotal row (shown when expanded) */}
+                        {isCatOpen && (
+                          <div
+                            className="grid items-center gap-0 pl-12 pr-3 py-1.5 border-t border-border/50 bg-muted/25"
+                            style={{ gridTemplateColumns: "1fr 80px 48px 112px" }}
+                          >
+                            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                              {cat.name} subtotal
+                            </span>
+                            <span className="text-[11px] font-mono font-bold tabular-nums text-foreground/70 text-right">
+                              {fmtQty(cat.qty)}
+                            </span>
+                            <span />
+                            <span className="text-[11px] font-mono font-bold tabular-nums text-foreground text-right">
+                              {formatCurrency(cat.revenue)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Department total footer (shown when expanded) */}
+                  {isDeptOpen && (
+                    <div
+                      className="grid items-center gap-0 px-3 py-2 border-t border-border/60 bg-primary/[0.05]"
+                      style={{ gridTemplateColumns: "1fr 80px 48px 112px" }}
+                    >
+                      <span className="text-[10px] font-bold text-primary/80 uppercase tracking-wider pl-5">
+                        {dept.name} total
+                      </span>
+                      <span className="text-xs font-mono font-bold tabular-nums text-foreground text-right">
+                        {fmtQty(dept.qty)}
+                      </span>
+                      <span />
+                      <span className="text-xs font-mono font-bold tabular-nums text-primary text-right">
+                        {formatCurrency(dept.revenue)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Section>
     </div>
   );
 }
@@ -452,7 +703,6 @@ function TimelineTab({ breakdown }) {
 
   return (
     <div className="space-y-4">
-      {/* Peak hour spotlight */}
       {peakHour && (
         <div className="rounded-xl border border-primary/30 bg-primary/[0.04] overflow-hidden">
           <div className="px-5 py-3 border-b border-primary/20 flex items-center gap-2">
@@ -483,7 +733,6 @@ function TimelineTab({ breakdown }) {
         </div>
       )}
 
-      {/* Hourly bar chart */}
       <Section title="Sales by Hour" icon={Clock}>
         {hourly.length === 0 ? (
           <p className="text-xs text-muted-foreground py-8 text-center">No hourly data for this date.</p>
@@ -498,32 +747,22 @@ function TimelineTab({ breakdown }) {
                   "flex items-center gap-3 rounded-lg px-3 py-2 transition-colors",
                   isPeak ? "bg-primary/[0.07] border border-primary/20" : "hover:bg-muted/30",
                 )}>
-                  <span className={cn(
-                    "text-[11px] font-mono w-16 shrink-0 tabular-nums",
-                    isPeak ? "text-primary font-bold" : "text-muted-foreground",
-                  )}>
+                  <span className={cn("text-[11px] font-mono w-16 shrink-0 tabular-nums", isPeak ? "text-primary font-bold" : "text-muted-foreground")}>
                     {fmtHour(h.hour)}
                   </span>
                   <div className="flex-1 h-1.5 rounded-full bg-muted/40 overflow-hidden">
                     <div className={cn("h-full rounded-full", isPeak ? "bg-primary" : "bg-primary/40")}
                       style={{ width: `${pct}%` }} />
                   </div>
-                  <span className={cn(
-                    "text-[11px] font-mono tabular-nums w-10 text-center shrink-0",
-                    isPeak ? "text-primary font-bold" : "text-muted-foreground",
-                  )}>
+                  <span className={cn("text-[11px] font-mono tabular-nums w-10 text-center shrink-0", isPeak ? "text-primary font-bold" : "text-muted-foreground")}>
                     {h.transaction_count}
                   </span>
-                  <span className={cn(
-                    "text-xs font-mono font-bold tabular-nums w-24 text-right shrink-0",
-                    isPeak ? "text-success" : "text-foreground",
-                  )}>
+                  <span className={cn("text-xs font-mono font-bold tabular-nums w-24 text-right shrink-0", isPeak ? "text-success" : "text-foreground")}>
                     {formatCurrency(sales)}
                   </span>
                 </div>
               );
             })}
-            {/* Totals row */}
             <div className="flex items-center gap-3 px-3 mt-1 pt-2 border-t border-border/40">
               <span className="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">Total</span>
               <div className="flex-1" />
@@ -549,42 +788,37 @@ const REPORT_TABS = [
   { id: "timeline", label: "Timeline", icon: Clock     },
 ];
 
-function EodReportView({ report, breakdown, breakdownLoading, onLock, locking, store }) {
-  const printRef   = useRef(null);
-  const [subTab,   setSubTab]   = useState("summary");
+function EodReportView({ report, breakdown, breakdownLoading, subTab, onSubTabChange, onLockClick, locking, store }) {
+  const printRef    = useRef(null);
   const [exporting, setExporting] = useState(false);
 
   const r       = report;
   const avgTx   = (r.transactions_count ?? 0) > 0
     ? parseFloat(r.gross_sales) / r.transactions_count
     : 0;
-  const topItem = breakdown?.top_items?.[0];
+
+  // Gross profit margin %
+  const grossSales   = parseFloat(r.gross_sales ?? 0);
+  const grossProfit  = parseFloat(r.gross_profit ?? 0);
+  const marginPct    = grossSales > 0 ? (grossProfit / grossSales) * 100 : 0;
+  const marginAccent = marginPct >= 25 ? "success" : marginPct >= 12 ? "warning" : "destructive";
+  const itemsSold    = parseFloat(r.items_sold ?? 0);
 
   const handleExportPdf = async () => {
     if (exporting) return;
     setExporting(true);
     try {
-      // Build PDF bytes
-      const pdfBytes = generateEodPdf(r, breakdown ?? null, store);
-
-      // Ask user where to save
+      const pdfBytes  = generateEodPdf(r, breakdown ?? null, store);
       const defaultName = `EOD_${r.report_date ?? "report"}_${(store?.store_name ?? "store").replace(/\s+/g, "_")}.pdf`;
-      const filePath = await save({
+      const filePath  = await save({
         defaultPath: defaultName,
         filters: [{ name: "PDF Document", extensions: ["pdf"] }],
       });
-
-      if (!filePath) { setExporting(false); return; } // user cancelled
-
-      // Write file
+      if (!filePath) { setExporting(false); return; }
       await writeFile(filePath, new Uint8Array(pdfBytes));
-
       toast.success("PDF saved", {
         description: filePath.split(/[\\/]/).pop(),
-        action: {
-          label: "Open",
-          onClick: () => openPath(filePath).catch(() => {}),
-        },
+        action: { label: "Open", onClick: () => openPath(filePath).catch(() => {}) },
         duration: 8000,
       });
     } catch (e) {
@@ -596,26 +830,28 @@ function EodReportView({ report, breakdown, breakdownLoading, onLock, locking, s
 
   return (
     <div className="space-y-4">
-      {/* KPI row */}
+      {/* KPI row: Gross Sales · Net Sales · Margin % · Transactions */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <KpiCard label="Gross Sales"  value={formatCurrency(parseFloat(r.gross_sales ?? 0))} icon={DollarSign} accent="primary" />
-        <KpiCard label="Net Sales"    value={formatCurrency(parseFloat(r.net_sales   ?? 0))} icon={TrendingUp}  accent="success" />
-        <KpiCard label="Transactions" value={(r.transactions_count ?? 0).toLocaleString()}   icon={ShoppingCart}
-          sub={`Avg ${formatCurrency(avgTx)}`} />
+        <KpiCard label="Gross Sales"  value={formatCurrency(grossSales)} icon={DollarSign} accent="primary" />
+        <KpiCard label="Net Sales"    value={formatCurrency(parseFloat(r.net_sales ?? 0))} icon={TrendingUp} accent="success" />
         <KpiCard
-          label="Top Seller"
-          value={topItem ? topItem.item_name : "—"}
-          sub={topItem
-            ? `${parseFloat(topItem.qty_sold).toLocaleString(undefined, { maximumFractionDigits: 3 })} units`
-            : breakdownLoading ? "Loading…" : "Generate to see"}
-          icon={Star}
-          accent="warning"
+          label="Gross Margin"
+          value={`${marginPct.toFixed(1)}%`}
+          sub={`Profit ${formatCurrency(grossProfit)}`}
+          icon={Percent}
+          accent={marginAccent}
+        />
+        <KpiCard
+          label="Transactions"
+          value={(r.transactions_count ?? 0).toLocaleString()}
+          sub={`${itemsSold.toLocaleString(undefined, { maximumFractionDigits: 0 })} items · Avg ${formatCurrency(avgTx)}`}
+          icon={ShoppingCart}
         />
       </div>
 
       {/* Sub-tab header */}
       <div className="flex items-center justify-between">
-        <SubTabs tabs={REPORT_TABS} active={subTab} onChange={setSubTab} />
+        <SubTabs tabs={REPORT_TABS} active={subTab} onChange={onSubTabChange} />
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={handleExportPdf} disabled={exporting}
             className="gap-1.5 h-8 text-xs border-primary/30 text-primary hover:bg-primary/10">
@@ -624,7 +860,7 @@ function EodReportView({ report, breakdown, breakdownLoading, onLock, locking, s
               : <><Download className="h-3.5 w-3.5" />Export PDF</>}
           </Button>
           {!r.is_locked && (
-            <Button size="sm" variant="outline" onClick={() => onLock(r.id)} disabled={locking}
+            <Button size="sm" variant="outline" onClick={onLockClick} disabled={locking}
               className="gap-1.5 h-8 text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
               {locking
                 ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Locking…</>
@@ -634,7 +870,6 @@ function EodReportView({ report, breakdown, breakdownLoading, onLock, locking, s
         </div>
       </div>
 
-      {/* Sub-tab content */}
       {subTab === "summary"  && <SummaryTab  report={r} breakdown={breakdown} printRef={printRef} />}
       {subTab === "products" && <ProductsTab breakdown={breakdownLoading ? null : breakdown} />}
       {subTab === "timeline" && <TimelineTab breakdown={breakdownLoading ? null : breakdown} />}
@@ -644,23 +879,27 @@ function EodReportView({ report, breakdown, breakdownLoading, onLock, locking, s
 
 // ── History table ─────────────────────────────────────────────────────────────
 
-function EodHistoryTable({ onSelect }) {
+function EodHistorySection({ onSelect }) {
   const today    = new Date().toISOString().slice(0, 10);
-  const monthAgo = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
-  const { history, isLoading } = useEodHistory({ dateFrom: monthAgo, dateTo: today });
+  const monthAgo = new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 10);
+
+  const [dateFrom, setDateFrom] = useState(monthAgo);
+  const [dateTo,   setDateTo]   = useState(today);
+
+  const { history, isLoading } = useEodHistory({ dateFrom, dateTo, limit: 90 });
 
   const columns = [
     { key: "report_date",       header: "Date",   sortable: true,
       render: (r) => <span className="text-xs font-semibold">{formatDate(r.report_date)}</span> },
-    { key: "gross_sales",       header: "Sales",  align: "right",
+    { key: "transactions_count", header: "Txns",  align: "right",
+      render: (r) => <span className="text-xs tabular-nums">{r.transactions_count ?? 0}</span> },
+    { key: "gross_sales",       header: "Gross",  align: "right",
       render: (r) => <span className="text-xs font-mono tabular-nums">{formatCurrency(parseFloat(r.gross_sales ?? 0))}</span> },
     { key: "net_profit",        header: "Profit", align: "right",
       render: (r) => {
         const p = parseFloat(r.net_profit ?? 0);
         return <span className={cn("text-xs font-mono font-bold tabular-nums", p >= 0 ? "text-success" : "text-destructive")}>{formatCurrency(p)}</span>;
       }},
-    { key: "transactions_count", header: "Txns",  align: "right",
-      render: (r) => <span className="text-xs tabular-nums">{r.transactions_count ?? 0}</span> },
     { key: "status", header: "Status",
       render: (r) => <StatusBadge status={r.is_locked ? "locked" : "open"} /> },
     { key: "actions", header: "", align: "right",
@@ -673,12 +912,40 @@ function EodHistoryTable({ onSelect }) {
   ];
 
   return (
-    <DataTable
-      columns={columns}
-      data={history}
-      isLoading={isLoading}
-      emptyState={<EmptyState icon={FileText} title="No EOD reports" description="Generate your first EOD report for today." compact />}
-    />
+    <div className="space-y-4">
+      {/* Date range filter */}
+      <div className="flex items-center gap-3 p-4 rounded-xl border border-border bg-card">
+        <span className="text-xs text-muted-foreground font-semibold shrink-0">Date range</span>
+        <Input
+          type="date"
+          value={dateFrom}
+          max={dateTo || today}
+          onChange={(e) => setDateFrom(e.target.value)}
+          className="h-8 text-xs w-36"
+        />
+        <span className="text-xs text-muted-foreground">to</span>
+        <Input
+          type="date"
+          value={dateTo}
+          min={dateFrom}
+          max={today}
+          onChange={(e) => setDateTo(e.target.value)}
+          className="h-8 text-xs w-36"
+        />
+        {history.length > 0 && (
+          <span className="text-[11px] text-muted-foreground ml-auto tabular-nums">
+            {history.length} report{history.length !== 1 ? "s" : ""}
+          </span>
+        )}
+      </div>
+
+      <DataTable
+        columns={columns}
+        data={history}
+        isLoading={isLoading}
+        emptyState={<EmptyState icon={FileText} title="No EOD reports" description="No reports found for this date range." compact />}
+      />
+    </div>
   );
 }
 
@@ -687,11 +954,17 @@ function EodHistoryTable({ onSelect }) {
 export default function EodPage() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
   const [tab,          setTab]          = useState("report");
+  // subTab is lifted here so useEodBreakdown can be made lazy
+  const [subTab,       setSubTab]       = useState("summary");
+  const [lockOpen,     setLockOpen]     = useState(false);
 
   const activeStore = useBranchStore((s) => s.activeStore);
 
   const { report, isLoading, error, generate, lock } = useEodReport(selectedDate);
-  const { breakdown, isLoading: breakdownLoading }   = useEodBreakdown(selectedDate, !!report);
+
+  // Only fetch breakdown when the user actually opens Products or Timeline tab
+  const needsBreakdown = !!report && subTab !== "summary";
+  const { breakdown, isLoading: breakdownLoading } = useEodBreakdown(selectedDate, needsBreakdown);
 
   const handleGenerate = async () => {
     try {
@@ -702,14 +975,17 @@ export default function EodPage() {
     }
   };
 
-  const handleLock = async (id) => {
+  const handleLockConfirm = async () => {
     try {
-      await lock.mutateAsync(id);
+      await lock.mutateAsync(report.id);
       toast.success("Report locked — no further changes allowed.");
+      setLockOpen(false);
     } catch (e) {
       toast.error(String(e));
     }
   };
+
+  const today = new Date().toISOString().slice(0, 10);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -721,7 +997,8 @@ export default function EodPage() {
             <Input
               type="date"
               value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
+              max={today}
+              onChange={(e) => { setSelectedDate(e.target.value); setSubTab("summary"); }}
               className="h-8 text-sm w-36"
             />
             <Button size="sm" onClick={handleGenerate} disabled={generate.isPending} className="gap-1.5">
@@ -770,17 +1047,30 @@ export default function EodPage() {
                 report={report}
                 breakdown={breakdown}
                 breakdownLoading={breakdownLoading}
-                onLock={handleLock}
+                subTab={subTab}
+                onSubTabChange={setSubTab}
+                onLockClick={() => setLockOpen(true)}
                 locking={lock.isPending}
                 store={activeStore}
               />
             )
           ) : (
-            <EodHistoryTable onSelect={(d) => { setSelectedDate(d); setTab("report"); }} />
+            <EodHistorySection onSelect={(d) => { setSelectedDate(d); setTab("report"); setSubTab("summary"); }} />
           )}
 
         </div>
       </div>
+
+      {/* Lock confirmation dialog */}
+      {report && (
+        <LockConfirmDialog
+          open={lockOpen}
+          onOpenChange={setLockOpen}
+          reportDate={selectedDate}
+          onConfirm={handleLockConfirm}
+          isLoading={lock.isPending}
+        />
+      )}
     </div>
   );
 }

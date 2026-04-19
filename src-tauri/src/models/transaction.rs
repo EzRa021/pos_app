@@ -42,6 +42,11 @@ pub struct CreateTransactionDto {
     pub split_payments:  Option<Vec<SplitPaymentDto>>,
     /// Wallet portion when wallet is used alongside another method
     pub wallet_amount:   Option<f64>,
+    /// Loyalty points redeemed as payment at POS.
+    /// When set, `redeem_points_internal` is called post-commit to deduct from
+    /// the customer's balance. Independent of `earn_points_internal` — a sale
+    /// can earn AND redeem in the same transaction.
+    pub loyalty_points_redeemed: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]

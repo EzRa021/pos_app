@@ -51,3 +51,8 @@ pub mod fx_rates;
 pub mod backup;
 pub mod tax;
 pub mod pos_favourites;
+pub mod payment_method_settings;
+pub mod expense_category;
+pub mod number_series;
+pub mod store_hours;
+pub mod pos_shortcuts_settings;

@@ -25,15 +25,18 @@ CREATE TABLE IF NOT EXISTS store_ref_counters (
 -- to 1 (DEFAULT), so fresh stores also start at TXN-000001.
 
 -- TXN
+-- Only rows whose suffix after the prefix is purely numeric (e.g. TXN-000001).
+-- References with extra segments (e.g. TXN-000005-IKE) are intentionally skipped;
+-- the counter starts at MAX(pure-numeric) + 1 so there is no collision.
 INSERT INTO store_ref_counters (store_id, ref_type, next_val)
 SELECT
     s.id,
     'TXN',
     COALESCE(
-        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*', '') AS BIGINT)) + 1
+        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*(\d+)$', '\1') AS BIGINT)) + 1
          FROM   transactions
          WHERE  store_id = s.id
-           AND  reference_no ~ '^TXN-'),
+           AND  reference_no ~ '^TXN-\d+$'),
         1
     )
 FROM stores s
@@ -46,10 +49,10 @@ SELECT
     s.id,
     'RET',
     COALESCE(
-        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*', '') AS BIGINT)) + 1
+        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*(\d+)$', '\1') AS BIGINT)) + 1
          FROM   returns
          WHERE  store_id = s.id
-           AND  reference_no ~ '^RET-'),
+           AND  reference_no ~ '^RET-\d+$'),
         1
     )
 FROM stores s
@@ -62,10 +65,10 @@ SELECT
     s.id,
     'PO',
     COALESCE(
-        (SELECT MAX(CAST(REGEXP_REPLACE(po_number, '^[A-Z]+-0*', '') AS BIGINT)) + 1
+        (SELECT MAX(CAST(REGEXP_REPLACE(po_number, '^[A-Z]+-0*(\d+)$', '\1') AS BIGINT)) + 1
          FROM   purchase_orders
          WHERE  store_id = s.id
-           AND  po_number ~ '^PO-'),
+           AND  po_number ~ '^PO-\d+$'),
         1
     )
 FROM stores s

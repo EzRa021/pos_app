@@ -62,3 +62,8 @@ pub mod fx_rates;
 pub mod onboarding;
 pub mod pos_favourites;
 pub mod cloud_sync;
+pub mod payment_methods;
+pub mod expense_categories;
+pub mod number_series;
+pub mod store_hours;
+pub mod pos_shortcuts_settings;

@@ -39,6 +39,19 @@ pub struct StoreSettings {
     // Currency
     pub currency:                            String,
     pub locale:                              String,
+    // Notifications
+    pub notif_low_stock_enabled:             bool,
+    pub notif_low_stock_threshold:           i32,
+    pub notif_overdue_credit_enabled:        bool,
+    pub notif_overdue_credit_days:           i32,
+    pub notif_shift_end_reminder_enabled:    bool,
+    pub notif_shift_end_minutes:             i32,
+    pub notif_min_float_warning_enabled:     bool,
+    pub notif_min_float_amount:              Option<Decimal>,
+    pub notif_in_app_enabled:               bool,
+    // Low stock defaults
+    pub default_reorder_point:               i32,
+    pub default_reorder_qty:                 i32,
     pub created_at:                          DateTime<Utc>,
     pub updated_at:                          DateTime<Utc>,
 }
@@ -68,4 +81,17 @@ pub struct UpdateStoreSettingsDto {
     pub auto_flag_overdue_after_days:        Option<i32>,
     pub currency:                            Option<String>,
     pub locale:                              Option<String>,
+    // Notifications
+    pub notif_low_stock_enabled:             Option<bool>,
+    pub notif_low_stock_threshold:           Option<i32>,
+    pub notif_overdue_credit_enabled:        Option<bool>,
+    pub notif_overdue_credit_days:           Option<i32>,
+    pub notif_shift_end_reminder_enabled:    Option<bool>,
+    pub notif_shift_end_minutes:             Option<i32>,
+    pub notif_min_float_warning_enabled:     Option<bool>,
+    pub notif_min_float_amount:              Option<f64>,
+    pub notif_in_app_enabled:               Option<bool>,
+    // Low stock defaults
+    pub default_reorder_point:               Option<i32>,
+    pub default_reorder_qty:                 Option<i32>,
 }

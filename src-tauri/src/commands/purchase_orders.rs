@@ -15,7 +15,7 @@ use crate::{
 };
 use super::auth::guard_permission;
 use super::audit::write_audit_log;
-use crate::utils::ref_no::next_ref_no;
+use crate::utils::ref_no::next_series_ref_no;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -218,7 +218,7 @@ pub async fn create_purchase_order(
     let mut db_tx = pool.begin().await?;
 
     // Generate per-store PO number
-    let po_num = next_ref_no(&pool, payload.store_id, "PO", "PO", 6).await;
+    let po_num = next_series_ref_no(&pool, payload.store_id, "purchase_order").await;
 
     // Validate all item quantities before inserting.
     // Bulk-fetch all item metadata in one query to avoid N+1 per-item round-trips.

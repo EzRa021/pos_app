@@ -29,7 +29,7 @@ import {
   Banknote, CreditCard, Smartphone, Receipt,
   ArrowLeft, ArrowRight, Clock, X, User,
   Tag, CheckCircle2, Loader2, ChevronDown,
-  Wallet, Star, Lock, Scale,
+  Wallet, Star, Lock, Scale, RefreshCw, Copy,
 } from "lucide-react";
 
 import { Button }   from "@/components/ui/button";
@@ -59,8 +59,9 @@ import { CustomerSearchBar }    from "@/features/pos/CustomerSearchBar";
 import { ReceiptModal }         from "@/features/pos/ReceiptModal";
 import { deleteHeldTransaction } from "@/commands/transactions";
 import { getWalletBalance }     from "@/commands/customer_wallet";
-import { getLoyaltyBalance }    from "@/commands/loyalty";
+import { getLoyaltyBalance, getLoyaltySettings } from "@/commands/loyalty";
 import { getStoreSettings }     from "@/commands/store_settings";
+import { getPaymentMethods }    from "@/commands/payment_methods";
 
 import { formatCurrency, formatName }  from "@/lib/format";
 import { getAutoLockMinutes }          from "@/features/settings/SecuritySettingsPanel";
@@ -72,6 +73,21 @@ import { cn } from "@/lib/utils";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ITEMS_PER_PAGE = 20;
+
+// ── Auto-reference generator ──────────────────────────────────────────────────
+// Format: {STORE_3_LETTER_PREFIX}-{YYYYMMDD}-{4-digit-random}
+// e.g.  QUA-20250417-3842  (store = "Quantum POS")
+function generatePaymentRef(storeName = "") {
+  const prefix = storeName
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .substring(0, 3)
+    .padEnd(3, "X");
+  const now  = new Date();
+  const date = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `${prefix}-${date}-${rand}`;
+}
 
 const PM_CONFIG = {
   [PAYMENT_METHODS.CASH]: {
@@ -94,6 +110,13 @@ const PM_CONFIG = {
     btnCls:   "border-warning/50 text-warning hover:bg-warning/10 hover:border-warning",
     badgeCls: "bg-warning/15 text-warning border-warning/20",
     dotCls:   "bg-warning",
+  },
+  [PAYMENT_METHODS.MOBILE_MONEY]: {
+    label:    "Mobile Money",
+    Icon:     Smartphone,
+    btnCls:   "border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/10 hover:border-cyan-500",
+    badgeCls: "bg-cyan-500/15 text-cyan-400 border-cyan-500/20",
+    dotCls:   "bg-cyan-400",
   },
   [PAYMENT_METHODS.CREDIT]: {
     label:    "Credit",
@@ -190,6 +213,19 @@ export default function PosPage() {
   const loyaltyPoints = parseInt(loyaltyData?.points      ?? 0, 10);
   const loyaltyNaira  = parseFloat(loyaltyData?.naira_value ?? 0);
 
+  // Whether the store's loyalty programme is active.
+  // getLoyaltyBalance now includes programme_active, but we also query
+  // loyalty settings directly so the button state is correct even before
+  // a customer is selected (avoids the button appearing enabled when the
+  // programme has never been turned on).
+  const { data: loyaltySettings } = useQuery({
+    queryKey: ["loyalty-settings", storeId],
+    queryFn:  () => getLoyaltySettings(storeId),
+    enabled:  !!storeId,
+    staleTime: 5 * 60_000,
+  });
+  const loyaltyProgrammeActive = loyaltySettings?.is_active ?? false;
+
   // ── Products filter state ─────────────────────────────────────────────────
   const [searchTerm,  setSearchTerm]  = useState("");
   const [debSearch,   setDebSearch]   = useState("");
@@ -205,6 +241,7 @@ export default function PosPage() {
   const [lastTransaction,   setLastTransaction]   = useState(null);
   const [isCharging,        setIsCharging]        = useState(false);
   const [isHolding,         setIsHolding]         = useState(false);
+  const [creditLimitError,  setCreditLimitError]  = useState(null); // { available, required, customerName }
 
   // ── Weigh modal state ─────────────────────────────────────────────────────
   // weighModal.item: the full enriched item being weighed (null = closed)
@@ -213,7 +250,7 @@ export default function PosPage() {
 
   // ── Payment state ─────────────────────────────────────────────────────────
   const [payments, setPayments] = useState([]);
-  const [popover,  setPopover]  = useState({ open: false, type: null, amount: "" });
+  const [popover,  setPopover]  = useState({ open: false, type: null, amount: "", reference: "", requireReference: false, referenceLabel: "Reference No.", label: "" });
 
   // ── Load held transactions on mount / store change ────────────────────────
   useEffect(() => {
@@ -253,6 +290,19 @@ export default function PosPage() {
     staleTime: 5 * 60_000,
   });
   const taxInclusive = storeSettings?.tax_inclusive ?? true;
+
+  // ── Payment methods (store-configured via Settings → Payment Methods) ─────
+  const { data: paymentMethodSettings = [] } = useQuery({
+    queryKey:  ["payment-methods", storeId],
+    queryFn:   () => getPaymentMethods(storeId),
+    enabled:   !!storeId,
+    staleTime: 5 * 60_000,
+  });
+  // Wallet & Loyalty are system buttons handled separately — exclude them here.
+  const configuredMethods = useMemo(
+    () => paymentMethodSettings.filter((m) => m.is_enabled).sort((a, b) => a.sort_order - b.sort_order),
+    [paymentMethodSettings],
+  );
 
   // ── Quick-access favourites (DB per store) ───────────────────────────────
   const {
@@ -484,7 +534,7 @@ export default function PosPage() {
   }, [activeCustomer, loyaltyPoints, loyaltyNaira, total, payments]);
 
   // ── Payment handlers ──────────────────────────────────────────────────────
-  const handlePaymentClick = useCallback((type) => {
+  const handlePaymentClick = useCallback((type, opts = {}) => {
     // Credit requires a customer
     if (type === PAYMENT_METHODS.CREDIT && !activeCustomer) {
       toast.error("Select a customer before adding a credit payment");
@@ -492,15 +542,28 @@ export default function PosPage() {
       return;
     }
     const rem = Math.max(0, remaining);
-    setPopover({ open: true, type, amount: rem > 0 ? rem.toFixed(2) : "" });
-  }, [remaining, activeCustomer]);
+    // Auto-generate reference immediately when the method requires one.
+    // Cashiers never type references manually — the system produces them.
+    const autoRef = opts.requireReference ? generatePaymentRef(storeName) : "";
+    setPopover({
+      open: true, type,
+      amount:           rem > 0 ? rem.toFixed(2) : "",
+      reference:        autoRef,
+      requireReference: opts.requireReference || false,
+      referenceLabel:   opts.referenceLabel   || "Reference No.",
+      label:            opts.label            || PM_CONFIG[type]?.label || type,
+    });
+  }, [remaining, activeCustomer, storeName]);
 
   const handlePaymentSubmit = useCallback(() => {
     const amount = parseFloat(popover.amount);
     if (!isNaN(amount) && amount > 0) {
-      setPayments((prev) => [...prev, { id: Date.now(), type: popover.type, amount }]);
+      setPayments((prev) => [...prev, {
+        id: Date.now(), type: popover.type, amount,
+        ...(popover.reference ? { reference: popover.reference } : {}),
+      }]);
     }
-    setPopover({ open: false, type: null, amount: "" });
+    setPopover({ open: false, type: null, amount: "", reference: "", requireReference: false, referenceLabel: "Reference No.", label: "" });
   }, [popover]);
 
   const handleRemovePayment = useCallback((id) => {
@@ -530,7 +593,21 @@ export default function PosPage() {
       if (storeId) loadHeld(storeId);
     } catch (err) {
       const msg = typeof err === "string" ? err : (err?.message ?? "Transaction failed. Please try again.");
-      toast.error(msg);
+      // Credit-limit errors get a dedicated dialog instead of a toast so the
+      // cashier can clearly see available vs. required amounts.
+      const creditMatch = msg.match(/Insufficient credit\.\s*Available:\s*[₦]?([\d,.]+),\s*Required:\s*[₦]?([\d,.]+)/i);
+      if (creditMatch) {
+        const parse = (s) => parseFloat(s.replace(/,/g, ""));
+        setCreditLimitError({
+          available:    parse(creditMatch[1]),
+          required:     parse(creditMatch[2]),
+          customerName: activeCustomer
+            ? [activeCustomer.first_name, activeCustomer.last_name].filter(Boolean).join(" ") || "this customer"
+            : "this customer",
+        });
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setIsCharging(false);
     }
@@ -1024,10 +1101,13 @@ export default function PosPage() {
         walletBalance={walletBalance}
         loyaltyPoints={loyaltyPoints}
         loyaltyNaira={loyaltyNaira}
+        loyaltyProgrammeActive={loyaltyProgrammeActive}
         loyaltyApplied={!!payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY)}
         onWalletPay={handleWalletPay}
         onLoyaltyToggle={handleLoyaltyToggle}
         taxInclusive={taxInclusive}
+        configuredMethods={configuredMethods}
+        storeName={storeName ?? ""}
       />
 
       {/* POS lock overlay is rendered globally in App.jsx */}
@@ -1066,6 +1146,11 @@ export default function PosPage() {
         onQtyChange={(v) => setWeighModal((s) => ({ ...s, qty: v }))}
         onConfirm={handleWeighConfirm}
         onCancel={handleWeighCancel}
+      />
+
+      <CreditLimitDialog
+        error={creditLimitError}
+        onClose={() => setCreditLimitError(null)}
       />
     </div>
   );
@@ -1371,6 +1456,73 @@ function CartItemRow({ item, onRemove, onSetQty, taxInclusive = true }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CreditLimitDialog
+// ─────────────────────────────────────────────────────────────────────────────
+function CreditLimitDialog({ error, onClose }) {
+  if (!error) return null;
+  const { available, required, customerName } = error;
+  const shortfall = required - available;
+
+  return (
+    <Dialog open={!!error} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-md bg-card border-border shadow-2xl shadow-black/60">
+        <DialogHeader>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/15 border border-rose-500/25">
+              <CreditCard className="h-5 w-5 text-rose-400" />
+            </div>
+            <div>
+              <DialogTitle className="text-[15px] font-bold text-foreground leading-tight">
+                Credit Limit Exceeded
+              </DialogTitle>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {customerName} does not have enough credit for this sale.
+              </p>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2">
+          {/* Breakdown rows */}
+          <div className="rounded-xl border border-border/60 bg-muted/10 divide-y divide-border/40 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <span className="text-[12px] text-muted-foreground">Sale total</span>
+              <span className="text-[13px] font-bold tabular-nums font-mono text-foreground">
+                {formatCurrency(required)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <span className="text-[12px] text-muted-foreground">Available credit</span>
+              <span className="text-[13px] font-bold tabular-nums font-mono text-success">
+                {formatCurrency(available)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-4 py-2.5 bg-rose-500/5">
+              <span className="text-[12px] font-semibold text-rose-400">Shortfall</span>
+              <span className="text-[14px] font-bold tabular-nums font-mono text-rose-400">
+                {formatCurrency(shortfall)}
+              </span>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-muted-foreground leading-relaxed px-1">
+            To complete this sale on credit, either reduce the cart total by at
+            least <span className="font-semibold text-foreground">{formatCurrency(shortfall)}</span>, increase
+            the customer&apos;s credit limit, or switch to a different payment method.
+          </p>
+        </div>
+
+        <DialogFooter>
+          <Button className="w-full" onClick={onClose}>
+            Got it, adjust the sale
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // WeighItemModal
 // ─────────────────────────────────────────────────────────────────────────────
 function WeighItemModal({ item, qty, onQtyChange, onConfirm, onCancel }) {
@@ -1461,11 +1613,16 @@ function BottomBar({
   totalPaid, remaining, change, amountDue,
   isBalanced, isCharging,
   walletBalance, loyaltyPoints, loyaltyNaira, loyaltyApplied,
+  loyaltyProgrammeActive,
   onWalletPay, onLoyaltyToggle,
   taxInclusive,
+  configuredMethods = [],
+  storeName = "",
 }) {
   const hasCart = cartItems.length > 0;
-  const popCfg  = popover.type ? PM_CONFIG[popover.type] : null;
+  const popCfg  = popover.type
+    ? (PM_CONFIG[popover.type] ?? { label: popover.label, Icon: Banknote, badgeCls: "bg-muted/30 text-foreground border-border/50", btnCls: "", dotCls: "" })
+    : null;
   const PopIcon = popCfg?.Icon;
 
   const customerName = activeCustomer
@@ -1482,7 +1639,7 @@ function BottomBar({
       <div className="border-b border-border/50 bg-muted/10">
         <Popover
           open={popover.open}
-          onOpenChange={(v) => !v && setPopover({ open: false, type: null, amount: "" })}
+          onOpenChange={(v) => !v && setPopover({ open: false, type: null, amount: "", reference: "", requireReference: false, referenceLabel: "Reference No.", label: "" })}
         >
           {/* PopoverAnchor — positions the floating popover without toggle behaviour */}
           <PopoverAnchor asChild>
@@ -1492,42 +1649,31 @@ function BottomBar({
                 Pay via
               </span>
 
-              {/* Cash */}
-              <Button
-                variant="outline" size="sm"
-                disabled={!hasCart}
-                onClick={() => onPaymentClick(PAYMENT_METHODS.CASH)}
-                className={cn(
-                  "h-8 gap-1.5 text-[11px] font-semibold transition-all",
-                  PM_CONFIG[PAYMENT_METHODS.CASH].btnCls,
-                  "disabled:opacity-30",
-                  methodAdded(PAYMENT_METHODS.CASH) && "ring-1 ring-success/50 bg-success/10",
-                )}
-              >
-                <Banknote className="h-3.5 w-3.5" /> Cash
-              </Button>
-
-              {/* Card + Transfer + Credit */}
-              {[
-                [PAYMENT_METHODS.CARD,     CreditCard, "Card"],
-                [PAYMENT_METHODS.TRANSFER, Smartphone, "Transfer"],
-                [PAYMENT_METHODS.CREDIT,   Receipt,    "Credit"],
-              ].map(([method, Icon, label]) => (
-                <Button
-                  key={method}
-                  variant="outline" size="sm"
-                  disabled={!hasCart}
-                  onClick={() => onPaymentClick(method)}
-                  className={cn(
-                    "h-8 gap-1.5 text-[11px] font-semibold transition-all",
-                    PM_CONFIG[method].btnCls,
-                    "disabled:opacity-30",
-                    methodAdded(method) && `ring-1 ${PM_CONFIG[method].badgeCls.split(" ").find((c) => c.startsWith("border-"))} bg-opacity-10`,
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5" /> {label}
-                </Button>
-              ))}
+              {/* Configurable payment methods (from Settings → Payment Methods) */}
+              {configuredMethods.map((m) => {
+                const cfg  = PM_CONFIG[m.method_key] ?? PM_CONFIG[PAYMENT_METHODS.CASH];
+                const Icon = cfg.Icon;
+                return (
+                  <Button
+                    key={m.method_key}
+                    variant="outline" size="sm"
+                    disabled={!hasCart}
+                    onClick={() => onPaymentClick(m.method_key, {
+                      requireReference: m.require_reference,
+                      referenceLabel:   m.reference_label || "Reference No.",
+                      label:            m.display_name,
+                    })}
+                    className={cn(
+                      "h-8 gap-1.5 text-[11px] font-semibold transition-all",
+                      cfg.btnCls,
+                      "disabled:opacity-30",
+                      methodAdded(m.method_key) && `ring-1 ${cfg.badgeCls.split(" ").find((c) => c.startsWith("border-"))} bg-opacity-10`,
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" /> {m.display_name}
+                  </Button>
+                );
+              })}
 
               <div className="w-px h-5 bg-border/60 mx-1" />
 
@@ -1554,20 +1700,31 @@ function BottomBar({
               {/* Loyalty */}
               <Button
                 variant="outline" size="sm"
-                disabled={!hasCart}
+                disabled={!hasCart || !loyaltyProgrammeActive}
                 onClick={onLoyaltyToggle}
                 className={cn(
                   "h-8 gap-1.5 text-[11px] font-semibold transition-all",
-                  PM_CONFIG[PAYMENT_METHODS.LOYALTY].btnCls,
-                  "disabled:opacity-30",
+                  loyaltyProgrammeActive
+                    ? PM_CONFIG[PAYMENT_METHODS.LOYALTY].btnCls
+                    : "border-border/40 text-muted-foreground/40 cursor-not-allowed",
+                  "disabled:opacity-40",
                   loyaltyApplied && "ring-1 ring-amber-500/40 bg-amber-500/10",
                 )}
-                title={activeCustomer ? `${loyaltyPoints} pts = ${formatCurrency(loyaltyNaira)}` : "Select a customer first"}
+                title={
+                  !loyaltyProgrammeActive
+                    ? "Loyalty programme is not active — enable it in Settings → Loyalty"
+                    : activeCustomer
+                      ? `${loyaltyPoints} pts = ${formatCurrency(loyaltyNaira)}`
+                      : "Select a customer first"
+                }
               >
                 <Star className="h-3.5 w-3.5" />
                 {loyaltyApplied ? "Loyalty ✓" : "Loyalty"}
-                {activeCustomer && loyaltyPoints > 0 && (
+                {loyaltyProgrammeActive && activeCustomer && loyaltyPoints > 0 && (
                   <span className="ml-0.5 text-[9px] opacity-70 tabular-nums">{loyaltyPoints}pts</span>
+                )}
+                {!loyaltyProgrammeActive && (
+                  <span className="ml-0.5 text-[9px] opacity-60">off</span>
                 )}
               </Button>
 
@@ -1589,7 +1746,7 @@ function BottomBar({
               <div className={cn("flex items-center gap-3 px-4 py-3 border-b border-border/50", popCfg.badgeCls)}>
                 {PopIcon && <PopIcon className="h-4 w-4 shrink-0" />}
                 <div className="flex-1 min-w-0">
-                  <p className="text-[12px] font-bold leading-tight">{popCfg.label} Payment</p>
+                  <p className="text-[12px] font-bold leading-tight">{popover.label || popCfg.label} Payment</p>
                   <p className="text-[10px] opacity-80 leading-tight mt-0.5 tabular-nums">
                     Remaining: {formatCurrency(Math.max(0, remaining))}
                   </p>
@@ -1612,10 +1769,11 @@ function BottomBar({
                   step="0.01"
                 />
               </div>
+
               <div className="flex gap-2">
                 <Button
                   variant="outline" size="sm" className="flex-1"
-                  onClick={() => setPopover({ open: false, type: null, amount: "" })}
+                  onClick={() => setPopover({ open: false, type: null, amount: "", reference: "", requireReference: false, referenceLabel: "Reference No.", label: "" })}
                 >
                   Cancel
                 </Button>

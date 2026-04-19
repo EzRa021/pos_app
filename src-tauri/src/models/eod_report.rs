@@ -11,28 +11,41 @@ pub struct EodReport {
     pub id:                 i32,
     pub store_id:           i32,
     pub report_date:        NaiveDate,
+    // ── Revenue ──────────────────────────────────────────────────────────────
     pub gross_sales:        Decimal,
     pub total_discounts:    Decimal,
     pub net_sales:          Decimal,
     pub total_tax:          Decimal,
+    // ── Profitability ─────────────────────────────────────────────────────────
     pub cost_of_goods_sold: Decimal,
     pub gross_profit:       Decimal,
     pub total_expenses:     Decimal,
     pub net_profit:         Decimal,
+    // ── Payment method totals ─────────────────────────────────────────────────
     pub cash_collected:     Decimal,
     pub card_collected:     Decimal,
     pub transfer_collected: Decimal,
     pub credit_issued:      Decimal,
     pub credit_collected:   Decimal,
+    // ── Volume ───────────────────────────────────────────────────────────────
     pub items_sold:         Decimal,
     pub transactions_count: i32,
     pub voids_count:        i32,
     pub voids_amount:       Decimal,
     pub refunds_count:      i32,
     pub refunds_amount:     Decimal,
+    // ── Shift cash reconciliation ─────────────────────────────────────────────
+    /// Opening float from the first closed shift of the day
     pub opening_float:      Option<Decimal>,
+    /// Actual cash counted in the last closed shift of the day
     pub closing_cash:       Option<Decimal>,
+    /// Sum of all cash-in movements across all shifts (drawer top-ups)
+    pub cash_in:            Decimal,
+    /// Sum of all cash-out movements across all shifts (withdrawals / payouts)
+    pub cash_out:           Decimal,
+    /// Computed variance: closing_cash − (opening_float + cash_collected + cash_in − cash_out)
     pub cash_difference:    Option<Decimal>,
+    // ── Meta ─────────────────────────────────────────────────────────────────
     pub generated_by:       Option<i32>,
     pub generated_at:       DateTime<Utc>,
     pub is_locked:          bool,

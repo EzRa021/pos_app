@@ -38,7 +38,8 @@ use crate::{
         loyalty, notifications, supplier_payments,
         backup, bulk_operations, price_scheduling,
         customer_wallet, labels, security, fx_rates, excel,
-        onboarding, pos_favourites, cloud_sync,
+        onboarding, pos_favourites, cloud_sync, payment_methods,
+        expense_categories, number_series, store_hours, pos_shortcuts_settings,
     },
     error::AppError,
     models::{
@@ -1660,6 +1661,12 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "delete_tax_category" => {
+            let id = i32_param(&params, "id")?;
+            tax::delete_tax_category(as_state(state), require_token()?, id).await?;
+            Ok(Value::Null)
+        }
+
         // ════════════════════════════════════════════════════════════════════
         // PRICE MANAGEMENT
         // ════════════════════════════════════════════════════════════════════
@@ -2504,6 +2511,117 @@ async fn dispatch(
         "retry_failed_sync" => {
             let result = cloud_sync::retry_failed_sync(as_state(state), require_token()?).await?;
             Ok(result)
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // PAYMENT METHOD SETTINGS
+        // ════════════════════════════════════════════════════════════════════
+
+        "get_payment_methods" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = payment_methods::get_payment_methods(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "upsert_payment_method" => {
+            let payload: crate::models::payment_method_settings::UpsertPaymentMethodDto = parse(params)?;
+            let result = payment_methods::upsert_payment_method(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "reorder_payment_methods" => {
+            let payload: crate::models::payment_method_settings::ReorderPaymentMethodsDto = parse(params)?;
+            payment_methods::reorder_payment_methods(as_state(state), require_token()?, payload).await?;
+            Ok(Value::Null)
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // EXPENSE CATEGORIES
+        // ════════════════════════════════════════════════════════════════════
+
+        "get_expense_categories" => {
+            let store_id = opt_i32(&params, "store_id");
+            let result = expense_categories::get_expense_categories(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "create_expense_category" => {
+            let payload: crate::models::expense_category::CreateExpenseCategoryDto = parse(params)?;
+            let result = expense_categories::create_expense_category(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "update_expense_category" => {
+            let id = i32_param(&params, "id")?;
+            let payload: crate::models::expense_category::UpdateExpenseCategoryDto = parse(params)?;
+            let result = expense_categories::update_expense_category(as_state(state), require_token()?, id, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "delete_expense_category" => {
+            let id = i32_param(&params, "id")?;
+            expense_categories::delete_expense_category(as_state(state), require_token()?, id).await?;
+            Ok(Value::Null)
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // NUMBER SERIES (INVOICE / RECEIPT NUMBERING)
+        // ════════════════════════════════════════════════════════════════════
+
+        "get_number_series" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = number_series::get_number_series(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "update_number_series" => {
+            let payload: crate::models::number_series::UpdateNumberSeriesDto = parse(params)?;
+            let result = number_series::update_number_series(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STORE HOURS (OPENING HOURS)
+        // ════════════════════════════════════════════════════════════════════
+
+        "get_store_hours" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = store_hours::get_store_hours(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "upsert_store_hours" => {
+            let payload: crate::models::store_hours::BulkUpsertStoreHoursDto = parse(params)?;
+            let result = store_hours::upsert_store_hours(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // POS SHORTCUTS (PINNED ITEMS)
+        // ════════════════════════════════════════════════════════════════════
+
+        "get_pos_shortcuts" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = pos_shortcuts_settings::get_pos_shortcuts(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "add_pos_shortcut" => {
+            let payload: crate::models::pos_shortcuts_settings::AddShortcutDto = parse(params)?;
+            let result = pos_shortcuts_settings::add_pos_shortcut(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "remove_pos_shortcut" => {
+            let payload: crate::models::pos_shortcuts_settings::RemoveShortcutDto = parse(params)?;
+            let result = pos_shortcuts_settings::remove_pos_shortcut(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "reorder_pos_shortcuts" => {
+            let payload: crate::models::pos_shortcuts_settings::ReorderShortcutsDto = parse(params)?;
+            let result = pos_shortcuts_settings::reorder_pos_shortcuts(as_state(state), require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
         }
 
         _ => Err(AppError::Validation(format!("Unknown RPC method: {method}"))),

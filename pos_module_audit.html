@@ -1,0 +1,256 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);color:var(--color-text-primary);padding:0}
+.wrap{padding:1.25rem 0}
+.section{margin-bottom:2rem}
+.section-head{display:flex;align-items:center;gap:10px;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:.5px solid var(--color-border-tertiary)}
+.section-title{font-size:15px;font-weight:500}
+.module-badge{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:500}
+.badge-eod{background:var(--color-background-info);color:var(--color-text-info)}
+.badge-tx{background:var(--color-background-success);color:var(--color-text-success)}
+.badge-items{background:var(--color-background-warning);color:var(--color-text-warning)}
+.badge-crit{background:var(--color-background-danger);color:var(--color-text-danger)}
+.findings{display:flex;flex-direction:column;gap:.5rem}
+.finding{display:grid;grid-template-columns:24px 1fr auto;align-items:start;gap:10px;padding:.65rem .75rem;border-radius:8px;border:.5px solid var(--color-border-tertiary);background:var(--color-background-secondary)}
+.find-icon{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:500;margin-top:1px}
+.icon-bug{background:var(--color-background-danger);color:var(--color-text-danger)}
+.icon-gap{background:var(--color-background-warning);color:var(--color-text-warning)}
+.icon-ok{background:var(--color-background-success);color:var(--color-text-success)}
+.find-body{}
+.find-title{font-size:13px;font-weight:500;line-height:1.4}
+.find-desc{font-size:12px;color:var(--color-text-secondary);line-height:1.5;margin-top:2px}
+.find-sev{font-size:10px;padding:2px 6px;border-radius:12px;align-self:start;white-space:nowrap;flex-shrink:0;font-weight:500}
+.sev-crit{background:var(--color-background-danger);color:var(--color-text-danger)}
+.sev-warn{background:var(--color-background-warning);color:var(--color-text-warning)}
+.sev-low{background:var(--color-background-secondary);color:var(--color-text-secondary);border:.5px solid var(--color-border-secondary)}
+.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-bottom:2rem}
+.stat{background:var(--color-background-secondary);border-radius:8px;padding:.75rem 1rem;border:.5px solid var(--color-border-tertiary)}
+.stat-val{font-size:22px;font-weight:500;line-height:1}
+.stat-label{font-size:11px;color:var(--color-text-secondary);margin-top:4px}
+.divider{height:.5px;background:var(--color-border-tertiary);margin:1.5rem 0}
+.rec{padding:.65rem .75rem;border-radius:8px;border:.5px solid var(--color-border-info);background:var(--color-background-info);margin-bottom:.5rem}
+.rec-title{font-size:12px;font-weight:500;color:var(--color-text-info)}
+.rec-body{font-size:12px;color:var(--color-text-secondary);margin-top:2px;line-height:1.5}
+code{font-family:var(--font-mono);font-size:11px;background:var(--color-background-primary);padding:1px 4px;border-radius:4px;border:.5px solid var(--color-border-secondary)}
+</style>
+<div class="wrap">
+<div class="summary-grid">
+  <div class="stat"><div class="stat-val" style="color:var(--color-text-danger)">3</div><div class="stat-label">Critical bugs</div></div>
+  <div class="stat"><div class="stat-val" style="color:var(--color-text-warning)">11</div><div class="stat-label">Missing features</div></div>
+  <div class="stat"><div class="stat-val" style="color:var(--color-text-secondary)">7</div><div class="stat-label">UX improvements</div></div>
+</div>
+
+<div class="section">
+  <div class="section-head"><span class="module-badge badge-eod">EOD</span><span class="section-title">End-of-Day module</span></div>
+  <div class="findings">
+    <div class="finding">
+      <div class="find-icon icon-bug">!</div>
+      <div class="find-body">
+        <div class="find-title">cash_in / cash_out columns do not exist</div>
+        <div class="find-desc"><code>eodPdf.js</code> references <code>r.cash_in</code> and <code>r.cash_out</code> in the shift reconciliation formula, but neither column is in the <code>eod_reports</code> table, the Rust model, or the migration. The expected-cash calculation in the PDF will always be wrong — it silently defaults to zero, producing a false reconciliation.</div>
+      </div>
+      <span class="find-sev sev-crit">Critical</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-bug">!</div>
+      <div class="find-body">
+        <div class="find-title">Multi-shift day only captures the last shift</div>
+        <div class="find-desc"><code>generate_eod_report</code> fetches opening_float / closing_cash with <code>ORDER BY closed_at DESC LIMIT 1</code>. If a store runs morning + evening shifts, only the last shift is reflected. Cash reconciliation for multi-shift days will be inaccurate. Need to aggregate across all shifts for the date.</div>
+      </div>
+      <span class="find-sev sev-crit">Critical</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-bug">!</div>
+      <div class="find-body">
+        <div class="find-title">Generate action uses analytics.read permission</div>
+        <div class="find-desc">Generating a report is a write/upsert operation (<code>INSERT ... ON CONFLICT DO UPDATE</code>). Using <code>analytics.read</code> means a read-only analyst role can overwrite an existing EOD report. Should be <code>reports.generate</code> or at minimum <code>analytics.write</code>.</div>
+      </div>
+      <span class="find-sev sev-crit">Critical</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">No guard against future-date generation</div>
+        <div class="find-desc">The backend accepts any date string including future dates. A manager could accidentally generate a ₦0 EOD for tomorrow and lock it. Add a validation: <code>if date_str > today { return Err(...) }</code>.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Lock button has no confirmation dialog</div>
+        <div class="find-desc">Locking is irreversible. The current UI fires <code>lock.mutateAsync(id)</code> on a single click with no confirmation step. At minimum a short confirmation popover should be shown. Compare: the Void Transaction flow has a 2-step PIN-confirm dialog for the same reason.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Missing KPIs: profit margin % and items sold</div>
+        <div class="find-desc">The 4-tile KPI row shows Gross Sales, Net Sales, Transactions, Top Seller. A professional POS EOD should show at minimum: gross profit margin % (<code>gross_profit / gross_sales</code>) and items sold (already on the model). Top Seller belongs in the Products tab, not a KPI card.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Payment method breakdown has no percentage share</div>
+        <div class="find-desc">Only raw currency amounts are shown per payment method. A standard POS EOD always shows share % (e.g. "Cash — ₦45,200 · 63%") to instantly answer "what's our cash exposure". Simple to add: divide each method total by net_sales.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Breakdown is eagerly loaded, not lazy</div>
+        <div class="find-desc"><code>useEodBreakdown</code> fires immediately when a report exists (<code>enabled: !!report</code>). The breakdown runs 6 heavy analytical queries even if the user only views the Summary tab. Should be enabled only when the user navigates to Products or Timeline tab, or use <code>staleTime: Infinity</code> for locked reports.</div>
+      </div>
+      <span class="find-sev sev-low">Medium</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">History tab is hardcoded to 30 days with no range picker</div>
+        <div class="find-desc"><code>EodHistoryTable</code> always queries last 30 days. Managers reviewing a month-end or quarterly need to go further back. Also, there's no way to generate a report from within the History tab — you must switch tabs and change the date.</div>
+      </div>
+      <span class="find-sev sev-low">Medium</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-head"><span class="module-badge badge-tx">Transactions</span><span class="section-title">Transactions module</span></div>
+  <div class="findings">
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">No export capability</div>
+        <div class="find-desc">There is no CSV or PDF export for transaction history. Accountants and auditors always need to export date-filtered transaction lists. This is a gap for any professional POS. Should export the current filtered view (date, status, method) as at minimum a CSV.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Stat cards reflect all-time counts, not current filter</div>
+        <div class="find-desc">The 4 stat cards ("Total Transactions", "Today's Revenue", "Voided", "Refunded") are always all-time/today — they don't react to date range filters. When a manager filters to "last week", the stat cards still show all-time data, which is misleading. They should reflect the current filter context.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">No item count or discount column in the list</div>
+        <div class="find-desc">The transaction list shows Reference, Date, Cashier, Customer, Method, Total, Status. Missing: number of line items (useful for spotting single-item bulk purchases vs multi-item orders) and discount amount (critical for spotting abusive discounting at a glance).</div>
+      </div>
+      <span class="find-sev sev-low">Medium</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Split payment transactions show no method breakdown</div>
+        <div class="find-desc">A "Split" PaymentBadge in the list tells the user nothing about how it was split. The detail panel has the correct breakdown, but at a glance there's no indication (e.g. "Cash + Card"). Consider showing "Cash / Card" as a compound badge or tooltip on hover.</div>
+      </div>
+      <span class="find-sev sev-low">Medium</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-ok">✓</div>
+      <div class="find-body">
+        <div class="find-title">Void flow is well-secured</div>
+        <div class="find-desc">Two-step flow (reason → PIN verification) before a void is executed. PIN verification hits the backend, no client-side bypass possible. This is the correct pattern for a POS.</div>
+      </div>
+      <span class="find-sev sev-low">Good</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-ok">✓</div>
+      <div class="find-body">
+        <div class="find-title">Partial refund modal is correctly scoped</div>
+        <div class="find-desc">The partial refund considers <code>returnedQtyMap</code> to avoid over-refunding items already partially returned. The step-based quantity selector respects measurement type (weight, volume, etc.).</div>
+      </div>
+      <span class="find-sev sev-low">Good</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-head"><span class="module-badge badge-items">Items</span><span class="section-title">Items module</span></div>
+  <div class="findings">
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">No department column or filter</div>
+        <div class="find-desc">The filter bar has Status, Measurement Type, Low Stock — but no Department filter. For stores with many departments (grocery, pharmacy, electronics), this is a critical navigation gap. The table column shows Category but not Department.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">No profit margin column</div>
+        <div class="find-desc">Cost price is visible as a sub-value under the selling price, but margin % is never shown. A buyer reviewing the catalog needs to instantly see "this item is only 12% margin" without doing mental math. Add a computed margin % column: <code>(selling - cost) / selling * 100</code>.</div>
+      </div>
+      <span class="find-sev sev-warn">High</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Low-stock filter has no "Create Purchase Order" shortcut</div>
+        <div class="find-desc">When filtering for low-stock items, the only actions are bulk Activate/Deactivate/Adjust Stock. There's no shortcut to create a Purchase Order from the selected low-stock items — the user has to go to Purchase Orders → Create and manually add items. This is a major workflow gap for inventory managers.</div>
+      </div>
+      <span class="find-sev sev-low">Medium</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-gap">?</div>
+      <div class="find-body">
+        <div class="find-title">Stat cards and filter bar are visually separated from PageHeader</div>
+        <div class="find-desc">The stat cards are rendered inside <code>ItemsTable</code> with inline <code>px-6 pt-5</code> padding, below the PageHeader. The filter bar is then a separate row. This means the page has three distinct "header-like" regions before the table. Consolidate: stat cards should be part of the page layout, not inside the table component.</div>
+      </div>
+      <span class="find-sev sev-low">Low</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-ok">✓</div>
+      <div class="find-body">
+        <div class="find-title">Bulk selection bar is well-designed</div>
+        <div class="find-desc">The floating toast-style bar with count badge, action buttons, and clear × is the correct pattern for bulk operations. The selection persists across pages and is cleared on filter change.</div>
+      </div>
+      <span class="find-sev sev-low">Good</span>
+    </div>
+    <div class="finding">
+      <div class="find-icon icon-ok">✓</div>
+      <div class="find-body">
+        <div class="find-title">Favourites (POS quick access) toggle is a great UX touch</div>
+        <div class="find-desc">Star icon per row that syncs to POS quick-access pins — allows catalog managers to curate the POS view without leaving the Items page. Well-executed.</div>
+      </div>
+      <span class="find-sev sev-low">Good</span>
+    </div>
+  </div>
+</div>
+
+<div class="divider"></div>
+<div style="font-size:13px;font-weight:500;margin-bottom:.75rem">Priority fixes</div>
+<div class="rec">
+  <div class="rec-title">1. Add cash_in / cash_out to eod_reports (migration + model + backend query)</div>
+  <div class="rec-body">Add columns to the migration, the Rust model, and populate them from <code>SUM(cash_in)</code> / <code>SUM(cash_out)</code> on the shifts table for that day. The PDF and frontend reconciliation section will then work correctly.</div>
+</div>
+<div class="rec">
+  <div class="rec-title">2. Fix multi-shift aggregation in generate_eod_report</div>
+  <div class="rec-body">Replace the single-shift <code>LIMIT 1</code> query with an aggregating query: <code>SUM(opening_float) ... WHERE store_id=$1 AND opened_at::date=$2 AND status='closed'</code>. Also aggregate cash_in and cash_out across all shifts for the day.</div>
+</div>
+<div class="rec">
+  <div class="rec-title">3. Add Lock confirmation dialog + future-date guard on generate</div>
+  <div class="rec-body">A simple <code>confirm()</code> or shadcn AlertDialog before calling <code>lock.mutateAsync</code>. Backend: reject date strings where <code>date_str > today</code>.</div>
+</div>
+<div class="rec">
+  <div class="rec-title">4. Upgrade EOD KPI row — replace Top Seller with Margin %</div>
+  <div class="rec-body">KPI row should be: Gross Sales · Net Sales · Gross Profit Margin % · Transactions. Move Top Seller spotlight to the Products tab only (it already exists there). Add Items Sold as a 5th card or sub-label on the Transactions card.</div>
+</div>
+<div class="rec">
+  <div class="rec-title">5. Add transactions export + make stat cards filter-aware</div>
+  <div class="rec-body">A "Export CSV" button in the TransactionsPanel header that calls a backend <code>export_transactions</code> RPC passing the current filter state. Stat cards should use the same date range / status filters as the table query.</div>
+</div>
+<div class="rec">
+  <div class="rec-title">6. Add Department filter + Margin % column to Items table</div>
+  <div class="rec-body">Department filter: add a <code>department_id</code> filter to <code>useItems</code> and a Select to FilterBar. Margin column: computed in the render function as <code>((selling - cost) / selling * 100).toFixed(1) + '%'</code>, color-coded (green > 30%, amber 15–30%, red &lt; 15%).</div>
+</div>
+</div>

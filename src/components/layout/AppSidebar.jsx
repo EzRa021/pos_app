@@ -336,7 +336,12 @@ function ShiftStatusBanner({ roleSlug }) {
               </span>
               {isOpen && activeShift?.opened_at && (
                 <span className="truncate text-[10px] text-muted-foreground">
-                  Since {new Date(activeShift.opened_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  {(() => {
+                    const d = new Date(activeShift.opened_at);
+                    const date = d.toLocaleDateString([], { month: "short", day: "numeric" });
+                    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                    return `Since ${date}, ${time}`;
+                  })()}
                 </span>
               )}
               {!isOpen && (

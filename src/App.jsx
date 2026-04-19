@@ -6,12 +6,14 @@
 //        (DB connect → API ready → onboarding check + session restore in parallel)
 //   2. config === false                  => SetupWizard (DB never configured)
 //   3. connectFailed                     => ConnectionError (re-enter server address)
-//   4. apiReady, !isInitialized          => Splash (auth store still initialising)
+//   4. !apiReady || !isInitialized       => Splash (connecting / restoring session)
 //   5. !onboardingComplete               => OnboardingFlow (no business in DB yet)
-//   6. onboarding done, !user            => LoginScreen (no valid session)
-//   7. user ok, !isBranchInitialized     => Splash (loading store data)
-//   8. user ok, needsPicker              => StorePicker
-//   9. All clear                         => RouterProvider (main POS)
+//   6. All clear                         => RouterProvider
+//        RouterProvider handles the rest internally:
+//        • /login  (PublicOnlyRoute)  — shown when no session
+//        • ProtectedRoute             — redirects to /login if no user,
+//                                       shows branch splash / StorePicker
+//                                       while branch is initialising
 // ============================================================================
 
 import { useState, useEffect, useRef } from 'react';
@@ -19,23 +21,19 @@ import { useQueryClient }               from '@tanstack/react-query';
 import { invoke }              from '@tauri-apps/api/core';
 import { getCurrentWindow }    from '@tauri-apps/api/window';
 import { RouterProvider }      from 'react-router-dom';
-import { AlertCircle, Loader2, LogIn, Eye, EyeOff, RefreshCw, Settings } from 'lucide-react';
+import { AlertCircle, Loader2, RefreshCw, Settings } from 'lucide-react';
 
 import SetupWizard, { CONFIG_KEY } from './features/setup/SetupWizard';
 import { PinLockScreen }           from './features/auth/PinLockScreen';
 import { RealtimeProvider }        from './providers/RealtimeProvider';
 
 const ONBOARDING_CACHE_KEY = 'qpos_onboarding_done';
-import StorePicker                 from './features/auth/StorePicker';
 import router                      from './router';
 import { OnboardingFlow }          from './features/onboarding/OnboardingFlow';
 import { useAuthStore }  from './stores/auth.store';
-import { useBranchStore } from './stores/branch.store';
 import { apiClient, setApiBaseUrl } from './lib/apiClient';
 import { TitleBar }                from './components/layout/TitleBar';
 import { Button }                  from './components/ui/button';
-import { Input }                   from './components/ui/input';
-import { Separator }               from './components/ui/separator';
 import './App.css';
 
 function setWindowBg(hex) {
@@ -125,99 +123,6 @@ function ConnectionError({ config, onRetry, onReconfigure }) {
   );
 }
 
-// ── Login Screen ──────────────────────────────────────────────────────────────
-function LoginScreen({ config }) {
-  const [username,  setUsername]  = useState('');
-  const [password,  setPassword]  = useState('');
-  const [showPass,  setShowPass]  = useState(false);
-
-  const login      = useAuthStore(s => s.login);
-  const isLoading  = useAuthStore(s => s.isLoading);
-  const error      = useAuthStore(s => s.error);
-  const clearError = useAuthStore(s => s.clearError);
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    clearError();
-    try { await login(username, password); } catch { /* error in store */ }
-  }
-
-  const modeLabel = config.mode === 'server'
-    ? 'Server Terminal'
-    : `Client → ${config.host}:${config.apiPort ?? 4000}`;
-
-  return (
-    <ScreenShell>
-      <div className="rounded-2xl border border-border bg-card shadow-2xl shadow-black/40 p-8 flex flex-col gap-6 animate-fade-in">
-        {/* Brand */}
-        <Brand subtitle={modeLabel} />
-
-        <Separator className="bg-border" />
-
-        {/* Form */}
-        <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold text-foreground">Sign in to your account</h2>
-          <p className="text-xs text-muted-foreground">Enter your credentials to continue</p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div>
-            <label className="block text-xs font-medium text-foreground mb-1.5">Username</label>
-            <Input
-              value={username}
-              onChange={e => { setUsername(e.target.value); clearError(); }}
-              placeholder="admin"
-              autoFocus
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-foreground mb-1.5">Password</label>
-            <div className="relative">
-              <Input
-                type={showPass ? 'text' : 'password'}
-                value={password}
-                onChange={e => { setPassword(e.target.value); clearError(); }}
-                placeholder="Password"
-                required
-                className="pr-10"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPass(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </div>
-
-          {error && (
-            <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5">
-              <AlertCircle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-              <p className="text-xs text-destructive">{error}</p>
-            </div>
-          )}
-
-          <Button type="submit" className="w-full h-11 mt-1" disabled={isLoading}>
-            {isLoading
-              ? <><Loader2 className="h-4 w-4 animate-spin" />Signing in…</>
-              : <><LogIn className="h-4 w-4" />Sign In</>}
-          </Button>
-        </form>
-
-        {import.meta.env.DEV && (
-          <p className="text-center text-[11px] text-muted-foreground">
-            Default: <span className="font-mono text-foreground">admin</span> /{' '}
-            <span className="font-mono text-foreground">Admin@123</span>
-          </p>
-        )}
-      </div>
-    </ScreenShell>
-  );
-}
-
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [config,             setConfig]             = useState(null);
@@ -233,14 +138,12 @@ export default function App() {
 
   // Read only primitive/stable values from stores — never objects or functions
   // as selector return values (new object refs cause infinite re-render loops).
-  const queryClient         = useQueryClient();
-  const user                = useAuthStore(s => s.user);
-  const isInitialized       = useAuthStore(s => s.isInitialized);
-  const restoreSession      = useAuthStore(s => s.restoreSession);
-  const isPosLocked         = useAuthStore(s => s.isPosLocked);
-  const unlockPos           = useAuthStore(s => s.unlockPos);
-  const isBranchInitialized = useBranchStore(s => s.isBranchInitialized);
-  const needsPicker         = useBranchStore(s => s.needsPicker);
+  const queryClient    = useQueryClient();
+  const user           = useAuthStore(s => s.user);
+  const isInitialized  = useAuthStore(s => s.isInitialized);
+  const restoreSession = useAuthStore(s => s.restoreSession);
+  const isPosLocked    = useAuthStore(s => s.isPosLocked);
+  const unlockPos      = useAuthStore(s => s.unlockPos);
 
   async function initConnection(savedConfig) {
     setConnectFailed(false);
@@ -303,18 +206,21 @@ export default function App() {
       // ── Wait for HTTP server to be truly ready ──────────────────────────────
       // get_api_port() returns as soon as the port number is assigned, but the
       // Axum server is started in a separate async task and may not be accepting
-      // TCP connections yet. Poll /health until it responds (up to 10 s) before
+      // TCP connections yet. Poll /health until it responds (up to 30 s) before
       // making any RPC calls.
+      // 60 attempts × 500 ms = 30 s maximum when port is closed (ECONNREFUSED).
+      // On a normal start the server responds within 200 ms so the loop exits
+      // on the first or second iteration regardless of the attempt limit.
       const baseUrl = apiClient.defaults.baseURL;
       let serverReady = false;
-      for (let attempt = 0; attempt < 20 && !serverReady; attempt++) {
+      for (let attempt = 0; attempt < 60 && !serverReady; attempt++) {
         try {
           const res = await fetch(`${baseUrl}/health`, {
-            signal: AbortSignal.timeout(1000),
+            signal: AbortSignal.timeout(2000),
           });
           if (res.ok) serverReady = true;
         } catch { /* not ready yet */ }
-        if (!serverReady) await new Promise(r => setTimeout(r, 100));
+        if (!serverReady) await new Promise(r => setTimeout(r, 500));
       }
 
       if (!serverReady) throw new Error('API server did not respond in time');
@@ -385,10 +291,15 @@ export default function App() {
   }, [isChecking, apiReady, connectFailed, config, user]);
 
   // ── Screen resolution ─────────────────────────────────────────────────────
+  // Stages 1–5 are pre-router: setup wizard, connection errors, onboarding.
+  // Once the API is ready and onboarding is confirmed, mount the RouterProvider.
+  // Auth state (login / branch init / store picker) is handled inside the
+  // router — ProtectedRoute redirects to /login when there is no session, and
+  // PublicOnlyRoute redirects back to /analytics when already authenticated.
   let content;
-  if      (isChecking)                  content = <Splash />;
-  else if (!config)                     content = <SetupWizard onComplete={(cfg) => initConnection(cfg)} />;
-  else if (connectFailed)               content = (
+  if      (isChecking)                   content = <Splash />;
+  else if (!config)                      content = <SetupWizard onComplete={(cfg) => initConnection(cfg)} />;
+  else if (connectFailed)                content = (
     <ConnectionError
       config={config}
       onRetry={() => initConnection(config)}
@@ -399,7 +310,7 @@ export default function App() {
       }}
     />
   );
-  else if (!apiReady || !isInitialized) content = <Splash message="Connecting…" />;
+  else if (!apiReady || !isInitialized)  content = <Splash />;
   else if (onboardingComplete === false)  content = (
     <OnboardingFlow
       resumeBusinessName={onboardingStatus?.business_name ?? ''}
@@ -408,16 +319,11 @@ export default function App() {
       onComplete={() => {
         localStorage.setItem(ONBOARDING_CACHE_KEY, 'true');
         setOnboardingComplete(true);
-        // Immediately refresh the business info query so the sidebar
-        // and SyncStatusBadge show the new business name without waiting.
         queryClient.invalidateQueries({ queryKey: ['business-info'] });
       }}
     />
   );
-  else if (!user)                       content = <LoginScreen config={config} />;
-  else if (!isBranchInitialized)        content = <Splash message="Loading branch data…" />;
-  else if (needsPicker)                 content = <StorePicker />;
-  else                                  content = <RouterProvider router={router} />;
+  else                                   content = <RouterProvider router={router} />;
 
   const userName = user
     ? [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username

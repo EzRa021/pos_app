@@ -34,9 +34,13 @@ pub struct LoyaltyTransaction {
 
 #[derive(Debug, Serialize)]
 pub struct LoyaltyBalance {
-    pub customer_id: i32,
-    pub points:      i32,
-    pub naira_value: Decimal,
+    pub customer_id:      i32,
+    pub points:           i32,
+    pub naira_value:      Decimal,
+    /// Whether this store's loyalty programme is currently active.
+    /// Included so the POS can hide/disable the loyalty toggle without a
+    /// separate round-trip to fetch loyalty_settings.
+    pub programme_active: bool,
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -44,8 +48,8 @@ pub struct LoyaltyBalance {
 #[derive(Debug, Deserialize)]
 pub struct UpdateLoyaltySettingsDto {
     pub store_id:                   i32,
-    pub points_per_naira:           Option<f64>,
-    pub naira_per_point_redemption: Option<f64>,
+    pub points_per_naira:           Option<Decimal>,
+    pub naira_per_point_redemption: Option<Decimal>,
     pub min_redemption_points:      Option<i32>,
     pub expiry_days:                Option<i32>,
     pub is_active:                  Option<bool>,

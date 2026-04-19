@@ -760,7 +760,9 @@ pub async fn create_transaction(
     // POST-COMMIT HOOKS (non-fatal — errors are logged, sale already committed)
     // ════════════════════════════════════════════════════════════════════════════
 
-    // Fix 3: Auto-earn loyalty points when customer is attached and loyalty active
+    // ── Earn loyalty points (non-credit, non-fatal) ────────────────────────────────────
+    // earn_points_internal is the ONLY place earn logic runs. The frontend
+    // must NOT also call earnPoints — that would double-credit the customer.
     if let Some(customer_id) = payload.customer_id {
         if !is_credit {
             super::loyalty::earn_points_internal(
@@ -769,6 +771,25 @@ pub async fn create_transaction(
                 customer_id,
                 tx_id,
                 total_amount,
+                claims.user_id,
+            )
+            .await
+            .ok(); // non-fatal
+        }
+    }
+
+    // ── Redeem loyalty points if the cashier applied them as payment ────────────
+    // loyalty_points_redeemed is forwarded from the POS loyalty toggle.
+    // Running after earn_points_internal means the customer's balance reflects
+    // the earn THEN the deduction — keeping balance_after accurate in the log.
+    if let (Some(customer_id), Some(pts)) = (payload.customer_id, payload.loyalty_points_redeemed) {
+        if pts > 0 && !is_credit {
+            super::loyalty::redeem_points_internal(
+                &pool,
+                payload.store_id,
+                customer_id,
+                tx_id,
+                pts,
                 claims.user_id,
             )
             .await

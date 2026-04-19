@@ -50,15 +50,17 @@ function setTxt(doc, c)       { doc.setTextColor(c[0], c[1], c[2]); }
 function fw(doc, w)           { doc.setFont("helvetica", w); }
 
 function fmtMoney(val, cur = "NGN") {
-  const n = parseFloat(val ?? 0);
-  try {
-    return new Intl.NumberFormat("en-NG", {
-      style: "currency", currency: cur,
-      minimumFractionDigits: 2, maximumFractionDigits: 2,
-    }).format(n);
-  } catch {
-    return `${cur} ${n.toFixed(2)}`;
-  }
+  // jsPDF standard fonts (Helvetica / Courier) only support Latin-1.
+  // Intl.NumberFormat("en-NG") outputs the Naira sign ₦ (U+20A6) which
+  // these fonts cannot render, producing garbage like "&3&27".
+  // We format using ASCII-safe "NGN 1,234.56" notation instead.
+  const n    = parseFloat(val ?? 0);
+  const sign = n < 0 ? "-" : "";
+  const abs  = Math.abs(n);
+  // Manual comma-grouped fixed-2 format — no locale, no special chars
+  const [integer, decimal] = abs.toFixed(2).split(".");
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${sign}${cur} ${grouped}.${decimal}`;
 }
 
 function fmtNum(val, dec = 0) {
@@ -600,72 +602,207 @@ export function generateEodPdf(report, breakdown, store) {
     y += 6;
   }
 
-  // ── PAGE 2: PRODUCT BREAKDOWN ──────────────────────────────────────────────
-  const topItems    = bd.top_items    ?? [];
-  const categories  = bd.categories  ?? [];
-  const departments = bd.departments ?? [];
-  const hourly      = bd.hourly      ?? [];
+  // ── PAGE 2: PRODUCT HIERARCHY + TIMELINE ────────────────────────────────────
+  const topItems = bd.top_items ?? [];
+  const hourly   = bd.hourly   ?? [];
 
-  if (topItems.length > 0 || categories.length > 0 || departments.length > 0 || hourly.length > 0) {
+  if (topItems.length > 0 || hourly.length > 0) {
     _drawPageFooter(doc);
     doc.addPage();
     _drawPageHeader(doc, _headerMeta);
     y = 28;
 
-    // ── TOP-SELLING ITEMS ────────────────────────────────────────────────────
+    // ── PRODUCT SALES HIERARCHY (Dept → Category → Item) ─────────────────────
     if (topItems.length > 0) {
-      y = sectionHead(doc, y, `Top-Selling Items  (${topItems.length} products)`);
+      y = sectionHead(doc, y, `Product Sales  —  Department > Category > Item  (${topItems.length})`);
 
-      y = drawTable(doc, y, [
-        { key: "rank",          header: "#",        flex: 0.35, align: "right" },
-        { key: "item_name",     header: "Item",     flex: 3, maxLen: 34 },
-        { key: "sku",           header: "SKU",      flex: 1.4, maxLen: 16 },
-        { key: "category_name", header: "Category", flex: 1.8, maxLen: 18 },
-        { key: "qty_sold",      header: "Qty",      flex: 0.7, align: "right", type: "number" },
-        { key: "avg_price",     header: "Avg Price",flex: 1.6, align: "right", type: "currency", mono: true,
-          colorFn: () => C.textMuted },
-        { key: "gross_sales",   header: "Revenue",  flex: 1.8, align: "right", type: "currency",
-          mono: true, bold: true, colorFn: () => C.accent },
-      ], topItems.map((item, i) => ({ ...item, rank: i + 1 })), cur);
+      // Build cat→dept lookup from categories array
+      const catDeptMap = new Map();
+      for (const cat of (bd.categories ?? [])) {
+        if (cat.category_name) catDeptMap.set(cat.category_name, cat.department_name ?? null);
+      }
 
+      // Group items into Dept → Category → Item tree
+      const deptMap = new Map();
+      for (const item of topItems) {
+        const dn = item.department_name ?? catDeptMap.get(item.category_name) ?? "Uncategorized";
+        const cn = item.category_name  ?? "Uncategorized";
+        if (!deptMap.has(dn)) deptMap.set(dn, { name: dn, cats: new Map(), qty: 0, rev: 0 });
+        const dept = deptMap.get(dn);
+        if (!dept.cats.has(cn)) dept.cats.set(cn, { name: cn, items: [], qty: 0, rev: 0 });
+        const catObj = dept.cats.get(cn);
+        const qty = parseFloat(item.qty_sold   ?? 0);
+        const rev = parseFloat(item.gross_sales ?? 0);
+        catObj.items.push({ ...item, qty, rev });
+        catObj.qty += qty;  catObj.rev += rev;
+        dept.qty   += qty;  dept.rev   += rev;
+      }
+      const hierarchy = Array.from(deptMap.values())
+        .map((d) => ({ ...d, cats: Array.from(d.cats.values()).sort((a, b) => b.rev - a.rev) }))
+        .sort((a, b) => b.rev - a.rev);
+
+      // Column proportions (mm from MARGIN)
+      const C_NAME = CONTENT * 0.40; // name column width
+      const C_SKU  = CONTENT * 0.14; // SKU column width
+      const C_QTY  = CONTENT * 0.14; // qty column width
+      const C_UNIT = CONTENT * 0.10; // unit column width
+      // Revenue occupies the remaining width to CONTENT
+
+      // Column-header strip
+      setFill(doc, C.sectionBg);
+      doc.rect(MARGIN, y, CONTENT, 6, "F");
+      setTxt(doc, C.textMuted);
+      doc.setFontSize(6.5);
+      fw(doc, "bold");
+      doc.text("NAME / ITEM",  MARGIN + PAD + 2, y + 4);
+      doc.text("SKU",          MARGIN + C_NAME + PAD, y + 4);
+      doc.text("QTY",  MARGIN + C_NAME + C_SKU + C_QTY - PAD,          y + 4, { align: "right" });
+      doc.text("UNIT", MARGIN + C_NAME + C_SKU + C_QTY + C_UNIT - PAD, y + 4, { align: "right" });
+      doc.text("REVENUE", MARGIN + CONTENT - PAD, y + 4, { align: "right" });
       y += 6;
-    }
 
-    // ── BY CATEGORY ──────────────────────────────────────────────────────────
-    if (categories.length > 0) {
-      y = checkPage(doc, y, 20 + categories.length * ROW_H);
-      y = sectionHead(doc, y, "Sales by Category");
+      let altRow = 0; // alternating-shade counter for item rows
 
-      y = drawTable(doc, y, [
-        { key: "category_name",    header: "Category",   flex: 2.5, maxLen: 30 },
-        { key: "department_name",  header: "Department", flex: 2,   maxLen: 24 },
-        { key: "transaction_count",header: "Txns",       flex: 0.8, align: "right", type: "number" },
-        { key: "qty_sold",         header: "Qty",        flex: 0.8, align: "right", type: "number" },
-        { key: "gross_sales",      header: "Revenue",    flex: 1.8, align: "right", type: "currency",
-          mono: true, bold: true, colorFn: () => C.accent },
-        { key: "net_sales",        header: "Net Sales",  flex: 1.8, align: "right", type: "currency",
-          mono: true, colorFn: () => C.textMuted },
-      ], categories, cur);
+      for (const dept of hierarchy) {
+        y = checkPage(doc, y, ROW_H * 3 + 4);
 
-      y += 6;
-    }
+        // ── Department header row ──
+        setFill(doc, C.tableThead);
+        doc.rect(MARGIN, y, CONTENT, ROW_H, "F");
+        // Bold blue left accent stripe
+        setFill(doc, C.accent);
+        doc.rect(MARGIN, y, 3.5, ROW_H, "F");
 
-    // ── BY DEPARTMENT ─────────────────────────────────────────────────────────
-    if (departments.length > 0) {
-      y = checkPage(doc, y, 20 + departments.length * ROW_H);
-      y = sectionHead(doc, y, "Sales by Department");
+        setTxt(doc, C.white);
+        doc.setFontSize(8);
+        fw(doc, "bold");
+        doc.text(dept.name.toUpperCase(), MARGIN + 6.5, y + 5);
 
-      y = drawTable(doc, y, [
-        { key: "department_name",   header: "Department", flex: 3 },
-        { key: "transaction_count", header: "Txns",       flex: 0.8, align: "right", type: "number" },
-        { key: "qty_sold",          header: "Qty Sold",   flex: 1,   align: "right", type: "number" },
-        { key: "gross_sales",       header: "Revenue",    flex: 2,   align: "right", type: "currency",
-          mono: true, bold: true, colorFn: () => C.accent },
-        { key: "net_sales",         header: "Net Sales",  flex: 2,   align: "right", type: "currency",
-          mono: true, colorFn: () => C.textMuted },
-      ], departments, cur);
+        // Dept qty + revenue right-aligned
+        doc.setFont("courier", "bold");
+        doc.setFontSize(7.5);
+        doc.text(fmtNum(dept.qty, 2),     MARGIN + C_NAME + C_SKU + C_QTY - PAD, y + 5, { align: "right" });
+        doc.text(fmtMoney(dept.rev, cur), MARGIN + CONTENT - PAD,                y + 5, { align: "right" });
+        y += ROW_H;
 
-      y += 6;
+        for (const cat of dept.cats) {
+          y = checkPage(doc, y, ROW_H + 2);
+
+          // ── Category row ──
+          setFill(doc, C.tableAlt);
+          doc.rect(MARGIN, y, CONTENT, ROW_H, "F");
+          // Slate indent bar
+          setFill(doc, [148, 163, 184]);
+          doc.rect(MARGIN + 3.5, y + 1, 2, ROW_H - 2, "F");
+
+          setDraw(doc, C.border);
+          doc.setLineWidth(0.15);
+          doc.line(MARGIN, y + ROW_H, PW - MARGIN, y + ROW_H);
+
+          setTxt(doc, C.sectionFg);
+          doc.setFontSize(7.5);
+          fw(doc, "bold");
+          doc.text(cat.name, MARGIN + 8, y + 5);
+
+          setTxt(doc, C.text);
+          doc.setFont("courier", "bold");
+          doc.setFontSize(7.5);
+          doc.text(fmtNum(cat.qty, 2),     MARGIN + C_NAME + C_SKU + C_QTY - PAD, y + 5, { align: "right" });
+          setTxt(doc, C.accent);
+          doc.text(fmtMoney(cat.rev, cur), MARGIN + CONTENT - PAD,                y + 5, { align: "right" });
+          y += ROW_H;
+
+          for (const item of cat.items) {
+            y = checkPage(doc, y, ROW_H);
+
+            // ── Item row (alternating shade) ──
+            setFill(doc, altRow % 2 === 0 ? C.white : C.tableAlt);
+            doc.rect(MARGIN, y, CONTENT, ROW_H, "F");
+
+            setDraw(doc, C.border);
+            doc.setLineWidth(0.12);
+            doc.line(MARGIN, y + ROW_H, PW - MARGIN, y + ROW_H);
+
+            // Bullet dot at item indent
+            setFill(doc, C.border);
+            doc.circle(MARGIN + 11, y + ROW_H / 2, 0.8, "F");
+
+            // Item name (truncated)
+            let nm = (item.item_name ?? "—").slice(0, 30);
+            if ((item.item_name ?? "").length > 30) nm += "…";
+            setTxt(doc, C.text);
+            doc.setFontSize(7.5);
+            fw(doc, "normal");
+            doc.text(nm, MARGIN + 13.5, y + 5);
+
+            // SKU
+            setTxt(doc, C.textMuted);
+            doc.setFontSize(6.5);
+            doc.text((item.sku ?? "—").slice(0, 12), MARGIN + C_NAME + PAD, y + 5);
+
+            // Qty
+            setTxt(doc, C.text);
+            doc.setFont("courier", "normal");
+            doc.setFontSize(7.5);
+            doc.text(fmtNum(item.qty_sold, 2), MARGIN + C_NAME + C_SKU + C_QTY - PAD, y + 5, { align: "right" });
+
+            // Unit
+            setTxt(doc, C.textMuted);
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(6.5);
+            doc.text(
+              (item.measurement_type ?? "").slice(0, 6),
+              MARGIN + C_NAME + C_SKU + C_QTY + C_UNIT - PAD, y + 5,
+              { align: "right" },
+            );
+
+            // Revenue
+            setTxt(doc, C.text);
+            doc.setFont("courier", "normal");
+            doc.setFontSize(7.5);
+            doc.text(fmtMoney(item.gross_sales ?? 0, cur), MARGIN + CONTENT - PAD, y + 5, { align: "right" });
+
+            y += ROW_H;
+            altRow++;
+          }
+
+          // ── Category subtotal row ──
+          setFill(doc, [220, 228, 240]);
+          doc.rect(MARGIN, y, CONTENT, ROW_H - 1, "F");
+          setDraw(doc, C.border);
+          doc.setLineWidth(0.2);
+          doc.line(MARGIN, y + ROW_H - 1, PW - MARGIN, y + ROW_H - 1);
+
+          setTxt(doc, C.textMuted);
+          doc.setFontSize(6.5);
+          fw(doc, "bold");
+          doc.text(`${cat.name} subtotal`, MARGIN + 8, y + 4);
+
+          setTxt(doc, C.text);
+          doc.setFont("courier", "bold");
+          doc.setFontSize(7);
+          doc.text(fmtNum(cat.qty, 2),    MARGIN + C_NAME + C_SKU + C_QTY - PAD, y + 4, { align: "right" });
+          setTxt(doc, C.accent);
+          doc.text(fmtMoney(cat.rev, cur), MARGIN + CONTENT - PAD,               y + 4, { align: "right" });
+          y += ROW_H;
+        }
+
+        // ── Department grand-total row ──
+        setFill(doc, C.kpiBg);
+        setDraw(doc, C.kpiBorder);
+        doc.setLineWidth(0.35);
+        doc.rect(MARGIN, y, CONTENT, ROW_H + 1, "FD");
+
+        setTxt(doc, C.accent);
+        doc.setFontSize(8);
+        fw(doc, "bold");
+        doc.text(`${dept.name.toUpperCase()}  —  TOTAL`, MARGIN + 6.5, y + 5.5);
+
+        doc.setFont("courier", "bold");
+        doc.text(fmtNum(dept.qty, 2),    MARGIN + C_NAME + C_SKU + C_QTY - PAD, y + 5.5, { align: "right" });
+        doc.text(fmtMoney(dept.rev, cur), MARGIN + CONTENT - PAD,               y + 5.5, { align: "right" });
+        y += ROW_H + 1 + 5;
+      }
     }
 
     // ── HOURLY SALES TIMELINE ─────────────────────────────────────────────────

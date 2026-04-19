@@ -5,7 +5,7 @@ import { useState } from "react";
 import {
   Receipt, Tag, Shield, ChevronRight,
   SlidersHorizontal, Star, Download, Barcode, FileSpreadsheet,
-  Building2, Printer, Palette, Store, Cloud,
+  Building2, Printer, Palette, Store, Cloud, CreditCard, Layers, Hash, Bell, Package, Clock, Zap,
 } from "lucide-react";
 
 import { PageHeader }                    from "@/components/shared/PageHeader";
@@ -21,6 +21,14 @@ import { BusinessProfilePanel }          from "@/features/settings/BusinessProfi
 import { PrinterSettingsPanel }          from "@/features/settings/PrinterSettingsPanel";
 import { StoresManagementPanel }         from "@/features/settings/StoresManagementPanel";
 import { CloudSyncPanel }               from "@/features/settings/CloudSyncPanel";
+import { TaxSettingsPanel }            from "@/features/settings/TaxSettingsPanel";
+import { PaymentMethodsPanel }         from "@/features/settings/PaymentMethodsPanel";
+import { ExpenseCategoriesPanel }      from "@/features/settings/ExpenseCategoriesPanel";
+import { InvoiceNumberingPanel }       from "@/features/settings/InvoiceNumberingPanel";
+import { NotificationPrefsPanel }      from "@/features/settings/NotificationPrefsPanel";
+import { LowStockDefaultsPanel }       from "@/features/settings/LowStockDefaultsPanel";
+import { OpeningHoursPanel }           from "@/features/settings/OpeningHoursPanel";
+import { PosShortcutsPanel }           from "@/features/settings/PosShortcutsPanel";
 import { useBranchStore }        from "@/stores/branch.store";
 import { cn }                    from "@/lib/utils";
 
@@ -114,7 +122,56 @@ const SETTINGS_TABS = [
     label:       "Tax",
     icon:        Tag,
     description: "Tax categories and rate configuration",
-    available:   false,
+    available:   true,
+  },
+  {
+    id:          "payment-methods",
+    label:       "Payment Methods",
+    icon:        CreditCard,
+    description: "Enable, rename and sort POS payment methods",
+    available:   true,
+  },
+  {
+    id:          "expense-categories",
+    label:       "Expense Categories",
+    icon:        Layers,
+    description: "Manage categories for expense tracking",
+    available:   true,
+  },
+  {
+    id:          "numbering",
+    label:       "Invoice Numbering",
+    icon:        Hash,
+    description: "Prefix, padding and sequence per document type",
+    available:   true,
+  },
+  {
+    id:          "notification-prefs",
+    label:       "Notification Prefs",
+    icon:        Bell,
+    description: "Thresholds and toggles for alert events",
+    available:   true,
+  },
+  {
+    id:          "low-stock-defaults",
+    label:       "Low Stock Defaults",
+    icon:        Package,
+    description: "Default reorder point and quantity for new items",
+    available:   true,
+  },
+  {
+    id:          "opening-hours",
+    label:       "Opening Hours",
+    icon:        Clock,
+    description: "Weekly operating hours per store",
+    available:   true,
+  },
+  {
+    id:          "pos-shortcuts",
+    label:       "POS Shortcuts",
+    icon:        Zap,
+    description: "Pin up to 12 items as quick-access POS buttons",
+    available:   true,
   },
 ];
 
@@ -193,6 +250,14 @@ export default function SettingsPage() {
       case "printer":        return <PrinterSettingsPanel />;
       case "stores":         return <StoresManagementPanel />;
       case "cloud-sync":    return <CloudSyncPanel />;
+      case "tax":                return <TaxSettingsPanel />;
+      case "payment-methods":    return <PaymentMethodsPanel />;
+      case "expense-categories":  return <ExpenseCategoriesPanel />;
+      case "numbering":           return <InvoiceNumberingPanel />;
+      case "notification-prefs":  return <NotificationPrefsPanel />;
+      case "low-stock-defaults":  return <LowStockDefaultsPanel />;
+      case "opening-hours":       return <OpeningHoursPanel />;
+      case "pos-shortcuts":       return <PosShortcutsPanel />;
       default: {
         const tab  = SETTINGS_TABS.find((t) => t.id === activeTab);
         const Icon = tab?.icon;
@@ -222,49 +287,45 @@ export default function SettingsPage() {
         description={`Configure store defaults for ${activeStore?.store_name ?? "your store"}.`}
       />
 
-      <div className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6">
-          <div className="flex gap-6 items-start">
+      <div className="flex flex-1 min-h-0 overflow-hidden gap-6 px-6 py-6">
 
-            {/* Left sidebar nav */}
-            <div className="w-52 shrink-0 rounded-xl border border-border bg-card p-2 space-y-0.5 sticky top-0">
-              <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
-                Configuration
-              </p>
-              {SETTINGS_TABS.map((tab) => (
-                <SettingsNavItem
-                  key={tab.id}
-                  tab={tab}
-                  isActive={activeTab === tab.id}
-                  onClick={setActiveTab}
-                />
-              ))}
-            </div>
-
-            {/* Main content */}
-            <div className="flex-1 min-w-0">
-              {(() => {
-                const tab  = SETTINGS_TABS.find((t) => t.id === activeTab);
-                const Icon = tab?.icon;
-                return (
-                  <div className="mb-5 flex items-center gap-3">
-                    {Icon && (
-                      <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-muted/30">
-                        <Icon className="h-4 w-4 text-foreground" />
-                      </div>
-                    )}
-                    <div>
-                      <h2 className="text-[15px] font-bold text-foreground">{tab?.label} Settings</h2>
-                      <p className="text-xs text-muted-foreground mt-0.5">{tab?.description}</p>
-                    </div>
-                  </div>
-                );
-              })()}
-              {renderContent()}
-            </div>
-
-          </div>
+        {/* Left sidebar nav — fixed height, independently scrollable */}
+        <div className="w-56 shrink-0 rounded-xl border border-border bg-card p-2 space-y-0.5 overflow-y-auto self-start max-h-full">
+          <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
+            Configuration
+          </p>
+          {SETTINGS_TABS.map((tab) => (
+            <SettingsNavItem
+              key={tab.id}
+              tab={tab}
+              isActive={activeTab === tab.id}
+              onClick={setActiveTab}
+            />
+          ))}
         </div>
+
+        {/* Main content — independently scrollable */}
+        <div className="flex-1 min-w-0 overflow-y-auto pb-6">
+          {(() => {
+            const tab  = SETTINGS_TABS.find((t) => t.id === activeTab);
+            const Icon = tab?.icon;
+            return (
+              <div className="mb-5 flex items-center gap-3">
+                {Icon && (
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-muted/30">
+                    <Icon className="h-4 w-4 text-foreground" />
+                  </div>
+                )}
+                <div>
+                  <h2 className="text-[15px] font-bold text-foreground">{tab?.label} Settings</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">{tab?.description}</p>
+                </div>
+              </div>
+            );
+          })()}
+          {renderContent()}
+        </div>
+
       </div>
     </div>
   );

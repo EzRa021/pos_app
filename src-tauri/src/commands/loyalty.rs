@@ -43,7 +43,6 @@ pub async fn update_loyalty_settings(
 ) -> AppResult<LoyaltySettings> {
     guard_permission(&state, &token, "stores.manage").await?;
     let pool   = state.pool().await?;
-    let to_dec = |v: f64| Decimal::try_from(v).unwrap_or_default();
     sqlx::query!(
         "INSERT INTO loyalty_settings (store_id) VALUES ($1) ON CONFLICT DO NOTHING",
         payload.store_id,
@@ -59,8 +58,8 @@ pub async fn update_loyalty_settings(
            is_active                  = COALESCE($5, is_active),
            updated_at                 = NOW()
            WHERE store_id = $6"#,
-        payload.points_per_naira.map(to_dec),
-        payload.naira_per_point_redemption.map(to_dec),
+        payload.points_per_naira,
+        payload.naira_per_point_redemption,
         payload.min_redemption_points,
         payload.expiry_days,
         payload.is_active,
@@ -110,6 +109,16 @@ pub(crate) async fn earn_points_internal(
     sale_amount:    Decimal,
     performed_by:   i32,
 ) -> AppResult<()> {
+    // Ensure a settings row exists for this store (safe for stores created after
+    // migration 0039, or before the loyalty settings page has ever been visited).
+    sqlx::query!(
+        "INSERT INTO loyalty_settings (store_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        store_id,
+    )
+    .execute(pool)
+    .await
+    .ok(); // non-fatal — if this fails the fetch below will handle it
+
     let settings = match fetch_settings(pool, store_id).await {
         Ok(s) => s,
         Err(_) => return Ok(()), // loyalty not configured — skip silently
@@ -124,6 +133,52 @@ pub(crate) async fn earn_points_internal(
         pool, customer_id, store_id, Some(transaction_id),
         "earn", points_earned,
         Some(format!("Earned {points_earned} points on sale")),
+        performed_by,
+    )
+    .await
+    .map(|_| ())
+}
+
+// ── redeem_points_internal ────────────────────────────────────────────────────
+
+/// Called internally from create_transaction after commit when the cashier
+/// applies loyalty points as partial/full payment. No token needed.
+/// Always succeeds (non-fatal) — if points can't be deducted, the sale is
+/// still valid; the imbalance is recorded in the loyalty_transactions log.
+pub(crate) async fn redeem_points_internal(
+    pool:           &sqlx::PgPool,
+    store_id:       i32,
+    customer_id:    i32,
+    transaction_id: i32,
+    points:         i32,
+    performed_by:   i32,
+) -> AppResult<()> {
+    if points <= 0 { return Ok(()); }
+
+    // Ensure a settings row exists (mirrors the earn path for consistency)
+    sqlx::query!(
+        "INSERT INTO loyalty_settings (store_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        store_id,
+    )
+    .execute(pool)
+    .await
+    .ok();
+
+    let settings = match fetch_settings(pool, store_id).await {
+        Ok(s) => s,
+        Err(_) => return Ok(()), // loyalty not configured — skip silently
+    };
+    if !settings.is_active { return Ok(()); }
+
+    // Clamp to actual balance — never drive the counter below 0
+    let balance = current_balance(pool, customer_id).await.unwrap_or(0);
+    if balance <= 0 { return Ok(()); }
+    let actual_points = points.min(balance);
+
+    record_points_tx(
+        pool, customer_id, store_id, Some(transaction_id),
+        "redeem", -actual_points,
+        Some(format!("Redeemed {actual_points} points at POS (transaction {transaction_id})")),
         performed_by,
     )
     .await
@@ -227,11 +282,27 @@ pub async fn get_loyalty_balance(
     store_id:    i32,
 ) -> AppResult<LoyaltyBalance> {
     guard_permission(&state, &token, "customers.read").await?;
-    let pool     = state.pool().await?;
+    let pool = state.pool().await?;
+
+    // Ensure a settings row exists so the POS never gets a NotFound error
+    // when the loyalty settings page hasn't been visited yet.
+    sqlx::query!(
+        "INSERT INTO loyalty_settings (store_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        store_id,
+    )
+    .execute(&pool)
+    .await
+    .ok();
+
     let points   = current_balance(&pool, customer_id).await?;
     let settings = fetch_settings(&pool, store_id).await?;
     let naira_value = Decimal::from(points) * settings.naira_per_point_redemption;
-    Ok(LoyaltyBalance { customer_id, points, naira_value })
+    Ok(LoyaltyBalance {
+        customer_id,
+        points,
+        naira_value,
+        programme_active: settings.is_active,
+    })
 }
 
 // ── expire_old_points ─────────────────────────────────────────────────────────

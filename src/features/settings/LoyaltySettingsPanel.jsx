@@ -77,6 +77,19 @@ export function LoyaltySettingsPanel() {
     onError: (e) => onMutationError("Couldn't Save Loyalty Settings", e),
   });
 
+  const toggleActive = useMutation({
+    mutationFn: (val) => updateLoyaltySettings({ ...form, store_id: storeId, is_active: val }),
+    onSuccess: (d) => {
+      setForm({ ...DEFAULTS, ...d });
+      qc.setQueryData(["loyalty-settings", storeId], d);
+      toastSuccess(
+        d.is_active ? "Loyalty Programme Enabled" : "Loyalty Programme Disabled",
+        d.is_active ? "Customers will now earn points on purchases." : "No points will be earned until re-enabled.",
+      );
+    },
+    onError: (e) => onMutationError("Couldn't Update Loyalty Programme", e),
+  });
+
   const set = (key) => (val) => setForm((f) => ({ ...f, [key]: val }));
 
   if (!storeId) return <p className="text-xs text-muted-foreground py-8 text-center">No store selected.</p>;
@@ -109,9 +122,12 @@ export function LoyaltySettingsPanel() {
               : "Enable to start rewarding customers with every purchase."}
           </p>
         </div>
-        <button type="button" onClick={() => set("is_active")(!form.is_active)}
+        <button type="button"
+          onClick={() => toggleActive.mutate(!form.is_active)}
+          disabled={toggleActive.isPending}
           className={cn("flex h-6 w-11 shrink-0 items-center rounded-full border-2 transition-colors duration-200",
-            form.is_active ? "border-success bg-success" : "border-border bg-muted")}>
+            form.is_active ? "border-success bg-success" : "border-border bg-muted",
+            toggleActive.isPending && "opacity-60 cursor-not-allowed")}>
           <span className={cn("block h-4 w-4 rounded-full bg-white shadow transition-transform duration-200",
             form.is_active ? "translate-x-5" : "translate-x-0.5")} />
         </button>

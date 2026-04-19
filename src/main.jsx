@@ -23,14 +23,9 @@ function ThemedToaster() {
       closeButton
       gap={8}
       toastOptions={{
-        style: {
-          fontFamily: '"DM Sans", system-ui, sans-serif',
-          // Use design-token colours so toasts match both light and dark themes.
-          background:   "hsl(var(--card))",
-          color:        "hsl(var(--foreground))",
-          border:       "1px solid hsl(var(--border))",
-          boxShadow:    "0 4px 24px hsl(var(--foreground) / 0.08)",
-        },
+        // index.css [data-sonner-toaster] rules handle all colours.
+        // Only override font so toasts match the app typeface.
+        style: { fontFamily: '"DM Sans", system-ui, sans-serif' },
         className: "themed-toast",
       }}
     />

@@ -249,9 +249,14 @@ pub(crate) async fn restock_item_inner(
 
     let qty_after = qty_before + qty;
 
+    // Keep available_quantity consistent: counted qty minus whatever is still
+    // reserved (e.g. held orders). GREATEST(0, …) prevents it going negative.
     sqlx::query!(
-        "UPDATE item_stock SET quantity = $1, available_quantity = $1, updated_at = NOW()
-         WHERE item_id = $2 AND store_id = $3",
+        r#"UPDATE item_stock
+           SET quantity           = $1,
+               available_quantity = GREATEST(0, $1 - COALESCE(reserved_quantity, 0)),
+               updated_at         = NOW()
+           WHERE item_id = $2 AND store_id = $3"#,
         qty_after, payload.item_id, payload.store_id,
     )
     .execute(&mut *tx)
@@ -358,7 +363,11 @@ pub(crate) async fn adjust_inventory_inner(
     }
 
     sqlx::query!(
-        "UPDATE item_stock SET quantity = $1, updated_at = NOW() WHERE item_id = $2 AND store_id = $3",
+        r#"UPDATE item_stock
+           SET quantity           = $1,
+               available_quantity = GREATEST(0, $1 - COALESCE(reserved_quantity, 0)),
+               updated_at         = NOW()
+           WHERE item_id = $2 AND store_id = $3"#,
         qty_after, payload.item_id, payload.store_id,
     )
     .execute(&mut *tx)
@@ -986,10 +995,17 @@ async fn apply_variances_tx(
         let qty_after = ci.counted_quantity;
         let variance  = ci.variance_quantity.unwrap_or_default();
 
-        // Update stock to counted quantity
+        // Update stock to the physically-counted quantity.
+        // available_quantity = counted − still-reserved so the POS, inventory
+        // list, and low-stock alerts all reflect the reconciled stock immediately.
+        // GREATEST(0, …) keeps available_quantity non-negative in the rare case
+        // where reserved_quantity exceeds the counted total.
         sqlx::query!(
             r#"UPDATE item_stock
-               SET quantity = $1, last_count_date = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+               SET quantity           = $1,
+                   available_quantity = GREATEST(0, $1 - COALESCE(reserved_quantity, 0)),
+                   last_count_date    = CURRENT_TIMESTAMP,
+                   updated_at         = CURRENT_TIMESTAMP
                WHERE item_id = $2 AND store_id = $3"#,
             qty_after, ci.item_id, store_id
         )
@@ -1079,7 +1095,11 @@ pub(crate) async fn deduct_stock_from_sale(
     let qty_after = qty_before - quantity;
 
     sqlx::query!(
-        "UPDATE item_stock SET quantity = $1, updated_at = NOW() WHERE item_id = $2 AND store_id = $3",
+        r#"UPDATE item_stock
+           SET quantity           = $1,
+               available_quantity = GREATEST(0, $1 - COALESCE(reserved_quantity, 0)),
+               updated_at         = NOW()
+           WHERE item_id = $2 AND store_id = $3"#,
         qty_after, item_id, store_id
     )
     .execute(&mut **tx)

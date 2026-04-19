@@ -21,6 +21,7 @@
 use sqlx::PgPool;
 use serde_json::Value;
 use uuid::Uuid;
+use std::collections::HashSet;
 use crate::state::AppState;
 use chrono::Utc;
 
@@ -169,38 +170,31 @@ pub async fn backfill_sync_queue(pool: &PgPool) -> Result<u64, sqlx::Error> {
         }
     };
 
-    // (table_name, pk_col_cast_to_text, store_id_col_or_none)
-    // Order matters: parent tables before children (FK deps)
-    let tables: &[(&str, &str, Option<&str>)] = &[
-        ("businesses",           "t.id::text",       None),          // FIRST: no FK deps
-        ("stores",               "t.id::text",       None),
-        ("users",                "t.id::text",       Some("t.store_id")),
-        ("departments",          "t.id::text",       Some("t.store_id")),
-        ("categories",           "t.id::text",       Some("t.store_id")),
-        ("suppliers",            "t.id::text",       Some("t.store_id")),
-        ("items",                "t.id::text",       Some("t.store_id")),
-        ("item_stock",           "t.item_id::text",  Some("t.store_id")),
-        ("customers",            "t.id::text",       Some("t.store_id")),
-        ("shifts",               "t.id::text",       Some("t.store_id")),
-        ("transactions",         "t.id::text",       Some("t.store_id")),
-        ("transaction_items",    "t.id::text",       None),
-        ("payments",             "t.id::text",       None),
-        ("expenses",             "t.id::text",       Some("t.store_id")),
-        ("credit_sales",         "t.id::text",       Some("t.store_id")),
-        ("returns",              "t.id::text",       Some("t.store_id")),
-        ("return_items",         "t.id::text",       None),
-        ("purchase_orders",      "t.id::text",       Some("t.store_id")),
-        ("purchase_order_items", "t.id::text",       None),
-        ("cash_movements",       "t.id::text",       None),
-        ("reorder_alerts",       "t.id::text",       Some("t.store_id")),
-        ("notifications",        "t.id::text",       Some("t.store_id")),
+    // Ordered list of tables to backfill. Order matters: parent tables first.
+    let tables: &[&str] = &[
+        "businesses",
+        "stores", "users",
+        "departments", "categories", "suppliers",
+        "items", "item_stock",
+        "customers", "shifts",
+        "transactions", "transaction_items", "payments",
+        "expenses", "credit_sales",
+        "returns", "return_items",
+        "purchase_orders", "purchase_order_items",
+        "cash_movements", "reorder_alerts", "notifications",
     ];
 
     let biz_id_str = biz_id.to_string();
     let mut total: u64 = 0;
 
-    for (table, pk, store_expr) in tables {
-        let (col_list, val_list) = match store_expr {
+    for table in tables {
+        let meta = match table_backfill_meta(table) {
+            Some(m) => m,
+            None    => continue,
+        };
+        let pk = meta.pk_expr;
+
+        let (col_list, val_list) = match meta.store_expr {
             Some(sc) => (
                 "table_name, operation, row_id, row_data, store_id, business_id".to_string(),
                 format!("'{table}', 'INSERT', {pk}, row_to_json(t.*), {sc}, '{biz_id_str}'::uuid"),
@@ -212,11 +206,20 @@ pub async fn backfill_sync_queue(pool: &PgPool) -> Result<u64, sqlx::Error> {
         };
 
         let biz_col = biz_id_filter_col(table);
+        // For the `businesses` table biz_col = "id" (never NULL); for all other
+        // tables we also include rows where business_id IS NULL — these are rows
+        // that pre-date the business_id column being populated. They belong to
+        // the single local business and must be synced so child FK references resolve.
+        let biz_filter = if table == &"businesses" {
+            format!("t.{biz_col} = '{biz_id_str}'::uuid")
+        } else {
+            format!("(t.{biz_col} = '{biz_id_str}'::uuid OR t.{biz_col} IS NULL)")
+        };
         let stmt = format!(
             "INSERT INTO sync_queue ({col_list})
              SELECT {val_list}
              FROM   {table} t
-             WHERE  t.{biz_col} = '{biz_id_str}'::uuid
+             WHERE  {biz_filter}
                AND  NOT EXISTS (
                  SELECT 1 FROM sync_queue sq
                  WHERE  sq.table_name = '{table}'
@@ -281,6 +284,41 @@ pub async fn queue_row(
     }
 }
 
+/// Per-table backfill metadata used by both the startup backfill and the
+/// on-demand `force_resync_table` triggered by FK failures.
+struct TableMeta {
+    pk_expr:    &'static str,          // SQL expression producing the row PK as TEXT
+    store_expr: Option<&'static str>,  // SQL expression for the store_id column, or None
+}
+
+fn table_backfill_meta(table: &str) -> Option<TableMeta> {
+    Some(match table {
+        "businesses"           => TableMeta { pk_expr: "t.id::text",      store_expr: None },
+        "stores"               => TableMeta { pk_expr: "t.id::text",      store_expr: None },
+        "users"                => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "departments"          => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "categories"           => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "suppliers"            => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "items"                => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "item_stock"           => TableMeta { pk_expr: "t.item_id::text", store_expr: Some("t.store_id") },
+        "customers"            => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "shifts"               => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "transactions"         => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "transaction_items"    => TableMeta { pk_expr: "t.id::text",      store_expr: None },
+        "payments"             => TableMeta { pk_expr: "t.id::text",      store_expr: None },
+        "expenses"             => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "credit_sales"         => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "returns"              => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "return_items"         => TableMeta { pk_expr: "t.id::text",      store_expr: None },
+        "purchase_orders"      => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "purchase_order_items" => TableMeta { pk_expr: "t.id::text",      store_expr: None },
+        "cash_movements"       => TableMeta { pk_expr: "t.id::text",      store_expr: None },
+        "reorder_alerts"       => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "notifications"        => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        _ => return None,
+    })
+}
+
 /// When a row fails with a FK violation, infer which parent table needs to be
 /// re-synced and return its name. Keyed on the FK constraint name suffix that
 /// PostgreSQL embeds in the error message.
@@ -305,32 +343,101 @@ fn fk_parent_table(error_msg: &str) -> Option<&'static str> {
     None
 }
 
-/// Re-queue all 'synced' rows for `parent_table` back to 'pending'.
+/// Force a complete re-sync of `parent_table` when a child fails with a FK
+/// violation. Two-phase approach that covers every failure scenario:
 ///
-/// This handles the case where a parent row was previously marked 'synced'
-/// but never actually landed in Supabase (e.g. cloud DB was reset, or an
-/// earlier session crashed mid-upsert). Without this, the backfill would
-/// never re-queue these rows (its NOT EXISTS guard excludes 'synced' rows),
-/// so child FK errors would loop forever.
-async fn requeue_stale_parent(pool: &PgPool, parent_table: &str) {
-    let result = sqlx::query!(
+/// **Phase 1 — Reset existing queue rows**
+/// Any sync_queue row for this table that is not currently being processed
+/// ('syncing') is reset to 'pending' with retries=0. This covers:
+///   • Rows marked 'synced' that never actually landed (Supabase DB reset, etc.)
+///   • Rows in 'failed' status from previous sessions
+///
+/// **Phase 2 — Backfill missing rows**
+/// Inserts fresh queue entries for any rows in the source table that are
+/// NOT currently pending or syncing. This covers the case where a parent
+/// row was never queued at all (e.g. created before sync was set up, or
+/// the initial backfill was interrupted).
+async fn force_resync_table(pool: &PgPool, table: &str) {
+    // Phase 1: reset all non-active queue rows to pending
+    match sqlx::query!(
         "UPDATE sync_queue
          SET status = 'pending', retries = 0, error = NULL
-         WHERE table_name = $1 AND status = 'synced'",
-        parent_table,
+         WHERE table_name = $1 AND status NOT IN ('syncing')",
+        table,
     )
     .execute(pool)
-    .await;
-
-    match result {
+    .await
+    {
         Ok(r) if r.rows_affected() > 0 => {
             tracing::info!(
-                "Sync: re-queued {} stale '{}' row(s) that may be missing from Supabase.",
-                r.rows_affected(), parent_table
+                "Sync: reset {} '{}' queue row(s) to pending for re-verification.",
+                r.rows_affected(), table
             );
         }
         Ok(_)  => {}
-        Err(e) => tracing::warn!("requeue_stale_parent({parent_table}) error: {e}"),
+        Err(e) => tracing::warn!("force_resync_table({table}) phase-1 error: {e}"),
+    }
+
+    // Phase 2: insert queue entries for rows not yet queued at all
+    let biz_id = match load_biz_id(pool).await {
+        Some(id) => id,
+        None     => return, // not onboarded yet
+    };
+    let biz_id_str = biz_id.to_string();
+
+    let meta = match table_backfill_meta(table) {
+        Some(m) => m,
+        None    => return, // table not in allowlist
+    };
+    let pk = meta.pk_expr;
+
+    let (col_list, val_list) = match meta.store_expr {
+        Some(sc) => (
+            "table_name, operation, row_id, row_data, store_id, business_id".to_string(),
+            format!("'{table}', 'INSERT', {pk}, row_to_json(t.*), {sc}, '{biz_id_str}'::uuid"),
+        ),
+        None => (
+            "table_name, operation, row_id, row_data, business_id".to_string(),
+            format!("'{table}', 'INSERT', {pk}, row_to_json(t.*), '{biz_id_str}'::uuid"),
+        ),
+    };
+
+    let biz_col = biz_id_filter_col(table);
+    // Also include rows where business_id IS NULL: these pre-date the column
+    // being populated and are the most common cause of "parent never reaches
+    // Supabase" FK loops. The businesses table uses id as its PK so IS NULL
+    // can never match there.
+    let biz_filter = if table == "businesses" {
+        format!("t.{biz_col} = '{biz_id_str}'::uuid")
+    } else {
+        format!("(t.{biz_col} = '{biz_id_str}'::uuid OR t.{biz_col} IS NULL)")
+    };
+    // NOT EXISTS excludes only 'pending'/'syncing' — 'synced'/'failed' rows
+    // were already reset to 'pending' in Phase 1, so they appear as 'pending'
+    // here and are correctly excluded from duplication.
+    let stmt = format!(
+        "INSERT INTO sync_queue ({col_list})
+         SELECT {val_list}
+         FROM   {table} t
+         WHERE  {biz_filter}
+           AND  NOT EXISTS (
+             SELECT 1 FROM sync_queue sq
+             WHERE  sq.table_name = '{table}'
+               AND  sq.row_id     = {pk}
+               AND  sq.status IN ('pending','syncing')
+         )
+         ON CONFLICT DO NOTHING"
+    );
+
+    match sqlx::query(&stmt).execute(pool).await {
+        Ok(r) if r.rows_affected() > 0 => {
+            tracing::info!(
+                "Sync: backfilled {} missing '{}' row(s) into sync_queue.",
+                r.rows_affected(), table
+            );
+        }
+        Ok(_)  => {}
+        Err(e) => tracing::warn!("force_resync_table({table}) phase-2 error: {e}"),
     }
 }
 
@@ -480,6 +587,11 @@ pub async fn run_sync_loop(state: AppState) {
         // The highest tier that had at least one failure. Once set, all rows
         // from higher tiers are skipped this cycle.
         let mut failed_at_tier: Option<u8> = None;
+        // Parent tables that need a forced resync this cycle. Collected here so
+        // we call force_resync_table at most once per table per cycle instead of
+        // once per failing row (which caused repeated "reset 57 rows" log spam
+        // and redundant DB writes when multiple items fail in the same batch).
+        let mut tables_to_resync: HashSet<&'static str> = HashSet::new();
 
         for (tier, row) in tier_rows {
             // If a lower tier failed, just leave this row as-is (still 'pending')
@@ -528,12 +640,13 @@ pub async fn run_sync_loop(state: AppState) {
                         failed_at_tier = Some(tier);
                     }
 
-                    // If this is a FK violation, the parent table might have
-                    // rows that were marked 'synced' but never actually landed
-                    // in Supabase. Reset them so they are re-pushed next cycle.
+                    // If this is a FK violation, collect the parent table for a
+                    // forced resync after the batch. We deduplicate here so that
+                    // force_resync_table is called at most once per parent table
+                    // per cycle, even when multiple child rows fail in the same batch.
                     if err_str.contains("violates foreign key constraint") {
                         if let Some(parent) = fk_parent_table(&err_str) {
-                            requeue_stale_parent(&local_pool, parent).await;
+                            tables_to_resync.insert(parent);
                         }
                     }
 
@@ -552,6 +665,14 @@ pub async fn run_sync_loop(state: AppState) {
                     .await;
                 }
             }
+        }
+
+        // After processing the full batch, perform any deferred parent-table
+        // resyncs. Doing this outside the per-row loop guarantees each parent
+        // table is touched at most once per cycle regardless of how many child
+        // rows failed with the same FK constraint.
+        for parent in tables_to_resync {
+            force_resync_table(&local_pool, parent).await;
         }
     }
 }

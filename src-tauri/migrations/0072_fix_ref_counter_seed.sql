@@ -10,10 +10,10 @@ SELECT
     s.id,
     'TXN',
     COALESCE(
-        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*', '') AS BIGINT)) + 1
+        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*(\d+)$', '\1') AS BIGINT)) + 1
          FROM   transactions
          WHERE  store_id = s.id
-           AND  reference_no ~ '^TXN-'),
+           AND  reference_no ~ '^TXN-\d+$'),
         1
     )
 FROM stores s
@@ -26,10 +26,10 @@ SELECT
     s.id,
     'RET',
     COALESCE(
-        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*', '') AS BIGINT)) + 1
+        (SELECT MAX(CAST(REGEXP_REPLACE(reference_no, '^[A-Z]+-0*(\d+)$', '\1') AS BIGINT)) + 1
          FROM   returns
          WHERE  store_id = s.id
-           AND  reference_no ~ '^RET-'),
+           AND  reference_no ~ '^RET-\d+$'),
         1
     )
 FROM stores s
@@ -42,10 +42,10 @@ SELECT
     s.id,
     'PO',
     COALESCE(
-        (SELECT MAX(CAST(REGEXP_REPLACE(po_number, '^[A-Z]+-0*', '') AS BIGINT)) + 1
+        (SELECT MAX(CAST(REGEXP_REPLACE(po_number, '^[A-Z]+-0*(\d+)$', '\1') AS BIGINT)) + 1
          FROM   purchase_orders
          WHERE  store_id = s.id
-           AND  po_number ~ '^PO-'),
+           AND  po_number ~ '^PO-\d+$'),
         1
     )
 FROM stores s
