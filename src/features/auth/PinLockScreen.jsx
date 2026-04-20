@@ -69,9 +69,7 @@ export function PinLockScreen({ onUnlock, userName }) {
             <p className="text-sm text-muted-foreground mt-1">
               Welcome back, <span className="font-semibold text-foreground">{userName}</span>
             </p>
-          ) : (
-            <p className="text-sm text-muted-foreground mt-1">Enter your 4-digit PIN to continue</p>
-          )}
+          ) : null}
           <p className="text-[11px] text-muted-foreground/60 mt-0.5">Enter your 4-digit PIN to continue</p>
         </div>
 

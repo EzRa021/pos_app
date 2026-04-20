@@ -110,7 +110,18 @@ pub(crate) async fn login_inner(state: &AppState, payload: LoginRequest) -> AppR
     .execute(&pool)
     .await?;
 
-    // ── FIX Bug 1: also register in active_sessions so get_active_sessions works ──
+    // ── Register in active_sessions — one row per user (upsert by user_id) ──────
+    // First expire all previous sessions for this user so the sessions panel
+    // never shows duplicate rows for the same person.
+    sqlx::query!(
+        "UPDATE active_sessions SET expires_at = NOW() \
+         WHERE user_id = $1 AND expires_at > NOW()",
+        row.id,
+    )
+    .execute(&pool)
+    .await
+    .ok();
+
     sqlx::query!(
         r#"INSERT INTO active_sessions
                (user_id, store_id, token_hash, expires_at, last_seen_at)
@@ -124,7 +135,7 @@ pub(crate) async fn login_inner(state: &AppState, payload: LoginRequest) -> AppR
     )
     .execute(&pool)
     .await
-    .ok(); // non-fatal — table may not exist in older migrations
+    .ok();
 
     write_audit_log(&pool, row.id, row.store_id, "login", "auth",
         &format!("User '{}' logged in", row.username), "info").await;
@@ -220,6 +231,26 @@ pub(crate) async fn refresh_token_inner(state: &AppState, payload: RefreshReques
     let claims = decode_token(&payload.refresh_token, &state.jwt_secret)?;
     let pool   = state.pool().await?;
 
+    // ── Verify the refresh token hasn't been revoked ──────────────────────────
+    // Revoking a session or deactivating a user expires their user_sessions row.
+    // A structurally valid JWT that has been administratively revoked must be
+    // rejected here so the client cannot silently obtain a fresh access token.
+    let session_valid: bool = sqlx::query_scalar!(
+        "SELECT EXISTS(
+            SELECT 1 FROM user_sessions
+            WHERE refresh_token = $1 AND expires_at > NOW()
+         )",
+        payload.refresh_token
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(false);
+
+    if !session_valid {
+        return Err(AppError::Unauthorized(
+            "Session has been revoked. Please log in again.".into()
+        ));
+    }
     let row = sqlx::query_as!(
         UserAuthRow,
         r#"
@@ -272,7 +303,17 @@ pub(crate) async fn refresh_token_inner(state: &AppState, payload: RefreshReques
     .execute(&pool)
     .await?;
 
-    // Keep active_sessions up to date on refresh too
+    // ── Keep active_sessions up to date on refresh — one row per user ────────
+    // Expire the old session row for this user before inserting the refreshed one.
+    sqlx::query!(
+        "UPDATE active_sessions SET expires_at = NOW() \
+         WHERE user_id = $1 AND expires_at > NOW()",
+        row.id,
+    )
+    .execute(&pool)
+    .await
+    .ok();
+
     sqlx::query!(
         r#"INSERT INTO active_sessions
                (user_id, store_id, token_hash, expires_at, last_seen_at)

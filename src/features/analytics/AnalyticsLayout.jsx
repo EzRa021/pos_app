@@ -5,8 +5,9 @@
 // Date state lives here so it persists when navigating between pages.
 // Child pages receive { dateFrom, dateTo, params } via AnalyticsDateContext.
 // ─────────────────────────────────────────────────────────────────────────────
-import { createContext, useContext, useState } from "react";
-import { Outlet, NavLink, useNavigate } from "react-router-dom";
+import { createContext, useContext, useState, useEffect } from "react";
+import { Outlet, NavLink } from "react-router-dom";
+import { useSidebar } from "@/components/ui/sidebar";
 import {
   BarChart3, TrendingUp, Package, Users, CreditCard,
   DollarSign, Box, Award, Layers, Activity, ChevronRight,
@@ -41,6 +42,14 @@ export default function AnalyticsLayout() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo,   setDateTo]   = useState("");
 
+  const { setOpen, open } = useSidebar();
+  useEffect(() => {
+    const prev = open;
+    setOpen(false);
+    return () => setOpen(prev);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const params = {
     date_from: dateFrom || undefined,
     date_to:   dateTo   || undefined,
@@ -70,13 +79,7 @@ export default function AnalyticsLayout() {
               from={dateFrom} to={dateTo}
               onFromChange={setDateFrom} onToChange={setDateTo}
               onClear={() => { setDateFrom(""); setDateTo(""); }}
-              compact
             />
-            {(dateFrom || dateTo) && (
-              <p className="text-[9px] text-primary mt-1.5 font-medium leading-tight truncate">
-                {dateFrom || "start"} → {dateTo || "today"}
-              </p>
-            )}
           </div>
 
           {/* Nav items */}
@@ -117,7 +120,7 @@ export default function AnalyticsLayout() {
           {/* Footer */}
           <div className="px-3 py-2.5 border-t border-border">
             <Button variant="ghost" size="sm" className="w-full h-7 text-[10px] text-muted-foreground justify-start px-2 gap-1.5" asChild>
-              <a href="/analytics">← Dashboard</a>
+              <NavLink to="/dashboard">← Dashboard</NavLink>
             </Button>
           </div>
         </aside>

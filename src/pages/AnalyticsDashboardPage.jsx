@@ -360,7 +360,7 @@ function AdminView({ user, health, lHealth }) {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-5">
         <Section title="Revenue Trend — Last 30 Days" href="/analytics/sales" loading={lRev}
           empty={revenueData.length === 0} emptyMsg="No revenue data yet">
-          <ChartContainer config={ADM_REV_CONFIG} className="h-[200px]">
+          <ChartContainer config={ADM_REV_CONFIG} className="h-[200px] w-full">
             <ComposedChart data={revenueData}>
               <defs>
                 <linearGradient id="adm-rev-grad" x1="0" y1="0" x2="0" y2="1">
@@ -629,7 +629,7 @@ function ManagerView({ user, health, lHealth }) {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
         <Section title="Revenue — Last 14 Days" href="/analytics/sales" loading={lRev}
           empty={revenueData.length === 0} emptyMsg="No revenue data yet">
-          <ChartContainer config={MGR_REV_CONFIG} className="h-[190px]">
+          <ChartContainer config={MGR_REV_CONFIG} className="h-[190px] w-full">
             <AreaChart data={revenueData}>
               <defs>
                 <linearGradient id="mgr-rev-grad" x1="0" y1="0" x2="0" y2="1">

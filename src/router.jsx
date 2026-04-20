@@ -41,7 +41,6 @@ import UsersPage               from "@/pages/UsersPage";
 import PriceManagementPage     from "@/pages/PriceManagementPage";
 import NotFoundPage            from "@/pages/NotFoundPage";
 import AnalyticsDashboardPage  from "@/pages/AnalyticsDashboardPage";
-
 // ── Analytics layout + individual pages ──────────────────────────────────────
 import AnalyticsLayout   from "@/features/analytics/AnalyticsLayout";
 import OverviewPage      from "@/pages/analytics/OverviewPage";
@@ -70,7 +69,7 @@ function PublicOnlyRoute() {
   const user          = useAuthStore(s => s.user);
   const isInitialized = useAuthStore(s => s.isInitialized);
   if (!isInitialized) return <RouterSplash />;
-  if (user)           return <Navigate to="/analytics/overview" replace />;
+  if (user)           return <Navigate to="/dashboard" replace />;
   return <Outlet />;
 }
 
@@ -135,7 +134,10 @@ const router = createBrowserRouter([
         path: "/",
         element: <AppShell />,
         children: [
-          { index: true, element: <Navigate to="/analytics/overview" replace /> },
+          { index: true, element: <Navigate to="/dashboard" replace /> },
+
+          // ── Dashboard ────────────────────────────────────────────────────
+          { path: "dashboard", element: <AnalyticsDashboardPage /> },
 
           // ── POS ──────────────────────────────────────────────────────────
           { path: "pos",               element: <PosPage /> },
@@ -180,32 +182,25 @@ const router = createBrowserRouter([
           { path: "eod",              element: <EodPage /> },
           { path: "price-management", element: <PriceManagementPage /> },
 
-          // ── Analytics (layout-wrapped, each page gets the shared sidebar) ─
+          // ── Analytics (AnalyticsLayout gives inner sub-nav + date filter) ──
           {
             path: "analytics",
             element: <AnalyticsLayout />,
             children: [
-              // Index: redirect to overview
-              { index: true, element: <Navigate to="/analytics/overview" replace /> },
-
-              // ── Individual analytics pages ─────────────────────────────
-              { path: "overview",      element: <OverviewPage /> },
-              { path: "sales",         element: <SalesPage /> },
-              { path: "products",      element: <ProductsPage /> },
-              { path: "payments",      element: <PaymentsPage /> },
-              { path: "customers",     element: <CustomersAnalyticsPage /> },
-              { path: "inventory",     element: <InventoryAnalyticsPage /> },
-              { path: "staff",         element: <StaffPage /> },
-              { path: "profitability", element: <ProfitabilityPage /> },
-              { path: "tax",           element: <TaxPage /> },
-
-              // Legacy route aliases — redirect to new equivalents
-              { path: "reports",       element: <Navigate to="/analytics/overview"      replace /> },
-              { path: "cashiers",      element: <Navigate to="/analytics/staff"         replace /> },
-              { path: "dashboard",     element: <Navigate to="/analytics/overview"      replace /> },
-
-              // Catch unknown /analytics/* paths
-              { path: "*",             element: <Navigate to="/analytics/overview"      replace /> },
+              { index: true,               element: <Navigate to="/analytics/overview" replace /> },
+              { path: "overview",          element: <OverviewPage /> },
+              { path: "sales",             element: <SalesPage /> },
+              { path: "products",          element: <ProductsPage /> },
+              { path: "payments",          element: <PaymentsPage /> },
+              { path: "customers",         element: <CustomersAnalyticsPage /> },
+              { path: "inventory",         element: <InventoryAnalyticsPage /> },
+              { path: "staff",             element: <StaffPage /> },
+              { path: "profitability",     element: <ProfitabilityPage /> },
+              { path: "tax",               element: <TaxPage /> },
+              { path: "reports",           element: <Navigate to="/analytics/overview" replace /> },
+              { path: "cashiers",          element: <Navigate to="/analytics/staff"    replace /> },
+              { path: "dashboard",         element: <Navigate to="/analytics/overview" replace /> },
+              { path: "*",                 element: <Navigate to="/analytics/overview" replace /> },
             ],
           },
 

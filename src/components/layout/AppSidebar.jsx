@@ -5,14 +5,47 @@
 import { useLocation, NavLink, useNavigate } from "react-router-dom";
 
 import {
-  ShoppingCart, Receipt, RotateCcw, Clock,
-  Package, Boxes, Truck, ClipboardList,
-  Users, CreditCard, Wallet, BarChart3,
-  Tag, UserCog, Settings, Banknote,
-  Store, ChevronsUpDown, Check,
-  LogOut, KeyRound, ChevronRight, Lock,
-  MapPin, Timer, AlertTriangle,
-  Bell, FileText, ArrowLeftRight, ShieldCheck, LayoutDashboard,
+  // Operations
+  LayoutDashboard,
+  ScanLine,
+  ArrowRightLeft,
+  Undo2,
+  CalendarClock,
+  FileBarChart2,
+  Bell,
+  // Catalog
+  Package,
+  FolderTree,
+  Building2,
+  Warehouse,
+  ClipboardCheck,
+  Factory,
+  ShoppingBag,
+  BadgeDollarSign,
+  MoveHorizontal,
+  // Customers
+  Users,
+  HandCoins,
+  Wallet,
+  // Finance
+  TrendingDown,
+  LineChart,
+  BadgePercent,
+  // Admin
+  UserCog,
+  ScrollText,
+  Settings2,
+  // Shared / utility
+  Store,
+  ChevronsUpDown,
+  Check,
+  LogOut,
+  KeyRound,
+  ChevronRight,
+  Lock,
+  MapPin,
+  Timer,
+  AlertTriangle,
   Plus,
 } from "lucide-react";
 
@@ -41,14 +74,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { useAuthStore }    from "@/stores/auth.store";
-import { useBranchStore }  from "@/stores/branch.store";
-import { useShiftStore }   from "@/stores/shift.store";
-import { useBusinessInfo } from "@/hooks/useBusinessInfo";
-import { isActiveShiftStatus } from "@/lib/constants";
-import { cn } from "@/lib/utils";
+import { useAuthStore }           from "@/stores/auth.store";
+import { useBranchStore }         from "@/stores/branch.store";
+import { useShiftStore }          from "@/stores/shift.store";
+import { useBusinessInfo }        from "@/hooks/useBusinessInfo";
+import { isActiveShiftStatus }    from "@/lib/constants";
+import { cn }                     from "@/lib/utils";
 
-// Quantum POS software logo (public folder — always available as fallback)
 const QUANTUM_LOGO = "/quantum-logo.svg";
 
 // ─── Role-based access helper ─────────────────────────────────────────────────
@@ -58,48 +90,44 @@ function canSee(roleSlug, allowedRoles) {
 }
 
 // ─── Navigation definition ────────────────────────────────────────────────────
+//
+// Icon rationale:
+//   ScanLine       — scanning barcodes at checkout = POS
+//   ArrowRightLeft — money going in both directions = Transactions
+//   Undo2          — undoing a sale = Returns
+//   CalendarClock  — time-bounded sessions = Shifts
+//   FileBarChart2  — end-of-day summary report = EOD
+//   FolderTree     — hierarchical grouping = Categories
+//   Building2      — organisational division = Departments
+//   Warehouse      — physical stock location = Inventory
+//   ClipboardCheck — counting and verifying stock = Stock Counts
+//   Factory        — where goods come from = Suppliers
+//   ShoppingBag    — ordering from suppliers = Purchase Orders
+//   BadgeDollarSign— money owed to supplier = Supplier Payments
+//   MoveHorizontal — moving stock laterally = Stock Transfers
+//   HandCoins      — handing over credit = Credit Sales
+//   TrendingDown   — spending / outflows = Expenses
+//   LineChart      — data over time = Analytics
+//   BadgePercent   — pricing and margin rules = Price Management
+//   ScrollText     — immutable log of events = Audit Log
+//   Settings2      — gear with finer detail = Settings
+//
 const NAV_GROUPS = [
   {
     label: "Operations",
     items: [
-      {
-        title: "Dashboard",
-        path: "/analytics",
-        icon: LayoutDashboard,
-        exact: true,
-      },
-      {
-        title: "Point of Sale",
-        path: "/pos",
-        icon: ShoppingCart,
-        exact: true,
-      },
-      {
-        title: "Transactions",
-        path: "/transactions",
-        icon: Receipt,
-      },
-      {
-        title: "Returns",
-        path: "/returns",
-        icon: RotateCcw,
-      },
-      {
-        title: "Shifts",
-        path: "/shifts",
-        icon: Clock,
-      },
+      { title: "Dashboard",      path: "/dashboard",      icon: LayoutDashboard, exact: true },
+      { title: "Point of Sale",  path: "/pos",            icon: ScanLine,        exact: true },
+      { title: "Transactions",   path: "/transactions",   icon: ArrowRightLeft },
+      { title: "Returns",        path: "/returns",        icon: Undo2 },
+      { title: "Shifts",         path: "/shifts",         icon: CalendarClock },
       {
         title: "EOD Reports",
-        path: "/eod",
-        icon: FileText,
+        path:  "/eod",
+        icon:  FileBarChart2,
         roles: ["super_admin", "admin", "manager"],
       },
-      {
-        title: "Notifications",
-        path: "/notifications",
-        icon: Bell,
-      },
+      { title: "Notifications",  path: "/notifications",  icon: Bell },
     ],
   },
   {
@@ -107,56 +135,56 @@ const NAV_GROUPS = [
     items: [
       {
         title: "Products",
-        path: "/products",
-        icon: Package,
+        path:  "/products",
+        icon:  Package,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
         title: "Categories",
-        path: "/categories",
-        icon: Tag,
+        path:  "/categories",
+        icon:  FolderTree,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
         title: "Departments",
-        path: "/departments",
-        icon: Tag,
+        path:  "/departments",
+        icon:  Building2,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
         title: "Inventory",
-        path: "/inventory",
-        icon: Boxes,
+        path:  "/inventory",
+        icon:  Warehouse,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
         title: "Stock Counts",
-        path: "/stock-counts",
-        icon: ClipboardList,
+        path:  "/stock-counts",
+        icon:  ClipboardCheck,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
         title: "Suppliers",
-        path: "/suppliers",
-        icon: Truck,
+        path:  "/suppliers",
+        icon:  Factory,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
         title: "Purchase Orders",
-        path: "/purchase-orders",
-        icon: ClipboardList,
+        path:  "/purchase-orders",
+        icon:  ShoppingBag,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
       {
         title: "Supplier Payments",
-        path: "/supplier-payments",
-        icon: Banknote,
+        path:  "/supplier-payments",
+        icon:  BadgeDollarSign,
         roles: ["super_admin", "admin", "manager"],
       },
       {
         title: "Stock Transfers",
-        path: "/stock-transfers",
-        icon: ArrowLeftRight,
+        path:  "/stock-transfers",
+        icon:  MoveHorizontal,
         roles: ["super_admin", "admin", "manager", "stock_keeper"],
       },
     ],
@@ -164,21 +192,17 @@ const NAV_GROUPS = [
   {
     label: "Customers",
     items: [
-      {
-        title: "Customers",
-        path: "/customers",
-        icon: Users,
-      },
+      { title: "Customers",    path: "/customers",    icon: Users },
       {
         title: "Credit Sales",
-        path: "/credit-sales",
-        icon: CreditCard,
+        path:  "/credit-sales",
+        icon:  HandCoins,
         roles: ["super_admin", "admin", "manager", "cashier"],
       },
       {
         title: "Wallets",
-        path: "/wallet",
-        icon: Wallet,
+        path:  "/wallet",
+        icon:  Wallet,
         roles: ["super_admin", "admin", "manager", "cashier"],
       },
     ],
@@ -188,20 +212,21 @@ const NAV_GROUPS = [
     items: [
       {
         title: "Expenses",
-        path: "/expenses",
-        icon: Receipt,
+        path:  "/expenses",
+        icon:  TrendingDown,
         roles: ["super_admin", "admin", "manager"],
       },
       {
-        title: "Reports & Analytics",
-        path: "/analytics/reports",
-        icon: BarChart3,
-        roles: ["super_admin", "admin", "manager"],
+        title:        "Analytics",
+        path:         "/analytics/overview",
+        icon:         LineChart,
+        activePrefix: "/analytics",
+        roles:        ["super_admin", "admin", "gm", "manager"],
       },
       {
         title: "Price Management",
-        path: "/price-management",
-        icon: Tag,
+        path:  "/price-management",
+        icon:  BadgePercent,
         roles: ["super_admin", "admin", "manager"],
       },
     ],
@@ -211,20 +236,20 @@ const NAV_GROUPS = [
     items: [
       {
         title: "Users",
-        path: "/users",
-        icon: UserCog,
+        path:  "/users",
+        icon:  UserCog,
         roles: ["super_admin", "admin"],
       },
       {
         title: "Audit Log",
-        path: "/audit",
-        icon: ShieldCheck,
+        path:  "/audit",
+        icon:  ScrollText,
         roles: ["super_admin", "admin"],
       },
       {
         title: "Settings",
-        path: "/settings",
-        icon: Settings,
+        path:  "/settings",
+        icon:  Settings2,
         roles: ["super_admin", "admin", "manager"],
       },
     ],
@@ -232,12 +257,14 @@ const NAV_GROUPS = [
 ];
 
 // ─── NavItem ──────────────────────────────────────────────────────────────────
-function NavItem({ title, path, icon: Icon, exact }) {
+function NavItem({ title, path, icon: Icon, exact, activePrefix }) {
   const { pathname } = useLocation();
 
-  const isActive = exact
-    ? pathname === path
-    : pathname === path || pathname.startsWith(path + "/");
+  const isActive = activePrefix
+    ? pathname.startsWith(activePrefix)
+    : exact
+      ? pathname === path
+      : pathname === path || pathname.startsWith(path + "/");
 
   return (
     <SidebarMenuItem>
@@ -296,8 +323,7 @@ function NavGroup({ label, items, roleSlug }) {
 function ShiftStatusBanner({ roleSlug }) {
   const activeShift   = useShiftStore((s) => s.activeShift);
   const isInitialized = useShiftStore((s) => s.isInitialized);
-  if (!roleSlug) return null;
-  if (!isInitialized) return null;
+  if (!roleSlug || !isInitialized) return null;
 
   const isOpen = isActiveShiftStatus(activeShift?.status);
 
@@ -318,26 +344,19 @@ function ShiftStatusBanner({ roleSlug }) {
                   : "border-warning/30 bg-warning/10",
               )}
             >
-              {isOpen ? (
-                <Timer className="h-3 w-3 text-success" />
-              ) : (
-                <AlertTriangle className="h-3 w-3 text-warning" />
-              )}
+              {isOpen
+                ? <Timer        className="h-3 w-3 text-success" />
+                : <AlertTriangle className="h-3 w-3 text-warning" />}
             </div>
 
             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
-              <span
-                className={cn(
-                  "truncate text-[12px] font-semibold",
-                  isOpen ? "text-success" : "text-warning",
-                )}
-              >
+              <span className={cn("truncate text-[12px] font-semibold", isOpen ? "text-success" : "text-warning")}>
                 {isOpen ? "Shift Open" : "No Active Shift"}
               </span>
               {isOpen && activeShift?.opened_at && (
                 <span className="truncate text-[10px] text-muted-foreground">
                   {(() => {
-                    const d = new Date(activeShift.opened_at);
+                    const d    = new Date(activeShift.opened_at);
                     const date = d.toLocaleDateString([], { month: "short", day: "numeric" });
                     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
                     return `Since ${date}, ${time}`;
@@ -367,15 +386,15 @@ function StoreSwitcher() {
   const switchStore    = useBranchStore((s) => s.switchStore);
   const storeIsLoading = useBranchStore((s) => s.isLoading);
 
-  const user     = useAuthStore((s) => s.user);
-  const isGlobal = user?.is_global === true;
+  const user        = useAuthStore((s) => s.user);
+  const isGlobal    = user?.is_global === true;
   const canAddStore = ["super_admin", "admin", "gm"].includes(user?.role_slug ?? "");
 
   const storeName = (() => {
     if (activeStore?.store_name) return activeStore.store_name;
-    if (isGlobal) return "Select a store";
-    if (storeIsLoading) return "Loading…";
-    if (activeStore?.id) return `Store #${activeStore.id}`;
+    if (isGlobal)                return "Select a store";
+    if (storeIsLoading)          return "Loading…";
+    if (activeStore?.id)         return `Store #${activeStore.id}`;
     return "No store assigned";
   })();
 
@@ -384,12 +403,11 @@ function StoreSwitcher() {
     .slice(0, 2)
     .toUpperCase() || "ST";
 
-  const storeCount = stores.length;
-
+  const storeCount    = stores.length;
   const storeSubtitle = (() => {
     if (!isGlobal) {
       const loc = [activeStore?.city, activeStore?.state].filter(Boolean).join(", ");
-      if (loc) return loc;
+      if (loc)             return loc;
       if (activeStore?.id) return `Store ID: ${activeStore.id}`;
       return "Assigned store";
     }
@@ -408,7 +426,6 @@ function StoreSwitcher() {
             tooltip={storeName}
             className="cursor-default select-none hover:bg-transparent active:bg-transparent"
           >
-            {/* Store avatar: logo → initials */}
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 overflow-hidden">
               {activeStore?.logo_data ? (
                 <img src={activeStore.logo_data} alt={storeName} className="h-full w-full object-cover" />
@@ -418,14 +435,9 @@ function StoreSwitcher() {
                 <Store className={cn("h-4 w-4 text-primary", storeIsLoading && "animate-pulse")} />
               )}
             </div>
-
             <div className="grid min-w-0 flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
-              <span className="truncate text-[13px] font-semibold text-sidebar-foreground">
-                {storeName}
-              </span>
-              <span className="truncate text-[10px] text-sidebar-foreground/40">
-                {storeSubtitle}
-              </span>
+              <span className="truncate text-[13px] font-semibold text-sidebar-foreground">{storeName}</span>
+              <span className="truncate text-[10px] text-sidebar-foreground/40">{storeSubtitle}</span>
             </div>
           </SidebarMenuButton>
         </SidebarMenuItem>
@@ -448,7 +460,6 @@ function StoreSwitcher() {
                 "data-[state=open]:text-sidebar-accent-foreground",
               )}
             >
-              {/* Active store avatar: logo → initials */}
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 overflow-hidden">
                 {activeStore?.logo_data ? (
                   <img src={activeStore.logo_data} alt={storeName} className="h-full w-full object-cover" />
@@ -457,12 +468,8 @@ function StoreSwitcher() {
                 )}
               </div>
               <div className="grid min-w-0 flex-1 text-left leading-tight">
-                <span className="truncate text-[13px] font-semibold text-sidebar-foreground">
-                  {storeName}
-                </span>
-                <span className="text-[10px] text-sidebar-foreground/40">
-                  {storeSubtitle}
-                </span>
+                <span className="truncate text-[13px] font-semibold text-sidebar-foreground">{storeName}</span>
+                <span className="text-[10px] text-sidebar-foreground/40">{storeSubtitle}</span>
               </div>
               <ChevronsUpDown className="ml-auto h-4 w-4 shrink-0 text-sidebar-foreground/35" />
             </SidebarMenuButton>
@@ -495,27 +502,18 @@ function StoreSwitcher() {
                 <DropdownMenuItem
                   key={store.id}
                   onClick={() => switchStore(store.id)}
-                  className={cn(
-                    "cursor-pointer gap-3 rounded-lg px-2 py-2.5",
-                    isActive && "bg-primary/10",
-                  )}
+                  className={cn("cursor-pointer gap-3 rounded-lg px-2 py-2.5", isActive && "bg-primary/10")}
                 >
-                  {/* Store logo in dropdown: logo → initials */}
                   <div className={cn(
                     "flex h-8 w-8 shrink-0 items-center justify-center rounded-md overflow-hidden",
                     isActive ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
                   )}>
-                    {store.logo_data ? (
-                      <img src={store.logo_data} alt={name} className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="text-[10px] font-bold">{code}</span>
-                    )}
+                    {store.logo_data
+                      ? <img src={store.logo_data} alt={name} className="h-full w-full object-cover" />
+                      : <span className="text-[10px] font-bold">{code}</span>}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className={cn(
-                      "truncate text-sm font-medium",
-                      isActive ? "text-primary" : "text-foreground",
-                    )}>
+                    <p className={cn("truncate text-sm font-medium", isActive ? "text-primary" : "text-foreground")}>
                       {name}
                     </p>
                     {location && (
@@ -525,14 +523,11 @@ function StoreSwitcher() {
                       </p>
                     )}
                   </div>
-                  {isActive && (
-                    <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
-                  )}
+                  {isActive && <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}
                 </DropdownMenuItem>
               );
             })}
 
-            {/* ── Add New Store CTA ── */}
             {canAddStore && (
               <>
                 <DropdownMenuSeparator className="my-1.5 bg-border/60" />
@@ -541,8 +536,7 @@ function StoreSwitcher() {
                   className={cn(
                     "group cursor-pointer gap-2.5 rounded-lg px-2 py-2.5",
                     "border border-dashed border-primary/30 bg-primary/[0.04]",
-                    "hover:bg-primary/10 hover:border-primary/50",
-                    "transition-all duration-150",
+                    "hover:bg-primary/10 hover:border-primary/50 transition-all duration-150",
                   )}
                 >
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10">
@@ -597,12 +591,8 @@ function UserFooter() {
                 </AvatarFallback>
               </Avatar>
               <div className="grid min-w-0 flex-1 text-left leading-tight">
-                <span className="truncate text-[13px] font-semibold text-sidebar-foreground">
-                  {displayName}
-                </span>
-                <span className="truncate text-[10px] capitalize text-sidebar-foreground/40">
-                  {roleName}
-                </span>
+                <span className="truncate text-[13px] font-semibold text-sidebar-foreground">{displayName}</span>
+                <span className="truncate text-[10px] capitalize text-sidebar-foreground/40">{roleName}</span>
               </div>
               <ChevronsUpDown className="ml-auto h-4 w-4 shrink-0 text-sidebar-foreground/35" />
             </SidebarMenuButton>
@@ -614,7 +604,6 @@ function UserFooter() {
             align="end"
             sideOffset={8}
           >
-            {/* Identity card */}
             <div className="flex items-center gap-3 rounded-lg bg-muted/40 px-3 py-3 mb-1">
               <Avatar className="h-10 w-10 shrink-0 rounded-xl">
                 <AvatarFallback className="rounded-xl border border-primary/25 bg-primary/10 text-sm font-semibold text-primary">
@@ -661,32 +650,29 @@ function UserFooter() {
 
 // ─── AppSidebar (root export) ─────────────────────────────────────────────────
 export function AppSidebar({ ...props }) {
-  const roleSlug   = useAuthStore((s) => s.user?.role_slug ?? null);
+  const roleSlug = useAuthStore((s) => s.user?.role_slug ?? null);
   const { name: businessName, businessType, logoData } = useBusinessInfo();
 
   const typeLabel = businessType
     ? businessType.charAt(0).toUpperCase() + businessType.slice(1)
-    : 'Point of Sale';
+    : "Point of Sale";
 
   return (
     <Sidebar collapsible="icon" {...props}>
 
       {/* ═══ HEADER ══════════════════════════════════════════════════════════ */}
       <SidebarHeader className="gap-0 p-0">
-        {/* Brand row */}
         <div className="flex items-center gap-2.5 px-3 py-3">
-          {/* Logo: business logo → quantum svg → Q chip fallback */}
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg overflow-hidden bg-primary shadow-sm">
             {logoData ? (
-              <img src={logoData} alt={businessName ?? 'Quantum POS'} className="h-full w-full object-cover" />
+              <img src={logoData} alt={businessName ?? "Quantum POS"} className="h-full w-full object-cover" />
             ) : (
               <img
                 src={QUANTUM_LOGO}
                 alt="Quantum POS"
                 className="h-full w-full object-cover"
                 onError={(e) => {
-                  // SVG failed to load — render the Q text fallback
-                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.style.display = "none";
                   e.currentTarget.parentElement.innerHTML =
                     '<span class="select-none text-sm font-black leading-none text-white">Q</span>';
                 }}
@@ -695,10 +681,10 @@ export function AppSidebar({ ...props }) {
           </div>
           <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
             <p className="text-[13px] font-bold leading-none tracking-tight text-sidebar-foreground truncate">
-              {businessName ?? 'Quantum POS'}
+              {businessName ?? "Quantum POS"}
             </p>
             <p className="mt-0.5 text-[10px] leading-none text-sidebar-foreground/40 truncate">
-              {businessName ? typeLabel : 'Point of Sale System'}
+              {businessName ? typeLabel : "Point of Sale System"}
             </p>
           </div>
         </div>
@@ -712,8 +698,15 @@ export function AppSidebar({ ...props }) {
         <SidebarSeparator className="mx-3 bg-sidebar-border/60" />
       </SidebarHeader>
 
-      {/* ═══ CONTENT ═════════════════════════════════════════════════════════ */}
-      <SidebarContent className="gap-0 py-1.5">
+      {/* ═══ CONTENT — overflow-y-auto so items scroll in both expanded and
+           icon-only (collapsed) modes when there are many nav entries ════════ */}
+      {/*
+       * style overflowY is intentional — shadcn hardcodes
+       * group-data-[collapsible=icon]:overflow-hidden inside SidebarContent,
+       * and Tailwind className cannot reliably override another Tailwind class.
+       * Inline style always wins over class-based styles in CSS.
+       */}
+      <SidebarContent className="gap-0 py-1.5" style={{ overflowY: "auto" }}>
         {NAV_GROUPS.map((group) => (
           <NavGroup
             key={group.label}
@@ -728,7 +721,6 @@ export function AppSidebar({ ...props }) {
       <SidebarFooter className="p-0">
         <SidebarSeparator className="mx-3 bg-sidebar-border/60" />
 
-        {/* Shift status — above user menu */}
         <div className="px-2 pt-1.5 pb-0.5">
           <ShiftStatusBanner roleSlug={roleSlug} />
         </div>

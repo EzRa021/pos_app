@@ -20,13 +20,40 @@
 // ============================================================================
 
 import { create } from "zustand";
-import { rpc, setAuthToken } from "@/lib/apiClient";
+import { rpc, setAuthToken, registerAuthCallbacks } from "@/lib/apiClient";
 import { useBranchStore } from "@/stores/branch.store";
 
-const REFRESH_KEY = "qpos_refresh";
-const USER_KEY    = "qpos_user";
+const REFRESH_KEY  = "qpos_refresh";
+const USER_KEY     = "qpos_user";
+const POS_LOCK_KEY = "qpos_locked"; // sessionStorage — survives refresh, clears on window close
 
-let _refreshTimer = null;
+let _refreshTimer   = null;
+let _heartbeatTimer = null;
+
+const HEARTBEAT_INTERVAL_MS = 60_000; // 60 s
+
+function startHeartbeat() {
+  stopHeartbeat();
+  _heartbeatTimer = setInterval(async () => {
+    try {
+      // A lightweight authenticated call — if the session was revoked or the
+      // user was deactivated, the server evicts them from the in-memory cache
+      // so this returns 401. The Axios interceptor will try a refresh; when
+      // that also fails (refresh token is expired) it calls onForceLogout().
+      await rpc("verify_session");
+    } catch {
+      // Errors are handled by the 401 interceptor; non-401 errors (network
+      // blip, server restart) are intentionally swallowed here.
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat() {
+  if (_heartbeatTimer) {
+    clearInterval(_heartbeatTimer);
+    _heartbeatTimer = null;
+  }
+}
 
 function scheduleRefresh(expiresIn, restoreSessionFn) {
   if (_refreshTimer) clearTimeout(_refreshTimer);
@@ -45,6 +72,7 @@ function saveToStorage(refreshToken, user) {
 function clearStorage() {
   localStorage.removeItem(REFRESH_KEY);
   localStorage.removeItem(USER_KEY);
+  sessionStorage.removeItem(POS_LOCK_KEY);
 }
 
 function getSavedUser() {
@@ -82,6 +110,7 @@ export const useAuthStore = create((set, get) => ({
       });
 
       scheduleRefresh(result.expires_in, get().restoreSession);
+      startHeartbeat();
 
       // Kick off branch + shift initialization directly — NOT from a React
       // useEffect. Calling this here (in an async action, outside React's
@@ -99,6 +128,7 @@ export const useAuthStore = create((set, get) => ({
   // ── Logout ────────────────────────────────────────────────────────────────
   async logout() {
     if (_refreshTimer) clearTimeout(_refreshTimer);
+    stopHeartbeat();
 
     // Best-effort server-side logout
     try { await rpc("logout"); } catch { /* ignore */ }
@@ -175,6 +205,7 @@ export const useAuthStore = create((set, get) => ({
       });
 
       scheduleRefresh(result.expires_in, () => get().restoreSession());
+      startHeartbeat();
 
       useBranchStore.getState().initForUser(result.user);
 
@@ -230,7 +261,61 @@ export const useAuthStore = create((set, get) => ({
   isGlobalUser()  { return get().user?.is_global === true; },
 
   // ── POS PIN lock ──────────────────────────────────────────────────────────
-  isPosLocked: false,
-  lockPos()   { set({ isPosLocked: true }); },
-  unlockPos() { set({ isPosLocked: false }); },
+  // isPosLocked is seeded from sessionStorage so a WebView refresh doesn't
+  // silently bypass the lock screen. sessionStorage clears when the Tauri
+  // window is fully closed, so the lock doesn't survive a full app restart.
+  isPosLocked: sessionStorage.getItem(POS_LOCK_KEY) === "1",
+  lockPos() {
+    sessionStorage.setItem(POS_LOCK_KEY, "1");
+    set({ isPosLocked: true });
+  },
+  unlockPos() {
+    sessionStorage.removeItem(POS_LOCK_KEY);
+    set({ isPosLocked: false });
+  },
 }));
+
+// ============================================================================
+// Module-level side effects — run once when the module is first imported
+// ============================================================================
+
+// ── Register 401 recovery callbacks with the API client ───────────────────────
+//
+// onRefreshed   — called by apiClient's 401 interceptor when the silent refresh
+//                 succeeds. Updates Zustand state, localStorage, and reschedules
+//                 the proactive refresh timer so both code paths stay in sync.
+//
+// onForceLogout — called when the refresh itself fails (expired/revoked token).
+//                 Forces a clean logout so the user hits the login screen cleanly.
+registerAuthCallbacks({
+  onRefreshed(data) {
+    const expiresAt = new Date(Date.now() + data.expires_in * 1000);
+    // Persist updated user (new refresh token already stored by interceptor)
+    try { localStorage.setItem(USER_KEY, JSON.stringify(data.user)); } catch { /* quota */ }
+    useAuthStore.setState({ user: data.user, token: data.access_token, expiresAt });
+    scheduleRefresh(data.expires_in, () => useAuthStore.getState().restoreSession());
+    startHeartbeat(); // restart interval so timing resets after a silent refresh
+    useBranchStore.getState().initForUser(data.user);
+  },
+  onForceLogout() {
+    // Safe outside React's render cycle — Zustand getState() works anywhere.
+    useAuthStore.getState().logout();
+  },
+});
+
+// ── Visibility-based session health check ─────────────────────────────────────
+//
+// When the computer wakes from sleep or the user switches back to the window,
+// setTimeout callbacks may have been delayed or missed entirely.
+// On every visibility-change we check the token's remaining lifetime and trigger
+// an immediate refresh if it has expired or is within 2 minutes of expiry,
+// preventing silent dead-session states after the device wakes.
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    const { token, expiresAt, restoreSession } = useAuthStore.getState();
+    if (!token || !expiresAt) return; // not logged in
+    const msLeft = new Date(expiresAt).getTime() - Date.now();
+    if (msLeft < 2 * 60 * 1000) restoreSession();
+  });
+}

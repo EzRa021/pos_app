@@ -273,6 +273,18 @@ export default function App() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Clear React Query cache when user logs out ──────────────────────────────
+  // Without this, stale query data from the previous session (transactions,
+  // inventory, etc.) leaks into the next login — especially visible when a
+  // different user logs in on the same terminal.
+  const prevUserRef = useRef(user);
+  useEffect(() => {
+    if (prevUserRef.current && !user) {
+      queryClient.clear();
+    }
+    prevUserRef.current = user;
+  }, [user, queryClient]);
+
   // NOTE: Branch and shift initialization are NO LONGER triggered from here.
   // auth.store.login / restoreSession call useBranchStore.getState().initForUser()
   // directly (outside React's commit phase), which in turn calls

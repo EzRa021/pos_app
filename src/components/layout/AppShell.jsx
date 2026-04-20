@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Outlet, useLocation, NavLink } from "react-router-dom";
 import {
   SidebarInset,
@@ -19,13 +19,7 @@ import { ChevronRight, Home } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Route metadata ────────────────────────────────────────────────────────────
-// Each entry: { label, group, parentPath? }
-//   label      — shown as the last breadcrumb segment
-//   group      — section name shown before the label
-//   parentPath — for detail routes, the list page to link back to (clickable)
-
 const ROUTE_META = {
-  // ── Operations ────────────────────────────────────────────────────────────
   "/pos":                     { label: "Point of Sale",    group: "Operations" },
   "/transactions":            { label: "Transactions",     group: "Operations" },
   "/transactions/:id":        { label: "Transaction",      group: "Operations", parentPath: "/transactions" },
@@ -35,8 +29,6 @@ const ROUTE_META = {
   "/shifts/:id":              { label: "Shift Detail",     group: "Operations", parentPath: "/shifts" },
   "/eod":                     { label: "EOD Reports",      group: "Operations" },
   "/notifications":           { label: "Notifications",    group: "Operations" },
-
-  // ── Catalog ───────────────────────────────────────────────────────────────
   "/products":                { label: "Products",          group: "Catalog" },
   "/products/:id":            { label: "Product Detail",    group: "Catalog",   parentPath: "/products" },
   "/departments":             { label: "Departments",       group: "Catalog" },
@@ -54,19 +46,13 @@ const ROUTE_META = {
   "/purchase-orders":         { label: "Purchase Orders",   group: "Catalog" },
   "/purchase-orders/new":     { label: "New PO",            group: "Catalog",   parentPath: "/purchase-orders" },
   "/purchase-orders/:id":     { label: "PO Detail",         group: "Catalog",   parentPath: "/purchase-orders" },
-
-  // ── Customers ─────────────────────────────────────────────────────────────
   "/customers":               { label: "Customers",         group: "Customers" },
   "/customers/:id":           { label: "Customer Detail",   group: "Customers", parentPath: "/customers" },
   "/credit-sales":            { label: "Credit Sales",      group: "Customers" },
   "/wallet":                  { label: "Wallets",           group: "Customers" },
-
-  // ── Finance ───────────────────────────────────────────────────────────────
   "/expenses":                { label: "Expenses",          group: "Finance" },
   "/analytics":               { label: "Analytics",         group: "Finance" },
   "/price-management":        { label: "Price Management",  group: "Finance" },
-
-  // ── Admin ─────────────────────────────────────────────────────────────────
   "/users":                   { label: "Users",             group: "Admin" },
   "/stores":                  { label: "Stores",            group: "Admin" },
   "/stores/:id":              { label: "Store",             group: "Admin",  parentPath: "/stores" },
@@ -74,56 +60,31 @@ const ROUTE_META = {
   "/audit":                   { label: "Audit Log",         group: "Admin" },
 };
 
-// ── Route matcher ─────────────────────────────────────────────────────────────
-// 1. Exact match first (fast path for top-level routes)
-// 2. Pattern match — longest pattern wins (more specific beats generic)
-//    Regex-special chars in route names (hyphens, etc.) are escaped before
-//    :param placeholders are replaced with [^/]+
 function matchRoute(pathname) {
   if (ROUTE_META[pathname]) return ROUTE_META[pathname];
 
-  // Escape regex metacharacters in a literal string segment
   const esc = (s) => s.replace(/[$()*+.?[\\\]^{|}]/g, "\\$&");
-
   const patterns = Object.keys(ROUTE_META)
     .filter((k) => k.includes(":"))
-    .sort((a, b) => b.length - a.length); // longest first → more specific wins
+    .sort((a, b) => b.length - a.length);
 
   for (const pattern of patterns) {
-    // Build regex: escape the pattern, then turn :[^/]+ placeholders into [^/]+
     const regexStr = esc(pattern).replace(/:[^/]+/g, "[^/]+");
     if (new RegExp("^" + regexStr + "$").test(pathname)) {
       return ROUTE_META[pattern];
     }
   }
-
   return null;
 }
 
-// ── Detail context ────────────────────────────────────────────────────────────
-// Appends a short ID hint to detail-route breadcrumb labels so the user knows
-// which specific record they are on:
-//   /transactions/42            → " #42"
-//   /customers/a1b2c3d4-...     → " #a1b2c3d4…"
-//   /purchase-orders/new        → ""   (label already says "New PO")
-//   /stock-counts/3/report      → ""   (last segment is "report", not an ID)
 function getDetailContext(pathname, meta) {
   if (!meta?.parentPath) return "";
-
   const segments    = pathname.split("/").filter(Boolean);
   const lastSegment = segments[segments.length - 1];
-
   if (!lastSegment || lastSegment === "new" || lastSegment === "report") return "";
-
-  // Pure integer ID — e.g. shift #7, customer #42
-  if (/^\d+$/.test(lastSegment)) return ` #${lastSegment}`;
-
-  // UUID — show first 8 hex chars followed by ellipsis
+  if (/^\d+$/.test(lastSegment))          return ` #${lastSegment}`;
   if (/^[0-9a-f]{8}-/i.test(lastSegment)) return ` #${lastSegment.slice(0, 8)}\u2026`;
-
-  // Short slug (≤ 12 chars) — show as-is with a middle dot
-  if (lastSegment.length <= 12) return ` \u00b7 ${lastSegment}`;
-
+  if (lastSegment.length <= 12)           return ` \u00b7 ${lastSegment}`;
   return "";
 }
 
@@ -135,9 +96,8 @@ function Breadcrumb() {
 
   return (
     <nav className="flex items-center gap-1 min-w-0" aria-label="Breadcrumb">
-      {/* Home icon — links to Dashboard */}
       <NavLink
-        to="/analytics"
+        to="/dashboard"
         className="flex items-center shrink-0 text-muted-foreground hover:text-foreground transition-colors"
       >
         <Home className="h-3.5 w-3.5" />
@@ -145,11 +105,9 @@ function Breadcrumb() {
 
       {meta && (
         <>
-          {/* Section group (e.g. "Catalog", "Operations") */}
           <ChevronRight className="h-3.5 w-3.5 text-border shrink-0" />
           <span className="text-muted-foreground text-xs shrink-0">{meta.group}</span>
 
-          {/* Parent list page — clickable back-link for detail routes */}
           {meta.parentPath && (
             <>
               <ChevronRight className="h-3.5 w-3.5 text-border shrink-0" />
@@ -162,7 +120,6 @@ function Breadcrumb() {
             </>
           )}
 
-          {/* Current page + optional ID context */}
           <ChevronRight className="h-3.5 w-3.5 text-border shrink-0" />
           <span className="text-foreground text-xs font-medium truncate">
             {meta.label}
@@ -177,39 +134,55 @@ function Breadcrumb() {
 }
 
 // ── AppShell ──────────────────────────────────────────────────────────────────
+// Sidebar open state is controlled here so we can collapse it on analytics
+// routes without fighting the shadcn internal cookie/state loop.
+//
+// Why not a child component with useSidebar()?
+// shadcn's setOpen has `open` in its useCallback deps — calling it updates
+// `open`, which recreates `setOpen`, which re-triggers the useEffect →
+// infinite loop / flickering. Controlling `open` from outside (via
+// SidebarProvider's `open` + `onOpenChange` props) sidesteps this entirely.
 export function AppShell() {
+  const { pathname }           = useLocation();
   const setCommandPaletteOpen  = useUiStore((s) => s.setCommandPaletteOpen);
   const validateActiveStore    = useBranchStore((s) => s.validateActiveStore);
 
-  // Push business currency into format.js so formatCurrency() uses the right
-  // symbol everywhere without requiring per-call changes at existing sites.
   useCurrencySetup();
 
-  // Re-validate the active store whenever the window regains focus.
-  // Catches the case where an admin deactivates a store while a cashier
-  // is on the POS — the next time the cashier switches back to the window
-  // their stale store is detected and cleared (5.2).
+  // ── Sidebar auto-collapse ─────────────────────────────────────────────────
+  // Start collapsed when already on an analytics route (e.g. hard refresh).
+  const isAnalytics          = pathname.startsWith("/analytics") || pathname === "/pos";
+  const [sidebarOpen, setSidebarOpen] = useState(!isAnalytics);
+  const prevIsAnalyticsRef   = useRef(isAnalytics);
+
   useEffect(() => {
-    function handleVisibility() {
-      if (document.visibilityState === "visible") {
-        validateActiveStore();
-      }
+    const prev = prevIsAnalyticsRef.current;
+    if (prev !== isAnalytics) {
+      // Only fire when crossing the analytics boundary, not on every render.
+      setSidebarOpen(!isAnalytics);
+      prevIsAnalyticsRef.current = isAnalytics;
     }
+  }, [isAnalytics]);
+
+  // ── Store re-validation on focus ──────────────────────────────────────────
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") validateActiveStore();
+    };
     document.addEventListener("visibilitychange", handleVisibility);
     return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [validateActiveStore]);
 
-  // Global Cmd+K / Ctrl+K shortcut — registered here (not inside CommandPalette)
-  // so it survives page navigations regardless of palette mount state.
+  // ── Global Cmd+K / Ctrl+K ────────────────────────────────────────────────
   useEffect(() => {
-    function handleKeyDown(e) {
+    const handleKeyDown = (e) => {
       const isMac  = navigator.platform.toUpperCase().includes("MAC");
       const hotkey = isMac ? e.metaKey : e.ctrlKey;
       if (hotkey && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         setCommandPaletteOpen(true);
       }
-    }
+    };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [setCommandPaletteOpen]);
@@ -218,11 +191,17 @@ export function AppShell() {
     <>
       <CommandPalette />
       <KeyboardHelp />
-      <SidebarProvider>
+
+      {/*
+       * Controlled open/onOpenChange so:
+       *   - We collapse on analytics automatically (above useEffect).
+       *   - SidebarTrigger still toggles normally because it calls
+       *     toggleSidebar() → setOpen() → our onOpenChange=setSidebarOpen.
+       */}
+      <SidebarProvider open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <AppSidebar />
 
         <SidebarInset>
-          {/* Top header bar — never scrolls away */}
           <header className="flex h-12 w-full shrink-0 items-center gap-2 border-b border-border bg-card/80 backdrop-blur-sm px-3 z-20">
             <SidebarTrigger className={cn(
               "h-7 w-7 shrink-0 rounded-md",
@@ -237,7 +216,6 @@ export function AppShell() {
             </div>
           </header>
 
-          {/* Page content — inner ErrorBoundary keeps the shell alive on crashes */}
           <div className="flex flex-1 flex-col min-h-0 overflow-hidden bg-background">
             <ErrorBoundary pageLevel>
               <Outlet />

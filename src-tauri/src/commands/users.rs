@@ -288,6 +288,30 @@ pub async fn deactivate_user(
     .execute(&pool)
     .await?;
 
+    // ── Force immediate logout for the deactivated user ──────────────────────
+    // 1. Expire their active_sessions rows so the sessions panel clears.
+    sqlx::query!(
+        "UPDATE active_sessions SET expires_at = NOW() WHERE user_id = $1 AND expires_at > NOW()",
+        id
+    )
+    .execute(&pool)
+    .await
+    .ok();
+
+    // 2. Expire their user_sessions (refresh tokens). refresh_token_inner now
+    //    validates these, so the client cannot silently obtain a new access token.
+    sqlx::query!(
+        "UPDATE user_sessions SET expires_at = NOW() WHERE user_id = $1 AND expires_at > NOW()",
+        id
+    )
+    .execute(&pool)
+    .await
+    .ok();
+
+    // 3. Evict from the in-memory session cache so their very next API call
+    //    returns 401 without waiting for the JWT to naturally expire.
+    state.sessions.write().await.retain(|_, s| s.user_id != id);
+
     get_user(state, token, id).await
 }
 

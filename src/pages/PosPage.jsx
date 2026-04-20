@@ -64,7 +64,7 @@ import { getStoreSettings }     from "@/commands/store_settings";
 import { getPaymentMethods }    from "@/commands/payment_methods";
 
 import { formatCurrency, formatName }  from "@/lib/format";
-import { getAutoLockMinutes }          from "@/features/settings/SecuritySettingsPanel";
+import { getAutoLockMinutes }          from "@/features/settings/security-utils";
 import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS, isActiveShiftStatus } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 

@@ -158,14 +158,20 @@ pub async fn get_active_sessions(
 
     sqlx::query_as!(
         ActiveSession,
-        r#"SELECT s.id, s.user_id, u.username, s.store_id,
-               s.device_info, s.ip_address,
-               s.created_at, s.last_seen_at, s.expires_at
-           FROM active_sessions s
-           JOIN users u ON u.id = s.user_id
-           WHERE s.expires_at > NOW()
-             AND ($1::int IS NULL OR s.store_id=$1)
-           ORDER BY s.last_seen_at DESC"#,
+        r#"SELECT id, user_id, username, store_id, device_info, ip_address,
+                  created_at, last_seen_at, expires_at
+           FROM (
+               SELECT DISTINCT ON (s.user_id)
+                   s.id, s.user_id, u.username, s.store_id,
+                   s.device_info, s.ip_address,
+                   s.created_at, s.last_seen_at, s.expires_at
+               FROM active_sessions s
+               JOIN users u ON u.id = s.user_id
+               WHERE s.expires_at > NOW()
+                 AND ($1::int IS NULL OR s.store_id = $1)
+               ORDER BY s.user_id, s.last_seen_at DESC
+           ) latest
+           ORDER BY last_seen_at DESC"#,
         store_id,
     )
     .fetch_all(&pool)
@@ -184,6 +190,14 @@ pub async fn revoke_session(
     guard_permission(&state, &token, "users.update").await?;
     let pool = state.pool().await?;
 
+    // Fetch user_id before expiring so we can clean up their other session data.
+    let session = sqlx::query!(
+        "SELECT user_id FROM active_sessions WHERE id = $1",
+        session_id,
+    )
+    .fetch_optional(&pool)
+    .await?;
+
     let affected = sqlx::query!(
         "UPDATE active_sessions SET expires_at=NOW() WHERE id=$1", session_id,
     )
@@ -193,6 +207,25 @@ pub async fn revoke_session(
 
     if affected == 0 {
         return Err(AppError::NotFound(format!("Session {session_id} not found")));
+    }
+
+    if let Some(s) = session {
+        let user_id = s.user_id;
+
+        // Expire their refresh tokens so the client cannot silently re-obtain
+        // a fresh access token after the revoke. refresh_token_inner validates
+        // this table, so the user will be forced to the login screen.
+        sqlx::query!(
+            "UPDATE user_sessions SET expires_at = NOW() WHERE user_id = $1 AND expires_at > NOW()",
+            user_id
+        )
+        .execute(&pool)
+        .await
+        .ok();
+
+        // Evict from the in-memory session cache so the next API call they
+        // make returns 401 immediately — without waiting for JWT natural expiry.
+        state.sessions.write().await.retain(|_, sess| sess.user_id != user_id);
     }
 
     Ok(serde_json::json!({ "success": true, "revoked": session_id }))
