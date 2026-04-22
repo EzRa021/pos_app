@@ -41,3 +41,9 @@ export const getRolePermissions = (roleId) =>
 
 export const setRolePermissions = (roleId, permissionIds) =>
   rpc("set_role_permissions", { role_id: roleId, permission_ids: permissionIds });
+
+export const uploadUserAvatar = (id, avatar) =>
+  rpc("upload_user_avatar", { id, avatar });
+
+export const removeUserAvatar = (id) =>
+  rpc("remove_user_avatar", { id });

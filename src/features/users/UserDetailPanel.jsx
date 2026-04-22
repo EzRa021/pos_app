@@ -1,6 +1,6 @@
 // features/users/UserDetailPanel.jsx
 // Slide-in drawer showing full user profile + password reset + toggle status
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   Mail, Phone, Shield, Store, Calendar, Clock,
   KeyRound, Power, PowerOff, Pencil, Eye, EyeOff, Loader2,
@@ -9,12 +9,14 @@ import {
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
-import { Button }   from "@/components/ui/button";
-import { Input }    from "@/components/ui/input";
-import { cn }       from "@/lib/utils";
+import { Button }       from "@/components/ui/button";
+import { Input }        from "@/components/ui/input";
+import { cn }           from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
-import { getRoleConfig, getInitials } from "./roleConfig";
-import { setPosPin } from "@/commands/security";
+import { getRoleConfig } from "./roleConfig";
+import { setPosPin }    from "@/commands/security";
+import UserAvatar       from "@/components/shared/UserAvatar";
+import { AvatarUploader } from "./AvatarUploader";
 
 export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, onDeactivate, onResetPassword, currentUserId, canUpdate }) {
   const [showResetForm, setShowResetForm]       = useState(false);
@@ -50,12 +52,21 @@ export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, 
     }
   };
 
-  const rc       = user ? getRoleConfig(user.role_slug) : null;
-  const initials = user ? getInitials(user)             : "";
-  const fullName = user
-    ? ([user.first_name, user.last_name].filter(Boolean).join(" ") || user.username)
+  const [localUser, setLocalUser] = useState(null); // updated after avatar change
+  const effectiveUser = localUser ?? user;
+
+  // Reset local overrides when the panel switches to a different user
+  const prevUserIdRef = useRef(user?.id);
+  if (user?.id !== prevUserIdRef.current) {
+    prevUserIdRef.current = user?.id;
+    setLocalUser(null);
+  }
+
+  const rc       = effectiveUser ? getRoleConfig(effectiveUser.role_slug) : null;
+  const fullName = effectiveUser
+    ? ([effectiveUser.first_name, effectiveUser.last_name].filter(Boolean).join(" ") || effectiveUser.username)
     : "";
-  const isSelf   = user?.id === currentUserId;
+  const isSelf   = effectiveUser?.id === currentUserId;
   const isActive = user?.is_active;
 
   const handleResetSubmit = async () => {
@@ -105,11 +116,8 @@ export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, 
             {/* ── Avatar + name card ────────────────────────────────── */}
             <div className="px-5 pt-6 pb-4">
               <div className="flex flex-col items-center gap-3 text-center">
-                <div className={cn(
-                  "relative flex h-20 w-20 items-center justify-center rounded-2xl text-2xl font-bold shadow-lg",
-                  rc.avatar,
-                )}>
-                  {initials}
+                <div className="relative">
+                  <UserAvatar user={effectiveUser} size={80} rounded="xl" />
                   <span className={cn(
                     "absolute -bottom-1 -right-1 h-4 w-4 rounded-full border-2 border-card",
                     isActive ? "bg-success" : "bg-muted-foreground/40"
@@ -118,12 +126,12 @@ export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, 
 
                 <div>
                   <p className="text-[15px] font-bold text-foreground leading-tight">{fullName}</p>
-                  <p className="text-[12px] text-muted-foreground mt-0.5">@{user.username}</p>
+                  <p className="text-[12px] text-muted-foreground mt-0.5">@{effectiveUser.username}</p>
                 </div>
 
                 <span className={cn("rounded-full border px-3 py-1 text-[11px] font-semibold", rc.badge)}>
                   <span className={cn("inline-block h-1.5 w-1.5 rounded-full mr-1.5 mb-px", rc.dot)} />
-                  {user.role_name}
+                  {effectiveUser.role_name}
                 </span>
 
                 <span className={cn(
@@ -138,18 +146,27 @@ export function UserDetailPanel({ open, onOpenChange, user, onEdit, onActivate, 
                   }
                 </span>
               </div>
+
+              {/* ── Avatar uploader ───────────────────────────────────── */}
+              <div className="pt-2 pb-1">
+                <AvatarUploader
+                  user={effectiveUser}
+                  onUserChange={(updated) => setLocalUser(updated)}
+                  canEdit={canUpdate || isSelf}
+                />
+              </div>
             </div>
 
             {/* ── Details ───────────────────────────────────────────── */}
             <div className="px-5 space-y-1 pb-4">
-              <DetailRow icon={Hash}     label="User ID">{user.id}</DetailRow>
-              <DetailRow icon={Mail}     label="Email">{user.email}</DetailRow>
-              <DetailRow icon={Phone}    label="Phone">{user.phone ?? "—"}</DetailRow>
-              <DetailRow icon={Shield}   label="Role">{user.role_name}</DetailRow>
-              <DetailRow icon={Store}    label="Store">{user.store_name ?? "All Stores"}</DetailRow>
-              <DetailRow icon={Calendar} label="Joined">{user.created_at ? formatDateTime(user.created_at) : "—"}</DetailRow>
-              <DetailRow icon={LogIn}    label="Last Login">{user.last_login ? formatDateTime(user.last_login) : "Never"}</DetailRow>
-              <DetailRow icon={Clock}    label="Updated">{user.updated_at ? formatDateTime(user.updated_at) : "—"}</DetailRow>
+              <DetailRow icon={Hash}     label="User ID">{effectiveUser.id}</DetailRow>
+              <DetailRow icon={Mail}     label="Email">{effectiveUser.email}</DetailRow>
+              <DetailRow icon={Phone}    label="Phone">{effectiveUser.phone ?? "—"}</DetailRow>
+              <DetailRow icon={Shield}   label="Role">{effectiveUser.role_name}</DetailRow>
+              <DetailRow icon={Store}    label="Store">{effectiveUser.store_name ?? "All Stores"}</DetailRow>
+              <DetailRow icon={Calendar} label="Joined">{effectiveUser.created_at ? formatDateTime(effectiveUser.created_at) : "—"}</DetailRow>
+              <DetailRow icon={LogIn}    label="Last Login">{effectiveUser.last_login ? formatDateTime(effectiveUser.last_login) : "Never"}</DetailRow>
+              <DetailRow icon={Clock}    label="Updated">{effectiveUser.updated_at ? formatDateTime(effectiveUser.updated_at) : "—"}</DetailRow>
             </div>
 
             <div className="mx-5 border-t border-border/50" />

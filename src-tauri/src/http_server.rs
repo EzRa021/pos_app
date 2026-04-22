@@ -69,7 +69,7 @@ use crate::{
     },
     models::{
     reorder_alert::ReorderAlertFilters,
-    stock_transfer::{CreateTransferDto, SendTransferDto, ReceiveTransferDto, TransferFilters},
+    stock_transfer::{CreateTransferDto, SendTransferDto, ReceiveTransferDto, TransferFilters, ExecuteTransferDto},
     eod_report::EodHistoryFilters,
     store_settings::UpdateStoreSettingsDto,
     loyalty::{UpdateLoyaltySettingsDto, EarnPointsDto, RedeemPointsDto, AdjustPointsDto},
@@ -367,6 +367,22 @@ async fn dispatch(
                 .to_string();
             users::reset_user_password(as_state(state), require_token()?, id, new_password).await?;
             Ok(Value::Null)
+        }
+
+        "upload_user_avatar" => {
+            let id = i32_param(&params, "id")?;
+            let avatar: String = params.get("avatar")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AppError::Validation("avatar is required".into()))?
+                .to_string();
+            let result = users::upload_user_avatar(as_state(state), require_token()?, id, avatar).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "remove_user_avatar" => {
+            let id = i32_param(&params, "id")?;
+            let result = users::remove_user_avatar(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_permissions" => {
@@ -1849,6 +1865,18 @@ async fn dispatch(
             let store_id = opt_i32(&params, "store_id");
             let limit    = opt_i64(&params, "limit");
             let result   = stock_transfers::search_transfers_inner(state, require_token()?, query, store_id, limit).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "execute_transfer" => {
+            let payload: ExecuteTransferDto = parse(params)?;
+            let result = stock_transfers::execute_transfer_inner(state, require_token()?, payload).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "approve_transfer" => {
+            let id = i32_param(&params, "id")?;
+            let result = stock_transfers::approve_transfer_inner(state, require_token()?, id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 

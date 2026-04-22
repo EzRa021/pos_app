@@ -31,8 +31,9 @@ import { useUsers, useRoles, useUserActions } from "./useUsers";
 import { UserFormDialog }        from "./UserFormDialog";
 import { UserDetailPanel }       from "./UserDetailPanel";
 import { RolePermissionsDialog } from "./RolePermissionsDialog";
-import { getRoleConfig, getInitials } from "./roleConfig";
+import { getRoleConfig }         from "./roleConfig";
 import { ActiveSessionsSection } from "./ActiveSessionsSection";
+import UserAvatar                from "@/components/shared/UserAvatar";
 
 const PAGE_SIZE = 15;
 
@@ -477,7 +478,6 @@ function Th({ children, className }) {
 
 function UserRow({ user, canUpdate, currentUserId, onView, onEdit, onActivate, onDeactivate }) {
   const rc       = getRoleConfig(user.role_slug);
-  const initials = getInitials(user);
   const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username;
   const isSelf   = user.id === currentUserId;
 
@@ -486,14 +486,11 @@ function UserRow({ user, canUpdate, currentUserId, onView, onEdit, onActivate, o
       onClick={onView}
       className="group cursor-pointer transition-colors duration-100 hover:bg-muted/20"
     >
-      {/* Avatar + name */}
+      {/* Avatar */}
       <td className="pl-5 pr-3 py-3">
         <div className="flex items-center gap-3">
-          <div className={cn(
-            "relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[12px] font-bold",
-            rc.avatar,
-          )}>
-            {initials}
+          <div className="relative shrink-0">
+            <UserAvatar user={user} size={36} rounded="xl" />
             <span className={cn(
               "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card",
               user.is_active ? "bg-success" : "bg-muted-foreground/30",

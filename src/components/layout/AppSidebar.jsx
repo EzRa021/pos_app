@@ -78,8 +78,10 @@ import { useAuthStore }           from "@/stores/auth.store";
 import { useBranchStore }         from "@/stores/branch.store";
 import { useShiftStore }          from "@/stores/shift.store";
 import { useBusinessInfo }        from "@/hooks/useBusinessInfo";
+import { useUser }                from "@/features/users/useUsers";
 import { isActiveShiftStatus }    from "@/lib/constants";
 import { cn }                     from "@/lib/utils";
+import UserAvatar                 from "@/components/shared/UserAvatar";
 
 const QUANTUM_LOGO = "/quantum-logo.svg";
 
@@ -558,10 +560,19 @@ function StoreSwitcher() {
 
 // ─── UserFooter ───────────────────────────────────────────────────────────────
 function UserFooter() {
-  const user     = useAuthStore((s) => s.user);
+  const authUser = useAuthStore((s) => s.user);
   const logout   = useAuthStore((s) => s.logout);
   const lockPos  = useAuthStore((s) => s.lockPos);
   const { isMobile } = useSidebar();
+
+  // Fetch the full user profile so the avatar is always fresh (AvatarUploader
+  // invalidates ["user", id] after every upload/remove — this query re-fetches
+  // automatically and merges the latest avatar into the sidebar display).
+  const { data: freshUser } = useUser(authUser?.id);
+
+  // Merge: fresh profile wins for the avatar field; fall back to auth store
+  // so name / role display works even before the query resolves.
+  const user = freshUser ? { ...authUser, avatar: freshUser.avatar ?? authUser?.avatar } : authUser;
 
   if (!user) return null;
 
@@ -585,11 +596,8 @@ function UserFooter() {
                 "data-[state=open]:text-sidebar-accent-foreground",
               )}
             >
-              <Avatar className="h-8 w-8 shrink-0 rounded-lg">
-                <AvatarFallback className="rounded-lg border border-primary/25 bg-primary/10 text-[11px] font-semibold text-primary">
-                  {initials}
-                </AvatarFallback>
-              </Avatar>
+              {/* Trigger avatar — photo if set, otherwise initials */}
+              <UserAvatar user={user} size={32} rounded="xl" className="shrink-0" />
               <div className="grid min-w-0 flex-1 text-left leading-tight">
                 <span className="truncate text-[13px] font-semibold text-sidebar-foreground">{displayName}</span>
                 <span className="truncate text-[10px] capitalize text-sidebar-foreground/40">{roleName}</span>
@@ -604,12 +612,9 @@ function UserFooter() {
             align="end"
             sideOffset={8}
           >
+            {/* Header card with larger avatar */}
             <div className="flex items-center gap-3 rounded-lg bg-muted/40 px-3 py-3 mb-1">
-              <Avatar className="h-10 w-10 shrink-0 rounded-xl">
-                <AvatarFallback className="rounded-xl border border-primary/25 bg-primary/10 text-sm font-semibold text-primary">
-                  {initials}
-                </AvatarFallback>
-              </Avatar>
+              <UserAvatar user={user} size={40} rounded="xl" className="shrink-0" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-semibold text-foreground">{displayName}</p>
                 <p className="truncate text-[11px] capitalize text-muted-foreground">{roleName}</p>

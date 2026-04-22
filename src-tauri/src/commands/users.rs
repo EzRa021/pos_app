@@ -47,7 +47,8 @@ pub async fn get_users(
         r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
                   u.role_id, r.role_slug, r.role_name, r.is_global,
                   u.store_id, s.store_name AS "store_name?",
-                  u.is_active, u.last_login, u.created_at, u.updated_at
+                  u.is_active, u.last_login, u.created_at, u.updated_at,
+                  u.avatar
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
            LEFT JOIN stores s ON s.id = u.store_id
@@ -85,7 +86,8 @@ pub async fn get_user(
         r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
                   u.role_id, r.role_slug, r.role_name, r.is_global,
                   u.store_id, s.store_name AS "store_name?",
-                  u.is_active, u.last_login, u.created_at, u.updated_at
+                  u.is_active, u.last_login, u.created_at, u.updated_at,
+                  u.avatar
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
            LEFT JOIN stores s ON s.id = u.store_id
@@ -236,7 +238,8 @@ pub async fn search_users(
         r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
                   u.role_id, r.role_slug, r.role_name, r.is_global,
                   u.store_id, s.store_name AS "store_name?",
-                  u.is_active, u.last_login, u.created_at, u.updated_at
+                  u.is_active, u.last_login, u.created_at, u.updated_at,
+                  u.avatar
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
            LEFT JOIN stores s ON s.id = u.store_id
@@ -337,6 +340,65 @@ pub async fn reset_user_password(
     .await?;
 
     Ok(())
+}
+
+// ── Avatar ───────────────────────────────────────────────────────────────────
+
+/// Upload or replace the user's profile photo.
+/// A user may update their own avatar; updating another user's requires users.update.
+#[tauri::command]
+pub async fn upload_user_avatar(
+    state:  State<'_, AppState>,
+    token:  String,
+    id:     i32,
+    avatar: String,   // base64 data URI, e.g. "data:image/webp;base64,…"
+) -> AppResult<User> {
+    // Validate format
+    let valid_prefix = ["data:image/jpeg;base64,", "data:image/png;base64,",
+                        "data:image/webp;base64,", "data:image/gif;base64,"];
+    if !valid_prefix.iter().any(|p| avatar.starts_with(p)) {
+        return Err(AppError::Validation("Invalid image format. Allowed: jpeg, png, webp, gif".into()));
+    }
+    // Guard size: base64 of a 256×256 WebP should be well under 300 KB
+    const MAX_B64_LEN: usize = 400_000;
+    if avatar.len() > MAX_B64_LEN {
+        return Err(AppError::Validation("Avatar too large (max ~200 KB after resize)".into()));
+    }
+    // Auth: self OR users.update
+    let claims = super::auth::guard(&state, &token).await?;
+    if claims.user_id != id {
+        guard_permission(&state, &token, "users.update").await?;
+    }
+    let pool = state.pool().await?;
+    sqlx::query!(
+        "UPDATE users SET avatar = $1, updated_at = NOW() WHERE id = $2",
+        avatar, id
+    )
+    .execute(&pool)
+    .await?;
+    get_user(state, token, id).await
+}
+
+/// Remove a user's profile photo (sets avatar back to NULL).
+/// A user may remove their own avatar; removing another user's requires users.update.
+#[tauri::command]
+pub async fn remove_user_avatar(
+    state: State<'_, AppState>,
+    token: String,
+    id:    i32,
+) -> AppResult<User> {
+    let claims = super::auth::guard(&state, &token).await?;
+    if claims.user_id != id {
+        guard_permission(&state, &token, "users.update").await?;
+    }
+    let pool = state.pool().await?;
+    sqlx::query!(
+        "UPDATE users SET avatar = NULL, updated_at = NOW() WHERE id = $1",
+        id
+    )
+    .execute(&pool)
+    .await?;
+    get_user(state, token, id).await
 }
 
 // ── Permissions ───────────────────────────────────────────────────────────────

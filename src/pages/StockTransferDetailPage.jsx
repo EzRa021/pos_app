@@ -1,8 +1,7 @@
 // pages/StockTransferDetailPage.jsx
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import {
-  ArrowLeftRight, Send, PackageCheck, X, Loader2,
+import { ArrowLeftRight, Send, PackageCheck, X, Loader2,
   Package, AlertTriangle, CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -17,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { useStockTransfer } from "@/features/stock_transfers/useStockTransfers";
 import { usePermission }    from "@/hooks/usePermission";
+import { useAuthStore }     from "@/stores/auth.store";
 import { formatCurrency, formatDateTime } from "@/lib/format";
 
 // ── Send Dialog ───────────────────────────────────────────────────────────────
@@ -175,16 +175,26 @@ export default function StockTransferDetailPage() {
   const { id }   = useParams();
   const navigate = useNavigate();
   const canAct   = usePermission("inventory.create");
+  const isGlobal = useAuthStore((s) => s.user?.is_global ?? false);
   const [sendOpen,    setSendOpen]    = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
 
-  const { transfer, isLoading, error, send, receive, cancel } = useStockTransfer(id);
+  const { transfer, isLoading, error, send, receive, cancel, approve } = useStockTransfer(id);
 
   const handleCancel = async () => {
     if (!confirm("Cancel this transfer?")) return;
     try {
       await cancel.mutateAsync();
       toast.success("Transfer cancelled.");
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const handleApprove = async () => {
+    if (!confirm("Approve and execute this transfer? Stock will move immediately.")) return;
+    try {
+      await approve.mutateAsync();
     } catch (e) {
       toast.error(String(e));
     }
@@ -205,6 +215,7 @@ export default function StockTransferDetailPage() {
   const isDraft    = transfer.status === "draft";
   const isTransit  = transfer.status === "in_transit";
   const isReceived = transfer.status === "received";
+  const isPending  = transfer.status === "pending_approval";
 
   return (
     <>
@@ -216,6 +227,29 @@ export default function StockTransferDetailPage() {
           badge={<StatusBadge status={transfer.status} size="md" />}
           action={canAct && (
             <div className="flex items-center gap-2">
+              {isPending && isGlobal && (
+                <Button
+                  size="sm"
+                  onClick={handleApprove}
+                  disabled={approve.isPending}
+                  className="gap-1.5 bg-success hover:bg-success/90 text-white"
+                >
+                  {approve.isPending
+                    ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Approving…</>
+                    : <><CheckCircle2 className="h-3.5 w-3.5" />Approve & Execute</>}
+                </Button>
+              )}
+              {isPending && !isGlobal && (
+                <span className="text-xs text-muted-foreground italic px-2">
+                  Awaiting admin approval
+                </span>
+              )}
+              {isPending && (
+                <Button size="sm" variant="outline" onClick={handleCancel}
+                  disabled={cancel.isPending} className="gap-1.5 text-destructive border-destructive/30">
+                  <X className="h-3.5 w-3.5" />Cancel
+                </Button>
+              )}
               {isDraft && (
                 <>
                   <Button size="sm" onClick={() => setSendOpen(true)} className="gap-1.5">
@@ -265,6 +299,11 @@ export default function StockTransferDetailPage() {
                   <div key={item.item_id} className="flex items-center justify-between px-5 py-3.5">
                     <div>
                       <p className="text-sm font-semibold text-foreground">{item.item_name}</p>
+                      {item.destination_item_name && item.destination_item_name !== item.item_name && (
+                        <p className="text-[11px] text-muted-foreground">
+                          → {item.destination_item_name}
+                        </p>
+                      )}
                       <p className="text-[11px] text-muted-foreground font-mono">{item.sku ?? "—"}</p>
                     </div>
                     <div className="flex items-center gap-6 text-right">

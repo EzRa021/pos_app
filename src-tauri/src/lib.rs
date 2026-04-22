@@ -285,6 +285,8 @@ pub fn run() {
             commands::users::activate_user,
             commands::users::deactivate_user,
             commands::users::reset_user_password,
+            commands::users::upload_user_avatar,
+            commands::users::remove_user_avatar,
             commands::users::get_roles,
             commands::users::get_permissions,
             commands::users::get_role_permissions,
@@ -527,6 +529,7 @@ pub fn run() {
             commands::stock_transfers::cancel_transfer,
             commands::stock_transfers::get_transfers,
             commands::stock_transfers::get_transfer,
+            commands::stock_transfers::approve_transfer,
             // ── End-of-Day Reports ────────────────────────────────────────────
             commands::eod::generate_eod_report,
             commands::eod::lock_eod_report,

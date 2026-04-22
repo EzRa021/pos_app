@@ -26,3 +26,12 @@ export const getTransfer = (id) =>
 
 export const searchTransfers = (query, storeId, limit = 8) =>
   rpc("search_transfers", { query, store_id: storeId ?? null, limit });
+
+// ExecuteTransferDto: { from_store_id, to_store_id, notes?,
+//   items: [{ source_item_id, qty, destination_item_id? }] }
+// destination_item_id = null → auto-creates item in destination store
+export const executeTransfer = (payload) =>
+  rpc("execute_transfer", payload);
+
+export const approveTransfer = (id) =>
+  rpc("approve_transfer", { id });

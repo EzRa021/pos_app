@@ -2,7 +2,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   createTransfer, sendTransfer, receiveTransfer,
-  cancelTransfer, getTransfers, getTransfer,
+  cancelTransfer, getTransfers, getTransfer, executeTransfer, approveTransfer,
 } from "@/commands/stock_transfers";
 import { useBranchStore }   from "@/stores/branch.store";
 import { invalidateStock }  from "@/lib/invalidations";
@@ -24,7 +24,7 @@ export function useStockTransfers({ search, status, page = 1, limit = 25 } = {})
       limit,
     }),
     enabled:         !!storeId,
-    staleTime:       60_000,
+    staleTime:       30_000,
     placeholderData: (prev) => prev,
   });
 
@@ -71,14 +71,32 @@ export function useStockTransfers({ search, status, page = 1, limit = 25 } = {})
     onError: (e) => onMutationError("Couldn't Cancel Transfer", e),
   });
 
+  // Backend returns a plain Vec<StockTransfer> array (no pagination wrapper)
+  const transfers = Array.isArray(data) ? data : [];
+
   return {
     storeId,
-    transfers: data?.data ?? [],
-    total:     data?.total ?? 0,
+    transfers,
+    total:     transfers.length,
     isLoading,
     isFetching,
     create, send, receive, cancel,
   };
+}
+
+export function useExecuteTransfer() {
+  const storeId = useBranchStore((s) => s.activeStore?.id);
+  const qc      = useQueryClient();
+
+  return useMutation({
+    mutationFn: executeTransfer,
+    onSuccess: () => {
+      toastSuccess("Transfer Complete", "Stock has been moved and inventory levels updated.");
+      qc.invalidateQueries({ queryKey: ["stock-transfers", storeId] });
+      invalidateStock(storeId);
+    },
+    onError: (e) => onMutationError("Transfer Failed", e),
+  });
 }
 
 export function useStockTransfer(id) {
@@ -127,5 +145,14 @@ export function useStockTransfer(id) {
     onError: (e) => onMutationError("Couldn't Cancel Transfer", e),
   });
 
-  return { transfer: data, isLoading, error: error ?? null, send, receive, cancel };
+  const approve = useMutation({
+    mutationFn: () => approveTransfer(id),
+    onSuccess: () => {
+      toastSuccess("Transfer Approved", "Stock has been moved and inventory levels updated.");
+      invalidateDetailAndStock();
+    },
+    onError: (e) => onMutationError("Couldn't Approve Transfer", e),
+  });
+
+  return { transfer: data, isLoading, error: error ?? null, send, receive, cancel, approve };
 }

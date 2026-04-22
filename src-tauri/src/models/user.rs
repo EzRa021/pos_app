@@ -23,6 +23,7 @@ pub struct User {
     pub last_login: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub avatar:     Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
