@@ -48,6 +48,8 @@ pub struct AuthUser {
     pub store_id:    Option<i32>,
     pub is_global:   bool,
     pub is_active:   bool,
+    /// Profile photo — base64 data URI or NULL.
+    pub avatar:      Option<String>,
     /// Permission slugs granted to this user's role. Sent to the frontend so
     /// usePermission() can gate UI controls without an extra round-trip.
     pub permissions: Vec<String>,
@@ -86,6 +88,7 @@ pub struct UserAuthRow {
     pub store_id:        Option<i32>,
     pub is_global:       bool,
     pub is_active:       bool,
+    pub avatar:          Option<String>,
     pub failed_login_attempts: i32,
     pub locked_until:    Option<DateTime<Utc>>,
 }

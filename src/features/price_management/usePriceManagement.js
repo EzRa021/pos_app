@@ -5,7 +5,8 @@ import { useBranchStore } from "@/stores/branch.store";
 import {
   getPriceLists, createPriceList, updatePriceList, deletePriceList,
   getPriceListItems, addPriceListItem, removePriceListItem,
-  getPriceChanges, requestPriceChange, approvePriceChange, rejectPriceChange,
+  getPriceChanges, getPriceChangeStats, requestPriceChange,
+  approvePriceChange, rejectPriceChange,
   getPendingScheduledChanges, schedulePriceChange,
   cancelScheduledPriceChange, applyScheduledPrices,
   getItemPriceHistory,
@@ -54,7 +55,8 @@ export function usePriceLists() {
       return createPriceList({ store_id: storeId, ...p });
     },
     onSuccess: (pl) => {
-      toastSuccess("Price List Created", `"${pl?.name ?? "Price list"}" is ready to assign to customers.`);
+      // Fixed: was pl?.name — the model field is list_name
+      toastSuccess("Price List Created", `"${pl?.list_name ?? "Price list"}" is ready to assign to customers.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Create Price List", e),
@@ -63,7 +65,8 @@ export function usePriceLists() {
   const update = useMutation({
     mutationFn: ({ id, ...p }) => updatePriceList(id, p),
     onSuccess: (pl) => {
-      toastSuccess("Price List Updated", `"${pl?.name ?? "Price list"}" changes have been saved.`);
+      // Fixed: was pl?.name — the model field is list_name
+      toastSuccess("Price List Updated", `"${pl?.list_name ?? "Price list"}" changes have been saved.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Update Price List", e),
@@ -130,6 +133,27 @@ export function usePriceListItems(priceListId) {
   return { items, isLoading, addItem, removeItem };
 }
 
+// ── Price Change Stats (replaces 200-row JS counting) ────────────────────────
+export function usePriceChangeStats() {
+  const storeId = useBranchStore((s) => s.activeStore?.id);
+
+  const { data, isLoading } = useQuery({
+    queryKey:  ["price-change-stats", storeId],
+    queryFn:   () => getPriceChangeStats(storeId),
+    enabled:   !!storeId,
+    staleTime: 30_000,
+    placeholderData: { total_count: 0, pending_count: 0, applied_count: 0, rejected_count: 0 },
+  });
+
+  return {
+    totalCount:    data?.total_count    ?? 0,
+    pendingCount:  data?.pending_count  ?? 0,
+    appliedCount:  data?.applied_count  ?? 0,
+    rejectedCount: data?.rejected_count ?? 0,
+    isLoading,
+  };
+}
+
 // ── Price Change Requests ─────────────────────────────────────────────────────
 export function usePriceChanges({ status, page = 1, limit = 20 } = {}) {
   const qc      = useQueryClient();
@@ -161,13 +185,14 @@ export function usePriceChanges({ status, page = 1, limit = 20 } = {}) {
     [qc, storeId],
   );
 
-  // Approve also updates the item selling_price — bust item caches too
+  // Bust item caches + stats after price is actually applied
   const invalidateWithItems = useCallback(() => {
     invalidateAll();
+    qc.invalidateQueries({ queryKey: ["price-change-stats", storeId] });
     qc.invalidateQueries({ queryKey: ["items"] });
     qc.invalidateQueries({ queryKey: ["item"] });
     qc.invalidateQueries({ queryKey: ["pos-items"] });
-  }, [qc, invalidateAll]);
+  }, [qc, storeId, invalidateAll]);
 
   const request = useMutation({
     mutationFn: (p) => {
@@ -177,6 +202,7 @@ export function usePriceChanges({ status, page = 1, limit = 20 } = {}) {
     onSuccess: () => {
       toastSuccess("Price Change Requested", "Your request has been submitted and is awaiting approval.");
       invalidateAll();
+      qc.invalidateQueries({ queryKey: ["price-change-stats", storeId] });
     },
     onError: (e) => onMutationError("Couldn't Request Price Change", e),
   });
@@ -195,6 +221,7 @@ export function usePriceChanges({ status, page = 1, limit = 20 } = {}) {
     onSuccess: () => {
       toastSuccess("Price Change Rejected", "The request has been declined.");
       invalidateAll();
+      qc.invalidateQueries({ queryKey: ["price-change-stats", storeId] });
     },
     onError: (e) => onMutationError("Couldn't Reject Price Change", e),
   });
@@ -234,10 +261,11 @@ export function useScheduledPriceChanges(includeApplied = false) {
 
   const invalidateWithItems = useCallback(() => {
     invalidateAll();
+    qc.invalidateQueries({ queryKey: ["price-change-stats", storeId] });
     qc.invalidateQueries({ queryKey: ["items"] });
     qc.invalidateQueries({ queryKey: ["item"] });
     qc.invalidateQueries({ queryKey: ["pos-items"] });
-  }, [qc, invalidateAll]);
+  }, [qc, storeId, invalidateAll]);
 
   const schedule = useMutation({
     mutationFn: (p) => {
@@ -245,7 +273,8 @@ export function useScheduledPriceChanges(includeApplied = false) {
       return schedulePriceChange({ store_id: storeId, ...p });
     },
     onSuccess: () => {
-      toastSuccess("Price Change Scheduled", "The price update will apply automatically on the set date.");
+      // Fixed copy: "automatically" was misleading — apply is manual
+      toastSuccess("Price Change Scheduled", "The price update will apply on the set date when you click Apply.");
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Schedule Price Change", e),

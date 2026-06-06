@@ -22,6 +22,11 @@ function DepositDialog({ open, onOpenChange, customerId, onDeposit }) {
   const handleSave = async () => {
     const amt = parseFloat(amount);
     if (!(amt > 0)) { toast.error("Enter a valid amount."); return; }
+    const largeThreshold = 50_000;
+    if (amt >= largeThreshold) {
+      const ok = window.confirm(`Confirm large top-up: ${formatCurrency(amt)}?`);
+      if (!ok) return;
+    }
     setBusy(true);
     try {
       await onDeposit({ amount: amt, reference: reference || undefined, notes: notes || undefined });
@@ -82,7 +87,7 @@ function DepositDialog({ open, onOpenChange, customerId, onDeposit }) {
 // ── Adjust Dialog ─────────────────────────────────────────────────────────────
 function AdjustDialog({ open, onOpenChange, onAdjust }) {
   const [amount, setAmount] = useState("");
-  const [notes,  setNotes]  = useState("");
+  const [reason, setReason] = useState("");
   const [busy,   setBusy]   = useState(false);
 
   const handleSave = async () => {
@@ -90,9 +95,9 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
     if (isNaN(amt) || amt === 0) { toast.error("Enter a non-zero adjustment amount."); return; }
     setBusy(true);
     try {
-      await onAdjust({ amount: amt, notes: notes || undefined });
+      await onAdjust({ amount: amt, reason: reason || "" });
       toast.success(`Wallet adjusted by ${formatCurrency(Math.abs(amt))}.`);
-      setAmount(""); setNotes("");
+      setAmount(""); setReason("");
       onOpenChange(false);
     } catch (e) {
       toast.error(String(e));
@@ -126,13 +131,13 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
           </div>
           <div className="space-y-1.5">
             <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Reason *</label>
-            <Input value={notes} onChange={(e) => setNotes(e.target.value)}
+            <Input value={reason} onChange={(e) => setReason(e.target.value)}
               placeholder="Reason for adjustment" className="h-8 text-sm" />
           </div>
         </div>
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} disabled={busy || !notes} className="gap-1.5">
+          <Button size="sm" onClick={handleSave} disabled={busy || !reason.trim()} className="gap-1.5">
             {busy ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</> : "Save Adjustment"}
           </Button>
         </DialogFooter>

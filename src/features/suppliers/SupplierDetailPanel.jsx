@@ -762,7 +762,12 @@ export function SupplierDetailPanel() {
         }
         action={canManage && (
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setToggleOpen(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setToggleOpen(true)}
+              disabled={activate.isPending || deactivate.isPending}
+            >
               {supplier.is_active
                 ? <><PowerOff className="h-3.5 w-3.5 mr-1.5 text-warning" />Deactivate</>
                 : <><Power    className="h-3.5 w-3.5 mr-1.5 text-success" />Activate</>}

@@ -143,7 +143,6 @@ function SupplierFormDialog({ open, onOpenChange, editing, onCreate, onUpdate })
     try {
       if (editing) await onUpdate({ id: editing.id, ...payload });
       else         await onCreate(payload);
-      toast.success(editing ? "Supplier updated." : "Supplier created.");
       handleOpenChange(false);
     } catch (err) {
       toast.error(err?.message ?? "Failed to save.");
@@ -251,7 +250,6 @@ function ToggleDialog({ open, onOpenChange, supplier, onConfirm }) {
     setBusy(true);
     try {
       await onConfirm(supplier.id);
-      toast.success(isActivating ? "Supplier activated." : "Supplier deactivated.");
       onOpenChange(false);
     } catch (err) {
       toast.error(err?.message ?? "Action failed.");
@@ -316,8 +314,12 @@ function DeleteDialog({ open, onOpenChange, supplier, onConfirm }) {
     if (!nameMatches) return;
     setBusy(true);
     try {
-      await onConfirm(supplier.id);
-      toast.success("Supplier deleted.");
+      const res = await onConfirm(supplier.id);
+      if (res?.deactivated) {
+        toast.success("Supplier deactivated (has related records).");
+      } else {
+        toast.success("Supplier deleted.");
+      }
       onOpenChange(false);
     } catch (err) {
       toast.error(err?.message ?? "Delete failed.");

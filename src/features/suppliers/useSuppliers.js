@@ -45,7 +45,7 @@ export function useSuppliers({ storeIdOverride, search, isActive, page = 1, limi
   const create     = useMutation({
     mutationFn: (p) => createSupplier({ store_id: storeId, ...p }),
     onSuccess: (s) => {
-      toastSuccess("Supplier Added", `${s.name} is now in your supplier directory.`);
+      toastSuccess("Supplier Added", `${s.supplier_name} is now in your supplier directory.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Add Supplier", e),
@@ -53,7 +53,7 @@ export function useSuppliers({ storeIdOverride, search, isActive, page = 1, limi
   const update     = useMutation({
     mutationFn: ({ id, ...p }) => updateSupplier(id, p),
     onSuccess: (s) => {
-      toastSuccess("Supplier Updated", `Profile changes for ${s.name} have been saved.`);
+      toastSuccess("Supplier Updated", `Profile changes for ${s.supplier_name} have been saved.`);
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Update Supplier", e),
@@ -61,7 +61,7 @@ export function useSuppliers({ storeIdOverride, search, isActive, page = 1, limi
   const activate   = useMutation({
     mutationFn: (id) => activateSupplier(id),
     onSuccess: (s) => {
-      toastSuccess("Supplier Activated", `${s.name} is now an active supplier.`);
+      toastSuccess("Supplier Activated", `${s.supplier_name} is now an active supplier.`);
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Activate Supplier", e),
@@ -69,15 +69,19 @@ export function useSuppliers({ storeIdOverride, search, isActive, page = 1, limi
   const deactivate = useMutation({
     mutationFn: (id) => deactivateSupplier(id),
     onSuccess: (s) => {
-      toastSuccess("Supplier Deactivated", `${s.name} has been deactivated.`);
+      toastSuccess("Supplier Deactivated", `${s.supplier_name} has been deactivated.`);
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Deactivate Supplier", e),
   });
   const remove     = useMutation({
     mutationFn: (id) => deleteSupplier(id),
-    onSuccess: () => {
-      toastSuccess("Supplier Removed", "The supplier record has been deleted.");
+    onSuccess: (res) => {
+      if (res?.deactivated) {
+        toastSuccess("Supplier Deactivated", "Supplier has related records, so it was deactivated instead of deleted.");
+      } else {
+        toastSuccess("Supplier Removed", "The supplier record has been deleted.");
+      }
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Remove Supplier", e),
@@ -117,7 +121,7 @@ export function useSupplier(id) {
   const update = useMutation({
     mutationFn: (p) => updateSupplier(id, p),
     onSuccess: (s) => {
-      toastSuccess("Supplier Updated", `Profile changes for ${s.name} have been saved.`);
+      toastSuccess("Supplier Updated", `Profile changes for ${s.supplier_name} have been saved.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Update Supplier", e),
@@ -125,7 +129,7 @@ export function useSupplier(id) {
   const activate = useMutation({
     mutationFn: () => activateSupplier(id),
     onSuccess: (s) => {
-      toastSuccess("Supplier Activated", `${s.name} is now an active supplier.`);
+      toastSuccess("Supplier Activated", `${s.supplier_name} is now an active supplier.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Activate Supplier", e),
@@ -133,7 +137,7 @@ export function useSupplier(id) {
   const deactivate = useMutation({
     mutationFn: () => deactivateSupplier(id),
     onSuccess: (s) => {
-      toastSuccess("Supplier Deactivated", `${s.name} has been deactivated.`);
+      toastSuccess("Supplier Deactivated", `${s.supplier_name} has been deactivated.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Deactivate Supplier", e),
@@ -177,7 +181,10 @@ export function useSupplierPayments(supplierId) {
     staleTime: 30_000,
   });
 
-  const payments = useMemo(() => paymentsRaw ?? [], [paymentsRaw]);
+  const payments = useMemo(
+    () => (Array.isArray(paymentsRaw) ? paymentsRaw : (paymentsRaw?.data ?? [])),
+    [paymentsRaw]
+  );
 
   const invalidate = useCallback(() => {
     qc.invalidateQueries({ queryKey: ["supplier-balance",  supplierId] });

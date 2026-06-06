@@ -57,9 +57,10 @@ const TYPES = [
 ];
 
 export function CashMovementModal({ open, onOpenChange }) {
-  const [type,   setType]   = useState(CASH_MOVEMENT_TYPES.DEPOSIT);
-  const [amount, setAmount] = useState("");
-  const [reason, setReason] = useState("");
+  const [type,      setType]      = useState(CASH_MOVEMENT_TYPES.DEPOSIT);
+  const [amount,    setAmount]    = useState("");
+  const [reason,    setReason]    = useState("");
+  const [reference, setReference] = useState("");
 
   const shiftId = useShiftStore((s) => s.activeShift?.id);
   const activeType = TYPES.find((t) => t.key === type);
@@ -67,10 +68,11 @@ export function CashMovementModal({ open, onOpenChange }) {
   const mutation = useMutation({
     mutationFn: () =>
       addCashMovement({
-        shift_id:      shiftId,
-        movement_type: type,
-        amount:        parseFloat(amount),
-        reason:        reason.trim() || activeType.label,
+        shift_id:         shiftId,
+        movement_type:    type,
+        amount:           parseFloat(amount),
+        reason:           reason.trim() || activeType.label,
+        reference_number: reference.trim() || undefined,
       }),
     onSuccess: (_, __, ctx) => {
       const verb = type === "deposit" ? "added to" : "removed from";
@@ -80,8 +82,10 @@ export function CashMovementModal({ open, onOpenChange }) {
       );
       queryClient.invalidateQueries({ queryKey: ["cash-movements", shiftId] });
       queryClient.invalidateQueries({ queryKey: ["shift-summary", shiftId] });
+      queryClient.invalidateQueries({ queryKey: ["shift", shiftId] });
       setAmount("");
       setReason("");
+      setReference("");
       onOpenChange(false);
     },
     onError: (e) => onMutationError("Cash Movement Failed", e),
@@ -171,6 +175,19 @@ export function CashMovementModal({ open, onOpenChange }) {
                 }
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-foreground mb-1.5">
+                Reference #{" "}
+                <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <Input
+                placeholder="e.g. Receipt no., invoice no.…"
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+                className="font-mono text-xs"
               />
             </div>
 

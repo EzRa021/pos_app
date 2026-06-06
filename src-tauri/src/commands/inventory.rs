@@ -23,8 +23,11 @@ use crate::{
 };
 use super::auth::guard_permission;
 
-fn to_dec(v: f64) -> Decimal {
-    Decimal::try_from(v).unwrap_or_default()
+fn to_dec(v: f64) -> AppResult<Decimal> {
+    if !v.is_finite() {
+        return Err(AppError::Validation("quantity must be a finite number".into()));
+    }
+    Decimal::try_from(v).map_err(|_| AppError::Validation("Invalid quantity value".into()))
 }
 
 // ── pub(crate) inner wrappers for HTTP dispatch ───────────────────────────────
@@ -131,8 +134,8 @@ pub(crate) async fn get_inventory_item_inner(
                     ELSE 'normal'
                   END AS stock_status
            FROM   items i
-           JOIN   categories c    ON c.id = i.category_id
-           LEFT JOIN departments d ON d.id = i.department_id
+           LEFT JOIN categories c    ON c.id = i.category_id
+           LEFT JOIN departments d   ON d.id = i.department_id
            LEFT JOIN item_settings ist ON ist.item_id = i.id
            LEFT JOIN item_stock istock ON istock.item_id = i.id AND istock.store_id = i.store_id
            WHERE  i.id = $1 AND i.store_id = $2"#,
@@ -142,27 +145,10 @@ pub(crate) async fn get_inventory_item_inner(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("Item {item_id} not found in store {store_id}")))?;
 
-    let movement_history = sqlx::query_as!(
-        MovementRecord,
-        r#"SELECT h.id, h.item_id, i.item_name, i.sku,
-                  h.event_type, h.event_description,
-                  h.quantity_before, h.quantity_after, h.quantity_change,
-                  h.reference_type, h.reference_id,
-                  h.performed_by,
-                  CASE WHEN u.id IS NOT NULL THEN u.username END AS performed_by_username,
-                  h.performed_at, h.notes
-           FROM   item_history h
-           JOIN   items i ON i.id = h.item_id
-           LEFT JOIN users u ON u.id = h.performed_by
-           WHERE  h.item_id = $1 AND h.store_id = $2
-           ORDER  BY h.performed_at DESC
-           LIMIT 20"#,
-        item_id, store_id
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    Ok(InventoryItemDetail { item, movement_history })
+    // Movement history is fetched separately via get_movement_history (paginated).
+    // The inline 20-row fetch was unused by the frontend (InventoryItemDetail uses
+    // MovementHistoryTable which calls get_movement_history directly).
+    Ok(InventoryItemDetail { item, movement_history: vec![] })
 }
 
 pub(crate) async fn get_low_stock_inner(
@@ -213,7 +199,7 @@ pub(crate) async fn restock_item_inner(
         return Err(AppError::Validation("Quantity must be positive for a restock".into()));
     }
 
-    let qty = to_dec(payload.quantity);
+    let qty = to_dec(payload.quantity)?;
     let mut tx = pool.begin().await?;
 
     // Verify item exists in this store and fetch unit metadata
@@ -308,7 +294,7 @@ pub(crate) async fn adjust_inventory_inner(
         ));
     }
 
-    let adj = to_dec(payload.adjustment_quantity);
+    let adj = to_dec(payload.adjustment_quantity)?;
     let mut tx = pool.begin().await?;
 
     // Verify item and get allow_negative_stock flag and unit metadata.
@@ -419,7 +405,11 @@ pub(crate) async fn get_movement_history_inner(
     store_id: i32,
     filters:  MovementHistoryFilters,
 ) -> AppResult<PagedResult<MovementRecord>> {
-    guard_permission(state, &token, "inventory.read").await?;
+    let claims = guard_permission(state, &token, "inventory.read").await?;
+    // Multi-store isolation: non-global users can only read their own store's history
+    if !claims.is_global && claims.store_id != Some(store_id) {
+        return Err(AppError::Forbidden);
+    }
     let pool   = state.pool().await?;
     let page   = filters.page.unwrap_or(1).max(1);
     let limit  = filters.limit.unwrap_or(50).clamp(1, 200);
@@ -503,7 +493,8 @@ pub(crate) async fn get_inventory_summary_inner(
            LEFT JOIN item_settings ist    ON ist.item_id = i.id
            LEFT JOIN item_stock    istock ON istock.item_id = i.id AND istock.store_id = i.store_id
            WHERE  i.store_id = $1
-             AND  ist.archived_at IS NULL"#,
+             AND  ist.archived_at IS NULL
+             AND  ist.is_active   = TRUE"#,
         store_id
     )
     .fetch_one(&pool)
@@ -521,6 +512,11 @@ pub(crate) async fn start_count_session_inner(
     let pool       = state.pool().await?;
     let count_type = payload.count_type.as_deref().unwrap_or("full");
     let mut tx     = pool.begin().await?;
+
+    // Serialize concurrent session creation to prevent duplicate session numbers
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('scs_number_gen'))")
+        .execute(&mut *tx)
+        .await?;
 
     // Generate session number: COUNT-YYYY-NNNN
     let next_num: i64 = sqlx::query_scalar!(
@@ -570,7 +566,7 @@ pub(crate) async fn record_count_inner(
 ) -> AppResult<StockCountItem> {
     let claims = guard_permission(state, &token, "inventory.stock_count").await?;
     let pool   = state.pool().await?;
-    let counted = to_dec(payload.counted_quantity);
+    let counted = to_dec(payload.counted_quantity)?;
     let mut tx  = pool.begin().await?;
 
     // Verify session exists, is in_progress, and belongs to this store
@@ -616,6 +612,19 @@ pub(crate) async fn record_count_inner(
     .ok_or_else(|| AppError::NotFound("Item stock record not found".into()))?;
 
     let counted = crate::utils::qty::validate_qty_opt(counted, stock.measurement_type.as_deref(), &stock.item_name)?;
+
+    // Guard: reject re-submission after variance has already been applied
+    let existing_adjusted: Option<bool> = sqlx::query_scalar!(
+        "SELECT is_adjusted FROM stock_count_items WHERE session_id = $1 AND item_id = $2",
+        session_id, payload.item_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if existing_adjusted == Some(true) {
+        return Err(AppError::Validation(
+            "This item's variance has already been applied to stock and cannot be re-counted".into()
+        ));
+    }
 
     // Upsert stock count item
     let count_item_id: i32 = sqlx::query_scalar!(
@@ -699,7 +708,13 @@ pub(crate) async fn complete_count_session_inner(
     .execute(&mut *tx)
     .await?;
 
-    // Mark session completed
+    // Apply variances BEFORE marking completed — so if variance application fails,
+    // the transaction rolls back and the session remains in_progress with a clear error.
+    if apply_variances {
+        apply_variances_tx(&mut tx, session_id, claims.user_id, store_id).await?;
+    }
+
+    // Mark session completed (only after variances are safely applied)
     sqlx::query!(
         r#"UPDATE stock_count_sessions
            SET status = 'completed', completed_by = $1, completed_at = CURRENT_TIMESTAMP
@@ -708,11 +723,6 @@ pub(crate) async fn complete_count_session_inner(
     )
     .execute(&mut *tx)
     .await?;
-
-    // Apply variances if requested
-    if apply_variances {
-        apply_variances_tx(&mut tx, session_id, claims.user_id, store_id).await?;
-    }
 
     tx.commit().await?;
 
@@ -800,9 +810,28 @@ pub(crate) async fn apply_variances_standalone_inner(
     session_id: i32,
     store_id:   i32,
 ) -> AppResult<serde_json::Value> {
+    // Requires both stock_count (to access the session) AND inventory.adjust
+    // (because applying variances directly modifies item_stock quantities).
     let claims = guard_permission(state, &token, "inventory.stock_count").await?;
+    guard_permission(state, &token, "inventory.adjust").await?;
     let pool   = state.pool().await?;
     let mut tx = pool.begin().await?;
+
+    // Verify the session is completed before applying — prevents mid-count corruption
+    let session = sqlx::query!(
+        "SELECT status FROM stock_count_sessions WHERE id = $1",
+        session_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Stock count session not found".into()))?;
+    if session.status != "completed" {
+        return Err(AppError::Validation(format!(
+            "Can only apply variances to a completed session (current status: '{}')",
+            session.status
+        )));
+    }
+
     apply_variances_tx(&mut tx, session_id, claims.user_id, store_id).await?;
     tx.commit().await?;
     Ok(serde_json::json!({ "success": true, "message": "Variances applied to inventory successfully" }))
@@ -864,6 +893,7 @@ pub(crate) async fn get_count_sessions_inner(
     let total: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM stock_count_sessions s
            LEFT JOIN users u1 ON u1.id = s.started_by
+           JOIN  stores st    ON st.id = s.store_id
            WHERE ($1::int  IS NULL OR s.store_id   = $1)
              AND ($2::text IS NULL OR s.status     = $2)
              AND ($3::text IS NULL OR s.count_type = $3)
@@ -1064,13 +1094,15 @@ pub(crate) async fn deduct_stock_from_sale(
     }
 
     struct ItemMeta {
-        item_name: String,
-        measurement_type: Option<String>,
-        unit_type: Option<String>,
+        item_name:            String,
+        allow_negative_stock: Option<bool>,
+        measurement_type:     Option<String>,
+        unit_type:            Option<String>,
     }
     let meta = sqlx::query_as!(
         ItemMeta,
         r#"SELECT i.item_name,
+                  ist.allow_negative_stock,
                   ist.measurement_type,
                   ist.unit_type
            FROM   items i
@@ -1082,7 +1114,7 @@ pub(crate) async fn deduct_stock_from_sale(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| AppError::NotFound("Item not found".into()))?;
-    let item_name = meta.item_name;
+    let item_name = meta.item_name.clone();
 
     let qty_before: Decimal = sqlx::query_scalar!(
         "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2",
@@ -1093,6 +1125,14 @@ pub(crate) async fn deduct_stock_from_sale(
     .ok_or_else(|| AppError::NotFound("Item stock not found".into()))?;
 
     let qty_after = qty_before - quantity;
+
+    // Respect the per-item negative-stock guard — the same check as adjust_inventory_inner
+    if qty_after < Decimal::ZERO && !meta.allow_negative_stock.unwrap_or(false) {
+        return Err(AppError::Validation(format!(
+            "Insufficient stock for '{}': available {qty_before}, requested {quantity}",
+            meta.item_name
+        )));
+    }
 
     sqlx::query!(
         r#"UPDATE item_stock

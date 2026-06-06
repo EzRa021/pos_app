@@ -22,9 +22,11 @@ pub struct PurchaseOrder {
     pub notes:         Option<String>,
     pub ordered_by:    i32,
     pub approved_by:   Option<i32>,
+    pub approved_at:   Option<DateTime<Utc>>,
     pub ordered_at:    DateTime<Utc>,
     pub received_at:   Option<DateTime<Utc>>,
     pub created_at:    DateTime<Utc>,
+    pub is_active:     bool,
 }
 
 #[derive(Debug, Serialize, Clone, sqlx::FromRow)]

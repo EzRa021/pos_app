@@ -1,5 +1,5 @@
 // features/wallet/WalletHistoryTable.jsx
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Wallet } from "lucide-react";
 import { useWalletHistory } from "./useWallet";
 import { DataTable }  from "@/components/shared/DataTable";
@@ -15,7 +15,10 @@ const TYPE_STYLES = {
 };
 
 export function WalletHistoryTable({ customerId }) {
-  const { history, isLoading } = useWalletHistory(customerId, 50);
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  useEffect(() => { setPage(1); }, [customerId]);
+  const { history, total, isLoading } = useWalletHistory(customerId, { page, limit: pageSize });
 
   const columns = useMemo(() => [
     {
@@ -85,6 +88,7 @@ export function WalletHistoryTable({ customerId }) {
       columns={columns}
       data={history}
       isLoading={isLoading}
+      pagination={{ page, pageSize, total, onPageChange: setPage }}
       emptyState={
         <EmptyState
           icon={Wallet}

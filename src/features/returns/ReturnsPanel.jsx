@@ -461,7 +461,7 @@ export function ReturnsPanel() {
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
                   <Input
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                     placeholder="Search by return ref, transaction, or customer…"
                     className="pl-9 h-8 text-xs"
                   />
@@ -519,7 +519,7 @@ export function ReturnsPanel() {
               <DataTable
                 columns={columns}
                 data={returns}
-                isLoading={isLoading || isFetching}
+                isLoading={isLoading}
                 onRowClick={(row) => navigate(`/returns/${row.id}`)}
                 rowClassName="group cursor-pointer hover:bg-muted/30 transition-colors duration-100"
                 pagination={

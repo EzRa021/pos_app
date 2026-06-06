@@ -43,7 +43,7 @@ pub struct PriceChange {
     pub new_price:     Decimal,
     pub effective_at:  DateTime<Utc>,
     pub reason:        Option<String>,
-    pub status:        String,  // pending | approved | rejected | applied
+    pub status:        String,  // pending | applied | rejected
     pub requested_by:  i32,
     pub approved_by:   Option<i32>,
     pub created_at:    DateTime<Utc>,

@@ -10,7 +10,7 @@
 // ============================================================================
 
 import { useState, useEffect, useMemo } from "react";
-import { useQuery }           from "@tanstack/react-query";
+import { useQuery, keepPreviousData }   from "@tanstack/react-query";
 import { useNavigate }        from "react-router-dom";
 import { Clock, Search, X }   from "lucide-react";
 
@@ -26,12 +26,6 @@ import { usePaginationParams }        from "@/hooks/usePaginationParams";
 import { formatDate, formatDuration } from "@/lib/format";
 import { PAGE_SIZE }                  from "@/lib/constants";
 import { cn }                         from "@/lib/utils";
-
-// ── Shift number helper ───────────────────────────────────────────────────────
-function shiftNumber(row) {
-  const date = new Date(row.opened_at).toISOString().slice(0, 10).replace(/-/g, "");
-  return `SH-${date}-${String(row.id).padStart(3, "0")}`;
-}
 
 // ── Status filter tabs ────────────────────────────────────────────────────────
 // "In Progress" uses is_active_only: true so the backend excludes closed/cancelled.
@@ -53,7 +47,7 @@ function useShiftColumns(navigate) {
       header: "Shift #",
       render: (row) => (
         <span className="text-[11px] font-mono font-bold text-foreground/80 tracking-tight">
-          {shiftNumber(row)}
+          {row.shift_number ?? "—"}
         </span>
       ),
     },
@@ -161,9 +155,9 @@ export function ShiftHistoryTable() {
       search:   debouncedSearch || undefined,
       ...activeTab.params,
     }),
-    enabled:          !!storeId,
-    keepPreviousData: true,
-    staleTime:        0,
+    enabled:         !!storeId,
+    placeholderData: keepPreviousData,
+    staleTime:       0,
     refetchOnMount:   true,
   });
 

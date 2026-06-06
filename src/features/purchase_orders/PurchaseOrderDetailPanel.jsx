@@ -32,7 +32,10 @@ import { usePermission } from "@/hooks/usePermission";
 const STATUS_CFG = {
   pending:   { cls: "bg-warning/10 text-warning border-warning/20",             label: "Pending",   icon: Clock        },
   approved:  { cls: "bg-primary/10 text-primary border-primary/20",             label: "Approved",  icon: CheckCircle2 },
-  received:  { cls: "bg-success/10 text-success border-success/20",             label: "Received",  icon: CheckCircle2 },
+  received:  { cls: "bg-success/10 text-success border-success/20",             label: "Received",  icon: CheckCircle2 }, // legacy
+  partially_received: { cls: "bg-warning/15 text-warning border-warning/30",    label: "Partially Received", icon: Clock },
+  fully_received:     { cls: "bg-success/10 text-success border-success/20",   label: "Fully Received",     icon: CheckCircle2 },
+  overdue:   { cls: "bg-destructive/15 text-destructive border-destructive/30", label: "Overdue", icon: Ban },
   cancelled: { cls: "bg-muted/50 text-muted-foreground border-border/60",       label: "Cancelled", icon: Ban          },
   rejected:  { cls: "bg-destructive/10 text-destructive border-destructive/20", label: "Rejected",  icon: Ban          },
   draft:     { cls: "bg-muted/50 text-muted-foreground border-border/60",       label: "Draft",     icon: Edit3        },
@@ -115,7 +118,10 @@ function ReceiveGoodsModal({ open, onOpenChange, poItems, onConfirm }) {
     if (val) {
       const init = {};
       poItems.forEach((item) => {
-        init[item.id] = String(parseFloat(item.quantity_ordered));
+        const ordered = parseFloat(item.quantity_ordered);
+        const already = parseFloat(item.quantity_received ?? 0);
+        const remaining = Math.max(0, ordered - already);
+        init[item.id] = String(remaining);
       });
       setQuantities(init);
       setNotes("");
@@ -132,6 +138,17 @@ function ReceiveGoodsModal({ open, onOpenChange, poItems, onConfirm }) {
 
     const invalid = items.find((i) => !(i.quantity_received >= 0));
     if (invalid) { toast.error("All quantities must be 0 or more."); return; }
+    const over = poItems.find((item) => {
+      const ordered = parseFloat(item.quantity_ordered);
+      const already = parseFloat(item.quantity_received ?? 0);
+      const remaining = Math.max(0, ordered - already);
+      const qty = parseFloat(quantities[item.id] ?? 0) || 0;
+      return qty > remaining;
+    });
+    if (over) {
+      toast.error("One or more lines exceed the remaining quantity to receive.");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -189,12 +206,19 @@ function ReceiveGoodsModal({ open, onOpenChange, poItems, onConfirm }) {
             {poItems.map((item) => {
               const received = parseFloat(quantities[item.id] ?? 0) || 0;
               const ordered  = parseFloat(item.quantity_ordered);
-              const short    = received < ordered;
+              const alreadyReceived = parseFloat(item.quantity_received ?? 0);
+              const remaining = Math.max(0, ordered - alreadyReceived);
+              const short    = received < remaining;
               return (
                 <div key={item.id} className="grid grid-cols-[1fr_100px_100px] gap-2 items-center py-1.5 border-b border-border/30 last:border-0">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-foreground truncate">{item.item_name}</p>
                     <p className="text-[10px] font-mono text-muted-foreground">{item.sku}</p>
+                    {(alreadyReceived ?? 0) > 0 && (
+                      <p className="text-[10px] text-muted-foreground">
+                        {alreadyReceived} already received — {remaining} remaining
+                      </p>
+                    )}
                   </div>
                   <div className="text-center">
                     <span className="text-xs font-mono text-muted-foreground">{ordered}</span>
@@ -203,6 +227,7 @@ function ReceiveGoodsModal({ open, onOpenChange, poItems, onConfirm }) {
                     <Input
                       type="number"
                       min="0"
+                      max={remaining}
                       step="1"
                       value={quantities[item.id] ?? ""}
                       onChange={(e) =>
@@ -421,6 +446,7 @@ export function PurchaseOrderDetailPanel() {
 
   const canUpdate  = usePermission("purchase_orders.update");
   const canReceive = usePermission("purchase_orders.receive");
+  const canApprove = usePermission("purchase_orders.approve");
 
   const [receiveOpen,     setReceiveOpen]     = useState(false);
   const [rejectOpen,      setRejectOpen]      = useState(false);
@@ -450,9 +476,10 @@ export function PurchaseOrderDetailPanel() {
   const isDraft      = status === "draft";
   const isPending    = status === "pending";
   const isApproved   = status === "approved";
-  const isReceived   = status === "received";
+  const isReceived   = status === "received" || status === "fully_received";
+  const isPartial    = status === "partially_received";
   const isClosed     = isReceived || status === "cancelled" || status === "rejected";
-  const canReceiveNow = canReceive && (isPending || isApproved) && !isReceived;
+  const canReceiveNow = canReceive && (isPending || isApproved || isPartial) && !isReceived;
 
   const totalOrdered  = items.reduce((s, i) => s + parseFloat(i.quantity_ordered),       0);
   const totalReceived = items.reduce((s, i) => s + parseFloat(i.quantity_received ?? 0), 0);
@@ -536,7 +563,7 @@ export function PurchaseOrderDetailPanel() {
               </>
             )}
             {/* Pending → Approve / Reject */}
-            {canUpdate && isPending && (
+            {canUpdate && canApprove && isPending && (
               <>
                 <Button variant="outline" size="sm" className="text-destructive border-destructive/30 hover:bg-destructive/10"
                   onClick={() => setRejectOpen(true)}>
@@ -593,7 +620,7 @@ export function PurchaseOrderDetailPanel() {
             <StatCard label="Total Value"    value={formatCurrency(totalValue)} sub={`${items.length} line item${items.length !== 1 ? "s" : ""}`} accent="primary" />
             <StatCard label="Qty Ordered"    value={totalOrdered}               sub="total units"               accent="default" />
             <StatCard label="Qty Received"   value={totalReceived}
-              sub={isReceived ? "fully received" : "awaiting delivery"}
+              sub={isReceived ? "fully received" : totalReceived > 0 ? "partially received" : "awaiting delivery"}
               accent={isReceived ? "success" : totalReceived > 0 ? "warning" : "muted"}
             />
             <StatCard label="Status"         value={STATUS_CFG[status]?.label ?? status}

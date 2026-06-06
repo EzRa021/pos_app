@@ -3,6 +3,7 @@
 // ============================================================================
 
 use tauri::State;
+use serde::Serialize;
 use crate::{
     error::{AppError, AppResult},
     models::user::{User, CreateUserDto, UpdateUserDto, UserFilters, Role, Permission},
@@ -13,17 +14,134 @@ use crate::{
 use super::auth::guard_permission;
 use super::audit::write_audit_log;
 
+#[derive(Debug, Serialize)]
+pub struct UserStats {
+    pub total: i64,
+    pub active_count: i64,
+    pub inactive_count: i64,
+}
+
+async fn fetch_user_by_id(pool: &sqlx::PgPool, id: i32, include_avatar: bool) -> AppResult<User> {
+    if include_avatar {
+        return sqlx::query_as!(
+            User,
+            r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
+                      u.role_id, r.role_slug, r.role_name, r.is_global,
+                      u.store_id, s.store_name AS "store_name?",
+                      u.is_active, u.last_login, u.created_at, u.updated_at,
+                      u.avatar
+               FROM   users u
+               JOIN   roles r ON r.id = u.role_id
+               LEFT JOIN stores s ON s.id = u.store_id
+               WHERE  u.id = $1"#,
+            id
+        )
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("User {id} not found")));
+    }
+
+    sqlx::query_as!(
+        User,
+        r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
+                  u.role_id, r.role_slug, r.role_name, r.is_global,
+                  u.store_id, s.store_name AS "store_name?",
+                  u.is_active, u.last_login, u.created_at, u.updated_at,
+                  NULL::text AS "avatar?"
+           FROM   users u
+           JOIN   roles r ON r.id = u.role_id
+           LEFT JOIN stores s ON s.id = u.store_id
+           WHERE  u.id = $1"#,
+        id
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("User {id} not found")))
+}
+
+fn user_sync_payload(u: &User) -> serde_json::Value {
+    serde_json::json!({
+        "id": u.id,
+        "username": u.username,
+        "email": u.email,
+        "first_name": u.first_name,
+        "last_name": u.last_name,
+        "phone": u.phone,
+        "role_id": u.role_id,
+        "store_id": u.store_id,
+        "is_active": u.is_active,
+    })
+}
+
+async fn validate_role_store(
+    pool: &sqlx::PgPool,
+    role_id: i32,
+    store_id: Option<i32>,
+) -> AppResult<()> {
+    let role_exists = sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM roles WHERE id = $1)", role_id)
+        .fetch_one(pool)
+        .await?
+        .unwrap_or(false);
+    if !role_exists {
+        return Err(AppError::Validation(format!("Role {role_id} does not exist.")));
+    }
+
+    if let Some(sid) = store_id {
+        let store_exists = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1 AND is_active = TRUE)",
+            sid
+        )
+        .fetch_one(pool)
+        .await?
+        .unwrap_or(false);
+        if !store_exists {
+            return Err(AppError::Validation(format!(
+                "Store {sid} does not exist or is inactive."
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_role_assignable(pool: &sqlx::PgPool, caller_user_id: i32, target_role_id: i32) -> AppResult<()> {
+    let caller_role_level = sqlx::query_scalar!(
+        r#"SELECT r.hierarchy_level
+           FROM users u
+           JOIN roles r ON r.id = u.role_id
+           WHERE u.id = $1"#,
+        caller_user_id
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::Forbidden)?;
+
+    let target_role_level = sqlx::query_scalar!(
+        "SELECT hierarchy_level FROM roles WHERE id = $1",
+        target_role_id
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::Validation(format!("Role {target_role_id} does not exist.")))?;
+
+    if target_role_level <= caller_role_level {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_users(
     state:   State<'_, AppState>,
     token:   String,
     filters: UserFilters,
 ) -> AppResult<PagedResult<User>> {
-    guard_permission(&state, &token, "users.read").await?;
+    let claims = guard_permission(&state, &token, "users.read").await?;
     let pool   = state.pool().await?;
     let page   = filters.page.unwrap_or(1).max(1);
     let limit  = filters.limit.unwrap_or(20).clamp(1, 200);
     let offset = (page - 1) * limit;
+    let scoped_store_id = if claims.is_global { filters.store_id } else { claims.store_id };
+    let search = filters.search.as_ref().map(|s| format!("%{s}%"));
 
     let total: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) FROM users u
@@ -33,10 +151,10 @@ pub async fn get_users(
              AND ($3::bool IS NULL OR u.is_active = $3)
              AND ($4::text IS NULL OR u.username ILIKE $4 OR u.email ILIKE $4
                   OR u.first_name ILIKE $4 OR u.last_name ILIKE $4)"#,
-        filters.store_id,
+        scoped_store_id,
         filters.role_id,
         filters.is_active,
-        filters.search.as_ref().map(|s| format!("%{s}%"))
+        search
     )
     .fetch_one(&pool)
     .await?
@@ -48,7 +166,7 @@ pub async fn get_users(
                   u.role_id, r.role_slug, r.role_name, r.is_global,
                   u.store_id, s.store_name AS "store_name?",
                   u.is_active, u.last_login, u.created_at, u.updated_at,
-                  u.avatar
+                  NULL::text AS "avatar?"
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
            LEFT JOIN stores s ON s.id = u.store_id
@@ -59,10 +177,10 @@ pub async fn get_users(
                   OR u.first_name ILIKE $4 OR u.last_name ILIKE $4)
            ORDER BY u.created_at DESC
            LIMIT $5 OFFSET $6"#,
-        filters.store_id,
+        scoped_store_id,
         filters.role_id,
         filters.is_active,
-        filters.search.as_ref().map(|s| format!("%{s}%")),
+        search,
         limit,
         offset
     )
@@ -78,25 +196,45 @@ pub async fn get_user(
     token: String,
     id:    i32,
 ) -> AppResult<User> {
-    guard_permission(&state, &token, "users.read").await?;
+    let claims = guard_permission(&state, &token, "users.read").await?;
     let pool = state.pool().await?;
+    let user = fetch_user_by_id(&pool, id, true).await?;
+    if !claims.is_global {
+        let caller_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if user.store_id != Some(caller_store) {
+            return Err(AppError::Forbidden);
+        }
+    }
+    Ok(user)
+}
 
-    sqlx::query_as!(
-        User,
-        r#"SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.phone,
-                  u.role_id, r.role_slug, r.role_name, r.is_global,
-                  u.store_id, s.store_name AS "store_name?",
-                  u.is_active, u.last_login, u.created_at, u.updated_at,
-                  u.avatar
-           FROM   users u
-           JOIN   roles r ON r.id = u.role_id
-           LEFT JOIN stores s ON s.id = u.store_id
-           WHERE  u.id = $1"#,
-        id
+#[tauri::command]
+pub async fn get_user_stats(
+    state: State<'_, AppState>,
+    token: String,
+    store_id: Option<i32>,
+) -> AppResult<UserStats> {
+    let claims = guard_permission(&state, &token, "users.read").await?;
+    let pool = state.pool().await?;
+    let scoped_store_id = if claims.is_global { store_id } else { claims.store_id };
+
+    let row = sqlx::query!(
+        r#"SELECT
+               COUNT(*)::bigint AS total,
+               COUNT(*) FILTER (WHERE is_active = TRUE)::bigint AS active_count,
+               COUNT(*) FILTER (WHERE is_active = FALSE)::bigint AS inactive_count
+           FROM users
+           WHERE ($1::int IS NULL OR store_id = $1)"#,
+        scoped_store_id
     )
-    .fetch_optional(&pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("User {id} not found")))
+    .fetch_one(&pool)
+    .await?;
+
+    Ok(UserStats {
+        total: row.total.unwrap_or(0),
+        active_count: row.active_count.unwrap_or(0),
+        inactive_count: row.inactive_count.unwrap_or(0),
+    })
 }
 
 #[tauri::command]
@@ -161,7 +299,7 @@ pub async fn update_user(
            updated_at = NOW()
            WHERE id = $8"#,
         payload.email, payload.first_name, payload.last_name,
-        payload.phone, payload.role_id, payload.store_id,
+        payload.phone, payload.role_id, payload.store_id.flatten(),
         payload.is_active, id
     )
     .execute(&pool)
@@ -178,7 +316,7 @@ pub async fn update_user(
             "role_id": payload.role_id, "store_id": payload.store_id,
             "is_active": payload.is_active,
         }),
-        payload.store_id,
+        payload.store_id.flatten(),
     ).await;
 
     get_user(state, token, id).await

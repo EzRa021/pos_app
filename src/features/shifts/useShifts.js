@@ -7,7 +7,7 @@
 // ============================================================================
 
 import { useMemo, useCallback } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 
 import { useBranchStore } from "@/stores/branch.store";
 import {
@@ -52,7 +52,7 @@ export function useShiftHistory({
       ...tabParams,
     }),
     enabled:          !!storeId,
-    keepPreviousData: true,
+    placeholderData: keepPreviousData,
     staleTime:        0,
     refetchOnMount:   true,
   });

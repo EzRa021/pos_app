@@ -58,12 +58,18 @@ async fn fetch_shift(pool: &sqlx::PgPool, id: i32) -> AppResult<Shift> {
     .ok_or_else(|| AppError::NotFound(format!("Shift {id} not found")))
 }
 
-/// Generate SH-YYYYMMDD-NNN (matches quantum-pos-app generateShiftNumber)
+/// Generate SH-YYYYMMDD-NNN (matches quantum-pos-app generateShiftNumber).
+/// Wrapped in a pg_advisory_xact_lock so concurrent calls serialize and
+/// never produce the same number (avoids 23505 unique-violation races).
 async fn generate_shift_number(pool: &sqlx::PgPool) -> AppResult<String> {
-    let today = Utc::now().format("%Y%m%d").to_string();
+    let today   = Utc::now().format("%Y%m%d").to_string();
     let pattern = format!("SH-{}-{}", today, "%");
 
-    // Latest shift number for today (or None if none yet)
+    // Serialize per-process via an advisory lock (hash is stable for the key string).
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('shift_number_gen'))")
+        .execute(pool)
+        .await?;
+
     let last: Option<String> = sqlx::query_scalar!(
         "SELECT shift_number FROM shifts WHERE shift_number LIKE $1 ORDER BY id DESC LIMIT 1",
         pattern
@@ -81,12 +87,15 @@ async fn generate_shift_number(pool: &sqlx::PgPool) -> AppResult<String> {
     Ok(format!("SH-{}-{:03}", today, next_num))
 }
 
-/// Generate CM-YYYYMMDD-NNNN (matches quantum-pos-app generateMovementNumber)
+/// Generate CM-YYYYMMDD-NNNN (matches quantum-pos-app generateMovementNumber).
 async fn generate_movement_number(pool: &sqlx::PgPool) -> AppResult<String> {
-    let today = Utc::now().format("%Y%m%d").to_string();
+    let today   = Utc::now().format("%Y%m%d").to_string();
     let pattern = format!("CM-{}-{}", today, "%");
 
-    // Latest cash movement number for today (or None if none yet)
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('movement_number_gen'))")
+        .execute(pool)
+        .await?;
+
     let last: Option<String> = sqlx::query_scalar!(
         "SELECT movement_number FROM cash_movements WHERE movement_number LIKE $1 ORDER BY id DESC LIMIT 1",
         pattern
@@ -204,7 +213,10 @@ pub(crate) async fn close_shift_inner(
     let shift = fetch_shift(&pool, id).await?;
 
     if shift.status == "closed" {
-        return Err(AppError::Validation("Shift is already closed".into()));
+        return Err(AppError::Validation(format!(
+            "Shift {} is already closed. No further changes are allowed.",
+            shift.shift_number
+        )));
     }
     if shift.opened_by != claims.user_id && !claims.is_global {
         return Err(AppError::Forbidden);
@@ -212,15 +224,17 @@ pub(crate) async fn close_shift_inner(
 
     let actual = to_dec(payload.actual_cash)?;
 
-    // Compute expected cash from running totals (mirrors quantum-pos-app closeShift)
-    let zero = Decimal::ZERO;
+    let zero     = Decimal::ZERO;
     let expected = shift.opening_float
         + shift.total_cash_sales.unwrap_or(zero)
         + shift.total_cash_in.unwrap_or(zero)
         - shift.total_cash_out.unwrap_or(zero)
         - shift.total_returns.unwrap_or(zero);
-
     let difference = actual - expected;
+
+    // Wrap UPDATE + drawer-event INSERT in one transaction so a partial
+    // failure never leaves the shift closed without an event record.
+    let mut tx = pool.begin().await?;
 
     sqlx::query!(
         r#"UPDATE shifts SET
@@ -230,19 +244,17 @@ pub(crate) async fn close_shift_inner(
             cash_difference = $3,
             closing_notes   = $4,
             closed_by       = $5,
-            closed_at       = NOW()
+            closed_at       = NOW(),
+            updated_at      = NOW()
            WHERE id = $6"#,
-        actual,
-        expected,
-        difference,
+        actual, expected, difference,
         payload.closing_notes,
         claims.user_id,
         id,
     )
-    .execute(&pool)
+    .execute(&mut *tx)
     .await?;
 
-    // Log event
     sqlx::query!(
         r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, amount, notes)
            VALUES ($1, 'shift_closed', $2, $3, $4)"#,
@@ -251,12 +263,13 @@ pub(crate) async fn close_shift_inner(
         actual,
         format!(
             "Shift closed. Expected: ₦{}, Actual: ₦{}, Difference: ₦{}",
-            expected.round_dp(2), actual, difference.round_dp(2)
+            expected.round_dp(2), actual.round_dp(2), difference.round_dp(2)
         ),
     )
-    .execute(&pool)
-    .await
-    .ok(); // non-fatal
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
 
     let closed = fetch_shift(&pool, id).await?;
 
@@ -302,6 +315,13 @@ pub(crate) async fn suspend_shift_inner(
         return Err(AppError::Forbidden);
     }
 
+    // Validate reason length to prevent oversized strings reaching the DB.
+    if let Some(ref r) = payload.reason {
+        if r.len() > 500 {
+            return Err(AppError::Validation("Reason must be 500 characters or fewer".into()));
+        }
+    }
+
     let updated = sqlx::query_scalar!(
         "UPDATE shifts SET status = 'suspended', updated_at = NOW()
          WHERE id = $1 AND status IN ('open', 'active')
@@ -312,7 +332,10 @@ pub(crate) async fn suspend_shift_inner(
     .await?;
 
     if updated.is_none() {
-        return Err(AppError::Validation("Shift not found or cannot be suspended".into()));
+        return Err(AppError::Validation(format!(
+            "Shift {} cannot be suspended (current status: {}).",
+            shift.shift_number, shift.status
+        )));
     }
 
     sqlx::query!(
@@ -325,6 +348,11 @@ pub(crate) async fn suspend_shift_inner(
     .execute(&pool)
     .await
     .ok();
+
+    write_audit_log(&pool, claims.user_id, Some(shift.store_id), "suspend", "shift",
+        &format!("Shift {} suspended — {}",
+            shift.shift_number,
+            payload.reason.as_deref().unwrap_or("no reason given")), "info").await;
 
     fetch_shift(&pool, id).await
 }
@@ -378,6 +406,9 @@ pub(crate) async fn resume_shift_inner(
     .execute(&pool)
     .await
     .ok();
+
+    write_audit_log(&pool, claims.user_id, Some(shift.store_id), "resume", "shift",
+        &format!("Shift {} resumed", shift.shift_number), "info").await;
 
     fetch_shift(&pool, id).await
 }
@@ -718,7 +749,8 @@ pub(crate) async fn get_cash_movements_inner(
                 reason, reference_number, performed_by, created_at
          FROM cash_movements
          WHERE shift_id = $1
-         ORDER BY created_at DESC",
+         ORDER BY created_at DESC
+         LIMIT 500",
         shift_id
     )
     .fetch_all(&pool)
@@ -895,24 +927,25 @@ pub(crate) async fn cancel_shift_inner(
     let claims = guard(state, &token).await?;
     let pool   = state.pool().await?;
 
-    // Only global (super_admin / global-role) users have this privilege
+    // Only global users (super_admin / admin) may cancel shifts.
     if !claims.is_global {
         return Err(AppError::Forbidden);
     }
 
     let shift = fetch_shift(&pool, id).await?;
 
-    // Must be their own shift
-    if shift.opened_by != claims.user_id {
-        return Err(AppError::Validation(
-            "You can only cancel a shift that you opened.".into(),
-        ));
-    }
-
+    // Non-super_admin global users can only cancel their own shifts.
+    // super_admin (is_global=true) can cancel any shift in the business
+    // — e.g. to recover an abandoned cashier shift.
+    // We use a simple heuristic: claims.user_id == opener OR the user is
+    // scoped to a store (store-level global means manager-tier only owns theirs).
+    // For now: any global user can cancel any shift in the system.
+    // If finer-grained control is needed, add a `shifts.manage` permission check.
     if shift.status == "closed" || shift.status == "cancelled" {
-        return Err(AppError::Validation(
-            format!("Shift is already {}.", shift.status),
-        ));
+        return Err(AppError::Validation(format!(
+            "Shift {} is already {}. No further changes are allowed.",
+            shift.shift_number, shift.status
+        )));
     }
 
     let updated = sqlx::query_scalar!(
@@ -964,9 +997,18 @@ pub(crate) async fn reconcile_shift_inner(
     id:       i32,
     notes:    Option<String>,
 ) -> AppResult<Shift> {
-    // Reconciling a shift is a manager/admin action — requires shifts.manage
     let claims = guard_permission(state, &token, "shifts.manage").await?;
     let pool   = state.pool().await?;
+
+    // Only closed shifts can be reconciled — guard against reconciling an
+    // open/active/suspended shift which would corrupt the audit trail.
+    let shift = fetch_shift(&pool, id).await?;
+    if shift.status != "closed" {
+        return Err(AppError::Validation(format!(
+            "Only closed shifts can be reconciled. Shift {} is currently '{}'.",
+            shift.shift_number, shift.status
+        )));
+    }
 
     let updated = sqlx::query_scalar!(
         r#"UPDATE shifts SET

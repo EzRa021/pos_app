@@ -426,7 +426,7 @@ function CancelDialog({ open, onOpenChange, mutation }) {
 }
 
 // ── Item row ──────────────────────────────────────────────────────────────────
-const ItemRow = React.memo(function ItemRow({ item, countedItem, onSelect, isInProgress }) {
+const ItemRow = React.memo(function ItemRow({ item, countedItem, onSelect, isInProgress, isPending }) {
   const isCounted   = !!countedItem;
   const systemQty   = parseFloat(item.quantity ?? 0);
   const countedQty  = countedItem ? parseFloat(countedItem.counted_quantity) : null;
@@ -436,7 +436,7 @@ const ItemRow = React.memo(function ItemRow({ item, countedItem, onSelect, isInP
 
   return (
     <div
-      onClick={() => isInProgress && onSelect(item)}
+      onClick={() => isInProgress && !isPending && onSelect(item)}
       className={cn(
         "flex items-center gap-3 px-4 py-3 border-b border-border/50 last:border-0 transition-colors",
         isInProgress && "cursor-pointer hover:bg-muted/20",
@@ -489,7 +489,8 @@ const ItemRow = React.memo(function ItemRow({ item, countedItem, onSelect, isInP
 }, (prev, next) =>
   prev.item.item_id === next.item.item_id &&
   prev.countedItem?.counted_quantity === next.countedItem?.counted_quantity &&
-  prev.isInProgress === next.isInProgress
+  prev.isInProgress === next.isInProgress &&
+  prev.isPending === next.isPending
 );
 
 // ── View tabs ─────────────────────────────────────────────────────────────────
@@ -552,7 +553,7 @@ export function StockCountRunner({ sessionId }) {
   }, [allItems, countedItemsMap, viewTab, search]);
 
   const countedCount = Object.keys(countedItemsMap).length;
-  const totalItems   = session?.total_items    ?? allItems.length;
+  const totalItems   = session?.total_items    ?? 0;
   const variantCount = session?.items_with_variance ?? 0;
 
   function handleSelectItem(item) {
@@ -801,6 +802,7 @@ export function StockCountRunner({ sessionId }) {
                       countedItem={countedItemsMap[String(item.item_id)] ?? null}
                       onSelect={handleSelectItem}
                       isInProgress={isInProgress}
+                      isPending={recordCount.isPending}
                     />
                   ))}
                 </div>

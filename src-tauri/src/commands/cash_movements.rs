@@ -27,7 +27,7 @@ pub async fn log_drawer_event(
     let pool   = state.pool().await?;
 
     let id: i32 = sqlx::query_scalar!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, notes, created_by)
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, notes, user_id)
            VALUES ($1,$2,$3,$4) RETURNING id"#,
         shift_id,
         event_type,
@@ -39,8 +39,10 @@ pub async fn log_drawer_event(
 
     let event = sqlx::query_as!(
         CashDrawerEvent,
-        "SELECT id, shift_id, event_type, notes, created_by, created_at
-         FROM   cash_drawer_events WHERE id = $1",
+        r#"SELECT id, shift_id, event_type, notes,
+                  COALESCE(user_id, created_by) AS user_id,
+                  created_at
+           FROM   cash_drawer_events WHERE id = $1"#,
         id
     )
     .fetch_one(&pool)

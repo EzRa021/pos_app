@@ -35,7 +35,10 @@ const STATUS_TABS = [
 const PO_STATUS_STYLES = {
   pending:   { cls: "bg-warning/10 text-warning border-warning/20",         icon: Clock       },
   approved:  { cls: "bg-primary/10 text-primary border-primary/20",         icon: CheckCircle2 },
-  received:  { cls: "bg-success/10 text-success border-success/20",         icon: CheckCircle2 },
+  received:  { cls: "bg-success/10 text-success border-success/20",         icon: CheckCircle2 }, // legacy
+  partially_received: { cls: "bg-warning/15 text-warning border-warning/30", icon: Clock       },
+  fully_received:     { cls: "bg-success/10 text-success border-success/20", icon: CheckCircle2 },
+  overdue:   { cls: "bg-destructive/15 text-destructive border-destructive/30", icon: Ban      },
   cancelled: { cls: "bg-muted/50 text-muted-foreground border-border/60",   icon: Ban          },
   rejected:  { cls: "bg-destructive/10 text-destructive border-destructive/20", icon: Ban     },
   draft:     { cls: "bg-muted/50 text-muted-foreground border-border/60",   icon: Clock       },
@@ -261,7 +264,7 @@ export function PurchaseOrdersPanel() {
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
                   <Input
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                      onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                     placeholder="Search PO#, supplier…"
                     className="pl-7 h-7 w-44 text-[11px]"
                   />
@@ -301,7 +304,7 @@ export function PurchaseOrdersPanel() {
             <DataTable
               columns={columns}
               data={orders}
-              isLoading={isLoading || isFetching}
+              isLoading={isLoading}
               onRowClick={(row) => navigate(`/purchase-orders/${row.id}`)}
               pagination={{ page, pageSize: 20, total, onPageChange: setPage }}
               emptyState={

@@ -15,7 +15,7 @@ use crate::{
 };
 use super::auth::guard_permission;
 use super::audit::write_audit_log;
-use crate::utils::ref_no::next_series_ref_no;
+use crate::utils::ref_no::next_po_ref_no_exec;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -47,10 +47,13 @@ async fn fetch_po(pool: &sqlx::PgPool, id: i32) -> AppResult<PurchaseOrder> {
                   po.subtotal, po.tax_amount, po.shipping_cost,
                   po.total_amount, po.notes,
                   po.ordered_by, po.approved_by,
-                  po.ordered_at, po.received_at, po.created_at
+                  po.approved_at,
+                  po.ordered_at, po.received_at, po.created_at,
+                  po.is_active
            FROM   purchase_orders po
            JOIN   suppliers s ON s.id = po.supplier_id
-           WHERE  po.id = $1"#,
+           WHERE  po.id = $1
+             AND  po.is_active = TRUE"#,
         id
     )
     .fetch_optional(pool)
@@ -100,7 +103,8 @@ pub(crate) async fn search_purchase_orders_inner(
                   po.status, po.total_amount, po.ordered_at
            FROM   purchase_orders po
            JOIN   suppliers s ON s.id = po.supplier_id
-           WHERE  ($1::int IS NULL OR po.store_id = $1)
+           WHERE  po.is_active = TRUE
+             AND  ($1::int IS NULL OR po.store_id = $1)
              AND  (
                    po.po_number    ILIKE $2
                 OR s.supplier_name ILIKE $2
@@ -145,6 +149,7 @@ pub async fn get_purchase_orders(
              AND ($3::text IS NULL OR po.status      = $3)
              AND ($4::text IS NULL OR po.ordered_at >= $4::timestamptz)
              AND ($5::text IS NULL OR po.ordered_at <= $5::timestamptz)
+             AND po.is_active = TRUE
              AND ($6::text IS NULL OR (
                    po.po_number      ILIKE $6
                 OR s.supplier_name   ILIKE $6
@@ -163,7 +168,9 @@ pub async fn get_purchase_orders(
                   po.subtotal, po.tax_amount, po.shipping_cost,
                   po.total_amount, po.notes,
                   po.ordered_by, po.approved_by,
-                  po.ordered_at, po.received_at, po.created_at
+                  po.approved_at,
+                  po.ordered_at, po.received_at, po.created_at,
+                  po.is_active
            FROM   purchase_orders po
            JOIN   suppliers s ON s.id = po.supplier_id
            WHERE ($1::int  IS NULL OR po.store_id    = $1)
@@ -171,6 +178,7 @@ pub async fn get_purchase_orders(
              AND ($3::text IS NULL OR po.status      = $3)
              AND ($4::text IS NULL OR po.ordered_at >= $4::timestamptz)
              AND ($5::text IS NULL OR po.ordered_at <= $5::timestamptz)
+             AND po.is_active = TRUE
              AND ($6::text IS NULL OR (
                    po.po_number      ILIKE $6
                 OR s.supplier_name   ILIKE $6
@@ -193,10 +201,17 @@ pub async fn get_purchase_order(
     token: String,
     id:    i32,
 ) -> AppResult<PurchaseOrderDetail> {
-    guard_permission(&state, &token, "purchase_orders.read").await?;
+    let claims = guard_permission(&state, &token, "purchase_orders.read").await?;
     let pool = state.pool().await?;
 
     let order = fetch_po(&pool, id).await?;
+    // RISK #1 fix: enforce store scope for non-global users
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if order.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
     let items = fetch_po_items(&pool, id).await?;
 
     Ok(PurchaseOrderDetail { order, items })
@@ -217,8 +232,8 @@ pub async fn create_purchase_order(
 
     let mut db_tx = pool.begin().await?;
 
-    // Generate per-store PO number
-    let po_num = next_series_ref_no(&pool, payload.store_id, "purchase_order").await;
+    // BACKEND FAULT #9 fix: generate per-store PO number inside db_tx.
+    let po_num = next_po_ref_no_exec(&mut db_tx, payload.store_id).await;
 
     // Validate all item quantities before inserting.
     // Bulk-fetch all item metadata in one query to avoid N+1 per-item round-trips.
@@ -230,6 +245,21 @@ pub async fn create_purchase_order(
         line_tot:  Decimal,
     }
     let item_ids: Vec<uuid::Uuid> = payload.items.iter().map(|i| i.item_id).collect();
+    // BACKEND FAULT #4 fix: validate that all item_ids exist in this store's inventory scope.
+    let valid_count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM item_stock WHERE item_id = ANY($1) AND store_id = $2",
+        &item_ids as &[uuid::Uuid],
+        payload.store_id,
+    )
+    .fetch_one(&mut *db_tx)
+    .await?
+    .unwrap_or(0);
+    if valid_count != item_ids.len() as i64 {
+        return Err(AppError::Validation(
+            "One or more items do not exist in this store's inventory.".into()
+        ));
+    }
+
     let meta_rows = sqlx::query!(
         r#"SELECT i.id,
                   i.item_name,
@@ -270,8 +300,12 @@ pub async fn create_purchase_order(
 
     let po_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO purchase_orders
-               (po_number, store_id, supplier_id, total_amount, notes, ordered_by)
-           VALUES ($1,$2,$3,$4,$5,$6) RETURNING id"#,
+               (po_number, store_id, supplier_id,
+                status, subtotal, tax_amount, shipping_cost, total_amount,
+                notes, ordered_by)
+           VALUES ($1,$2,$3,
+                   'draft',$4,0,0,$4,
+                   $5,$6) RETURNING id"#,
         po_num,
         payload.store_id,
         payload.supplier_id,
@@ -307,7 +341,7 @@ pub async fn create_purchase_order(
         &pool, "purchase_orders", "INSERT", &po_id.to_string(),
         serde_json::json!({ "id": po_id, "store_id": payload.store_id,
                             "po_number": po_num, "supplier_id": payload.supplier_id,
-                            "total_amount": total.to_string(), "status": "pending" }),
+                            "total_amount": total.to_string(), "status": "draft" }),
         Some(payload.store_id),
     ).await;
     for item in &items {
@@ -340,7 +374,15 @@ pub async fn receive_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
 
-    if order.status != "approved" && order.status != "pending" {
+    // BACKEND FAULT #11 + CROSS-CUTTING RISK #1 fix: enforce store scope.
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if order.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+
+    if order.status != "approved" && order.status != "pending" && order.status != "partially_received" {
         return Err(AppError::Validation(
             format!("Cannot receive a {} purchase order. Order must be pending or approved.", order.status)
         ));
@@ -348,43 +390,29 @@ pub async fn receive_purchase_order(
 
     let mut db_tx = pool.begin().await?;
 
-    // Bulk-fetch all po_item metadata in one query to avoid N+1 per-item round-trips.
-    struct PoLineMeta {
-        item_id:          uuid::Uuid,
-        item_name:        String,
-        unit_type:        Option<String>,
-        measurement_type: Option<String>,
-    }
-    let po_item_ids: Vec<i32> = payload.items.iter().map(|r| r.po_item_id).collect();
-    let meta_rows = sqlx::query!(
-        r#"SELECT poi.id,
-                  poi.item_id,
-                  i.item_name,
-                  poi.unit_type,
-                  ist.measurement_type
-           FROM   purchase_order_items poi
-           JOIN   items i ON i.id = poi.item_id
-           LEFT JOIN item_settings ist ON ist.item_id = poi.item_id
-           WHERE  poi.id = ANY($1)"#,
-        &po_item_ids as &[i32],
-    )
-    .fetch_all(&mut *db_tx)
-    .await?;
-    let po_meta_map: std::collections::HashMap<i32, PoLineMeta> = meta_rows
-        .into_iter()
-        .map(|r| (r.id, PoLineMeta {
-            item_id:          r.item_id,
-            item_name:        r.item_name,
-            unit_type:        r.unit_type,
-            measurement_type: r.measurement_type,
-        }))
-        .collect();
-
     for receive in &payload.items {
         let qty_raw = to_dec(receive.quantity_received);
-        let po_meta = po_meta_map.get(&receive.po_item_id)
-            .ok_or_else(|| AppError::NotFound(format!("PO item {} not found", receive.po_item_id)))?;
-        let item_id = po_meta.item_id;
+
+        // BACKEND FAULT #3 fix: lock the PO line row and validate remaining inside db_tx.
+        let line = sqlx::query!(
+            r#"SELECT poi.item_id,
+                      i.item_name,
+                      poi.unit_type,
+                      ist.measurement_type,
+                      poi.quantity_ordered,
+                      COALESCE(poi.quantity_received, 0) AS "quantity_received!: Decimal"
+               FROM purchase_order_items poi
+               JOIN items i ON i.id = poi.item_id
+               LEFT JOIN item_settings ist ON ist.item_id = poi.item_id
+               WHERE poi.id = $1 AND poi.po_id = $2"#,
+            receive.po_item_id,
+            id,
+        )
+        .fetch_optional(&mut *db_tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("PO item {} not found", receive.po_item_id)))?;
+
+        let item_id = line.item_id;
 
         // Validate/round qty according to measurement type BEFORE any writes.
         // - "quantity"               → must be a whole number
@@ -392,14 +420,21 @@ pub async fn receive_purchase_order(
         // - unknown / None           → pass-through
         let qty_recv = crate::utils::qty::validate_qty_opt(
             qty_raw,
-            po_meta.measurement_type.as_deref(),
-            &po_meta.item_name,
+            Some(line.measurement_type.as_str()),
+            &line.item_name,
         )?;
 
-        // Persist the validated (rounded) quantity so PO records and stock
-        // always agree on the exact number received.
+        let remaining = line.quantity_ordered - line.quantity_received;
+        if qty_recv > remaining {
+            return Err(AppError::Validation(format!(
+                "Cannot receive {} — only {} remaining on this PO line",
+                qty_recv, remaining
+            )));
+        }
+
+        // Increment quantity_received, never overwrite.
         sqlx::query!(
-            "UPDATE purchase_order_items SET quantity_received = $1 WHERE id = $2",
+            "UPDATE purchase_order_items SET quantity_received = COALESCE(quantity_received, 0) + $1 WHERE id = $2",
             qty_recv,
             receive.po_item_id,
         )
@@ -420,7 +455,7 @@ pub async fn receive_purchase_order(
         let qty_after = qty_before + qty_recv;
 
         // Add to item stock
-        sqlx::query!(
+        let stock_res = sqlx::query!(
             r#"UPDATE item_stock SET
                quantity           = quantity           + $1,
                available_quantity = available_quantity + $1,
@@ -432,22 +467,28 @@ pub async fn receive_purchase_order(
         )
         .execute(&mut *db_tx)
         .await?;
+        // BACKEND FAULT #4 fix: if there is no stock row, fail fast (wrong store scope / corrupted data).
+        if stock_res.rows_affected() == 0 {
+            return Err(AppError::Validation(
+                "Item does not have a stock record for this store; cannot receive into inventory.".into()
+            ));
+        }
 
         // Record history with event-style columns and unit label
-        let unit_label = po_meta
+        let unit_label = line
             .unit_type
             .as_deref()
             .unwrap_or("unit(s)");
         let desc = format!(
-            "PO Receipt: {} — {} {}",
-            order.po_number, qty_recv, unit_label
+            "Received {} {} via PO {}",
+            qty_recv, unit_label, order.po_number
         );
         sqlx::query!(
             r#"INSERT INTO item_history
                    (item_id, store_id, event_type, event_description,
                     quantity_before, quantity_after, quantity_change,
                     performed_by, reference_type, reference_id, notes)
-               VALUES ($1,$2,'PURCHASE',$3,$4,$5,$6,$7,'purchase_order',$8,$9)"#,
+               VALUES ($1,$2,'PO_RECEIVE',$3,$4,$5,$6,$7,'purchase_order',$8,$9)"#,
             item_id,
             order.store_id,
             desc,
@@ -462,11 +503,29 @@ pub async fn receive_purchase_order(
         .await?;
     }
 
+    // BACKEND FAULT #7 fix: compute received status inside db_tx atomically.
+    let agg = sqlx::query!(
+        r#"SELECT
+              COALESCE(SUM(quantity_ordered), 0) AS "qty_ordered!: Decimal",
+              COALESCE(SUM(COALESCE(quantity_received, 0)), 0) AS "qty_received!: Decimal"
+           FROM purchase_order_items
+           WHERE po_id = $1"#,
+        id,
+    )
+    .fetch_one(&mut *db_tx)
+    .await?;
+
+    let fully_received = agg.qty_received >= agg.qty_ordered && agg.qty_ordered > Decimal::ZERO;
+    let next_status = if fully_received { "fully_received" } else { "partially_received" };
+
     sqlx::query!(
         r#"UPDATE purchase_orders SET
-           status = 'received', received_at = NOW(),
-           notes  = COALESCE($1, notes)
-           WHERE id = $2"#,
+           status = $1,
+           received_at = CASE WHEN $2 THEN NOW() ELSE received_at END,
+           notes  = COALESCE($3, notes)
+           WHERE id = $4"#,
+        next_status,
+        fully_received,
         payload.notes,
         id,
     )
@@ -481,7 +540,7 @@ pub async fn receive_purchase_order(
     crate::database::sync::queue_row(
         &pool, "purchase_orders", "UPDATE", &id.to_string(),
         serde_json::json!({ "id": id, "store_id": order.store_id,
-                            "status": "received" }),
+                            "status": order.status }),
         Some(order.store_id),
     ).await;
     for item in &items {
@@ -516,7 +575,26 @@ pub async fn cancel_purchase_order(
     let pool  = state.pool().await?;
     let order = fetch_po(&pool, id).await?;
 
-    if order.status == "received" || order.status == "cancelled" || order.status == "rejected" {
+    // Enforce store scope for non-global users.
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if order.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+
+    // BACKEND FAULT #2 fix: don't allow cancelling received/partially received orders.
+    if order.status == "fully_received" || order.status == "received" {
+        return Err(AppError::Validation(
+            "Cannot cancel a fully received purchase order. Create a supplier return instead.".into()
+        ));
+    }
+    if order.status == "partially_received" {
+        return Err(AppError::Validation(
+            "PO has partially received items. Reverse received stock before cancelling, or use a dedicated force-cancel flow.".into()
+        ));
+    }
+    if order.status == "cancelled" || order.status == "rejected" {
         return Err(AppError::Validation(
             format!("Cannot cancel a {} purchase order", order.status)
         ));
@@ -530,6 +608,11 @@ pub async fn cancel_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
     let items = fetch_po_items(&pool, id).await?;
+    crate::database::sync::queue_row(
+        &pool, "purchase_orders", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": order.store_id, "status": "cancelled" }),
+        Some(order.store_id),
+    ).await;
     write_audit_log(&pool, claims.user_id, Some(order.store_id), "cancel", "purchase_order",
         &format!("Cancelled PO {}", order.po_number), "warning").await;
     Ok(PurchaseOrderDetail { order, items })
@@ -543,9 +626,16 @@ pub async fn submit_purchase_order(
     token: String,
     id:    i32,
 ) -> AppResult<PurchaseOrderDetail> {
-    guard_permission(&state, &token, "purchase_orders.update").await?;
+    let claims = guard_permission(&state, &token, "purchase_orders.update").await?;
     let pool  = state.pool().await?;
     let order = fetch_po(&pool, id).await?;
+
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if order.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     if order.status != "draft" {
         return Err(AppError::Validation(
@@ -561,6 +651,11 @@ pub async fn submit_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
     let items = fetch_po_items(&pool, id).await?;
+    crate::database::sync::queue_row(
+        &pool, "purchase_orders", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": order.store_id, "status": "pending" }),
+        Some(order.store_id),
+    ).await;
     Ok(PurchaseOrderDetail { order, items })
 }
 
@@ -572,9 +667,16 @@ pub async fn approve_purchase_order(
     token: String,
     id:    i32,
 ) -> AppResult<PurchaseOrderDetail> {
-    let claims = guard_permission(&state, &token, "purchase_orders.update").await?;
+    let claims = guard_permission(&state, &token, "purchase_orders.approve").await?;
     let pool   = state.pool().await?;
     let order  = fetch_po(&pool, id).await?;
+
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if order.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     if order.status != "pending" {
         return Err(AppError::Validation(
@@ -583,7 +685,7 @@ pub async fn approve_purchase_order(
     }
 
     sqlx::query!(
-        "UPDATE purchase_orders SET status = 'approved', approved_by = $1 WHERE id = $2",
+        "UPDATE purchase_orders SET status = 'approved', approved_by = $1, approved_at = NOW() WHERE id = $2",
         claims.user_id, id
     )
     .execute(&pool)
@@ -591,6 +693,11 @@ pub async fn approve_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
     let items = fetch_po_items(&pool, id).await?;
+    crate::database::sync::queue_row(
+        &pool, "purchase_orders", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": order.store_id, "status": "approved" }),
+        Some(order.store_id),
+    ).await;
     write_audit_log(&pool, claims.user_id, Some(order.store_id), "approve", "purchase_order",
         &format!("Approved PO {}", order.po_number), "info").await;
     Ok(PurchaseOrderDetail { order, items })
@@ -605,9 +712,16 @@ pub async fn reject_purchase_order(
     id:     i32,
     reason: Option<String>,
 ) -> AppResult<PurchaseOrderDetail> {
-    guard_permission(&state, &token, "purchase_orders.update").await?;
+    let claims = guard_permission(&state, &token, "purchase_orders.update").await?;
     let pool  = state.pool().await?;
     let order = fetch_po(&pool, id).await?;
+
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if order.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     if order.status != "pending" {
         return Err(AppError::Validation(
@@ -628,6 +742,11 @@ pub async fn reject_purchase_order(
 
     let order = fetch_po(&pool, id).await?;
     let items = fetch_po_items(&pool, id).await?;
+    crate::database::sync::queue_row(
+        &pool, "purchase_orders", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": order.store_id, "status": "rejected" }),
+        Some(order.store_id),
+    ).await;
     Ok(PurchaseOrderDetail { order, items })
 }
 
@@ -667,11 +786,12 @@ pub(crate) async fn get_po_stats_inner(
                COUNT(*) FILTER (WHERE status = 'draft')           AS "draft!: i64",
                COUNT(*) FILTER (WHERE status = 'pending')         AS "pending!: i64",
                COUNT(*) FILTER (WHERE status = 'approved')        AS "approved!: i64",
-               COUNT(*) FILTER (WHERE status = 'received')        AS "received!: i64",
+               COUNT(*) FILTER (WHERE status IN ('received', 'fully_received')) AS "received!: i64",
                COUNT(*) FILTER (WHERE status = 'cancelled')       AS "cancelled!: i64",
                COUNT(*) FILTER (WHERE status = 'rejected')        AS "rejected!: i64"
            FROM purchase_orders
-           WHERE ($1::int IS NULL OR store_id = $1)"#,
+           WHERE is_active = TRUE
+             AND ($1::int IS NULL OR store_id = $1)"#,
         store_id,
     )
     .fetch_one(&pool)
@@ -700,13 +820,34 @@ pub async fn delete_purchase_order(
     let pool  = state.pool().await?;
     let order = fetch_po(&pool, id).await?;
 
-    if order.status != "draft" {
-        return Err(AppError::Validation("Only draft purchase orders can be deleted".into()));
+    // Guard: never delete a PO with any received items.
+    let received_count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM purchase_order_items WHERE po_id = $1 AND COALESCE(quantity_received, 0) > 0",
+        id,
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
+    if received_count > 0 {
+        return Err(AppError::Validation(
+            "Cannot delete a purchase order with received items. Cancel it instead.".into()
+        ));
+    }
+    if order.status != "draft" && order.status != "pending" {
+        return Err(AppError::Validation(
+            "Only draft or pending purchase orders can be deleted.".into()
+        ));
     }
 
-    sqlx::query!("DELETE FROM purchase_orders WHERE id = $1", id)
+    // BACKEND FAULT #8 fix: soft-delete (consistent with the rest of the app)
+    sqlx::query!("UPDATE purchase_orders SET is_active = FALSE WHERE id = $1", id)
         .execute(&pool)
         .await?;
+    crate::database::sync::queue_row(
+        &pool, "purchase_orders", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": order.store_id, "is_active": false }),
+        Some(order.store_id),
+    ).await;
     Ok(())
 }
 

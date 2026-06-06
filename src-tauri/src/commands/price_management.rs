@@ -283,6 +283,13 @@ pub async fn request_price_change(
 
     let new_price = to_dec(payload.new_price);
 
+    // Guard: reject no-op requests
+    if (new_price - old_price).abs() < Decimal::new(1, 2) {
+        return Err(AppError::Validation(
+            "New price must differ from the current price by at least ₦0.01.".into()
+        ));
+    }
+
     let id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO price_changes
                (store_id, item_id, change_type, old_price, new_price,
@@ -518,7 +525,6 @@ pub async fn get_price_changes(
 
 /// Efficient KPI stats for the price management overview — reads from
 /// v_price_change_stats instead of fetching 200 rows and counting in JS.
-#[allow(dead_code)]
 #[tauri::command]
 pub async fn get_price_change_stats(
     state:    State<'_, AppState>,

@@ -3,11 +3,11 @@
 // ============================================================================
 
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   RotateCcw, FileText, User, CreditCard, Package,
   CheckCircle2, XCircle, ArrowLeft, Copy, Check,
-  Ban, AlertTriangle, Loader2,
+  Ban, AlertTriangle, Loader2, ArrowUpRight,
 } from "lucide-react";
 
 import { useReturn, useVoidReturn } from "@/features/returns/useReturns";
@@ -17,6 +17,7 @@ import { Spinner }     from "@/components/shared/Spinner";
 import { EmptyState }  from "@/components/shared/EmptyState";
 import { Button }      from "@/components/ui/button";
 import { Input }       from "@/components/ui/input";
+import { usePermission } from "@/hooks/usePermission";
 import {
   Dialog,
   DialogContent,
@@ -146,7 +147,8 @@ function VoidReturnDialog({ open, onOpenChange, returnRef, onConfirm, isLoading 
   const [reason, setReason] = useState("");
 
   function handleConfirm() {
-    onConfirm(reason.trim() || undefined);
+    if (!reason.trim()) return;
+    onConfirm(reason.trim());
     setReason("");
   }
 
@@ -189,8 +191,7 @@ function VoidReturnDialog({ open, onOpenChange, returnRef, onConfirm, isLoading 
             {/* Reason */}
             <div>
               <label className="text-[11px] font-semibold text-foreground mb-1.5 block">
-                Void Reason{" "}
-                <span className="text-muted-foreground font-normal">(optional)</span>
+                Void Reason <span className="text-destructive font-semibold">*</span>
               </label>
               <Input
                 value={reason}
@@ -214,7 +215,7 @@ function VoidReturnDialog({ open, onOpenChange, returnRef, onConfirm, isLoading 
             <Button
               variant="destructive"
               onClick={handleConfirm}
-              disabled={isLoading}
+              disabled={isLoading || !reason.trim()}
               className="flex-1"
             >
               {isLoading ? (
@@ -241,8 +242,9 @@ export function ReturnDetailPanel() {
   const { id }   = useParams();
   const navigate = useNavigate();
 
-  const { ret, items, isLoading, error, invalidate } = useReturn(id);
+  const { ret, items, isLoading, error } = useReturn(id);
   const voidMutation = useVoidReturn();
+  const canRefund = usePermission("transactions.refund");
 
   const [copied,      setCopied]      = useState(false);
   const [voidOpen,    setVoidOpen]    = useState(false);
@@ -258,7 +260,7 @@ export function ReturnDetailPanel() {
     try {
       await voidMutation.mutateAsync({ id: parseInt(id, 10), reason });
       setVoidOpen(false);
-      invalidate();
+      // invalidation handled by useVoidReturn.onSuccess
     } catch {
       // error toast already fired by onMutationError
     }
@@ -320,7 +322,7 @@ export function ReturnDetailPanel() {
               {copied ? "Copied" : "Copy Ref"}
             </Button>
             {/* Void — only for non-voided returns */}
-            {!isVoided && (
+            {!isVoided && canRefund && (
               <Button
                 variant="outline"
                 size="xs"
@@ -453,6 +455,15 @@ export function ReturnDetailPanel() {
                         <p className="text-[10px] text-muted-foreground">
                           Customer ID #{ret.customer_id}
                         </p>
+                        {ret.customer_id && (
+                          <Link
+                            to={`/customers/${ret.customer_id}`}
+                            className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            View Profile <ArrowUpRight className="h-3 w-3" />
+                          </Link>
+                        )}
                       </div>
                     </div>
                   ) : (

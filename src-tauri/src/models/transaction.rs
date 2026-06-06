@@ -119,6 +119,7 @@ pub struct TransactionItem {
     pub item_id:          Uuid,
     pub item_name:        String,
     pub sku:              String,
+    pub barcode:          Option<String>,
     pub quantity:         Decimal,
     pub unit_price:       Decimal,
     pub discount:         Decimal,

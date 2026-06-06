@@ -1084,6 +1084,12 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "get_customer_summary" => {
+            let store_id = params.get("store_id").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let result = customers::get_customer_summary(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         "search_customers" => {
             let query    = params.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let store_id = params.get("store_id").and_then(|v| v.as_i64()).map(|v| v as i32);
@@ -1154,7 +1160,8 @@ async fn dispatch(
         "search_suppliers" => {
             let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let limit = params.get("limit").and_then(|v| v.as_i64());
-            let result = suppliers::search_suppliers(as_state(state), require_token()?, query, limit).await?;
+            let store_id = params.get("store_id").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let result = suppliers::search_suppliers(as_state(state), require_token()?, query, store_id, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -2179,8 +2186,9 @@ async fn dispatch(
 
         "get_wallet_history" => {
             let customer_id = i32_param(&params, "customer_id")?;
+            let page        = opt_i64(&params, "page");
             let limit       = opt_i64(&params, "limit");
-            let result = customer_wallet::get_wallet_history(as_state(state), require_token()?, customer_id, limit).await?;
+            let result = customer_wallet::get_wallet_history(as_state(state), require_token()?, customer_id, page, limit).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 

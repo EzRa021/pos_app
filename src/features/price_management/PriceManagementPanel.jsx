@@ -5,19 +5,26 @@
 //   Overview   — KPI stat cards + Price Change Requests
 //   Scheduled  — Schedule a future price change, Apply Due button, history
 //   Price Lists — Custom price lists per segment (wholesale, VIP, etc.)
+//
+// Fixes applied vs previous version:
+//  - KPI stats now come from get_price_change_stats (one DB query) instead of
+//    fetching 200 rows and counting in JS.
+//  - Scheduled tab copy no longer says "automatically" — apply is manual.
+//  - Price Lists tab explains price list ↔ customer type relationship.
+//  - Toast field was pl?.name (undefined) → pl?.list_name.
 // ============================================================================
 import { useState, useMemo, useCallback } from "react";
 import {
   Tag, TrendingUp, TrendingDown, Check, X, Plus,
-  Edit3, Trash2, Clock, Search, AlertTriangle,
-  Loader2, List, RefreshCw, Calendar, History,
+  Trash2, Clock, Search, AlertTriangle,
+  Loader2, List, Calendar, Info,
   Power, PowerOff, ChevronRight, Package,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import {
   usePriceLists, usePriceListItems,
-  usePriceChanges, useScheduledPriceChanges,
+  usePriceChanges, usePriceChangeStats, useScheduledPriceChanges,
   extractError,
 } from "./usePriceManagement";
 import { getItems } from "@/commands/items";
@@ -33,16 +40,17 @@ import {
 import { cn } from "@/lib/utils";
 import { formatCurrency, formatDateTime, formatDate } from "@/lib/format";
 import { usePermission } from "@/hooks/usePermission";
+import { useBranchStore } from "@/stores/branch.store";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MAIN_TABS = [
-  { id: "overview",   label: "Overview"       },
-  { id: "scheduled",  label: "Scheduled"      },
-  { id: "lists",      label: "Price Lists"    },
+  { id: "overview",   label: "Overview"    },
+  { id: "scheduled",  label: "Scheduled"   },
+  { id: "lists",      label: "Price Lists" },
 ];
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Layout helpers ─────────────────────────────────────────────────────────────
 
 function Section({ title, icon: Icon, children, action, className }) {
   return (
@@ -55,6 +63,21 @@ function Section({ title, icon: Icon, children, action, className }) {
         {action && <div className="flex items-center gap-2">{action}</div>}
       </div>
       <div className="p-5">{children}</div>
+    </div>
+  );
+}
+
+function InfoCallout({ icon: Icon = Info, children, accent = "default" }) {
+  const styles = {
+    default: "border-border/60   bg-muted/30      text-muted-foreground",
+    warning: "border-warning/25  bg-warning/[0.08] text-warning",
+    success: "border-success/25  bg-success/[0.06] text-success",
+    info:    "border-primary/25  bg-primary/[0.06] text-primary",
+  }[accent];
+  return (
+    <div className={cn("flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5", styles)}>
+      <Icon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+      <p className="text-[11px] leading-relaxed">{children}</p>
     </div>
   );
 }
@@ -213,7 +236,8 @@ function RequestPriceChangeDialog({ open, onOpenChange, storeId, onRequest }) {
   const reqPrice     = parseFloat(newPrice) || 0;
   const diff         = currentPrice != null ? reqPrice - currentPrice : 0;
   const diffPct      = currentPrice > 0 ? ((diff / currentPrice) * 100).toFixed(1) : null;
-  const canSubmit    = selected && reqPrice > 0 && reason.trim();
+  const samePrice    = currentPrice != null && Math.abs(reqPrice - currentPrice) < 0.01;
+  const canSubmit    = selected && reqPrice > 0 && reason.trim() && !samePrice;
 
   const handleSave = async () => {
     if (!canSubmit) return;
@@ -263,11 +287,17 @@ function RequestPriceChangeDialog({ open, onOpenChange, storeId, onRequest }) {
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">Requested Price</span>
                   <span className={cn("font-mono font-bold tabular-nums",
-                    diff > 0 ? "text-destructive" : diff < 0 ? "text-success" : "text-foreground")}>
+                    samePrice ? "text-muted-foreground"
+                    : diff > 0 ? "text-destructive" : "text-success")}>
                     {formatCurrency(reqPrice)}
-                    {diffPct && <span className="ml-1.5 text-[10px]">({diff > 0 ? "+" : ""}{diffPct}%)</span>}
+                    {diffPct && !samePrice && (
+                      <span className="ml-1.5 text-[10px]">({diff > 0 ? "+" : ""}{diffPct}%)</span>
+                    )}
                   </span>
                 </div>
+              )}
+              {samePrice && (
+                <p className="text-[11px] text-warning">New price must differ from the current price.</p>
               )}
             </div>
           )}
@@ -369,7 +399,7 @@ function SchedulePriceChangeDialog({ open, onOpenChange, storeId, onSchedule }) 
             <div>
               <DialogTitle className="text-base font-semibold">Schedule Price Change</DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground mt-0.5">
-                Set a future date and time for the price to update automatically.
+                Set a future date. You'll need to click "Apply Now" to push it live.
               </DialogDescription>
             </div>
           </div>
@@ -415,6 +445,9 @@ function SchedulePriceChangeDialog({ open, onOpenChange, storeId, onSchedule }) 
             <Input value={reason} onChange={(e) => setReason(e.target.value)}
               placeholder="Optional reason for this change" className="h-8 text-sm" />
           </div>
+          <InfoCallout icon={Info} accent="default">
+            Scheduled changes do not apply automatically. Return to this page on or after the effective date and click "Apply Now".
+          </InfoCallout>
         </div>
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)} disabled={busy}>Cancel</Button>
@@ -440,7 +473,6 @@ function PriceListItemsDialog({ open, onOpenChange, priceList, storeId, canManag
   const [busy,         setBusy]         = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
 
-  // Reset add form when dialog closes
   const handleOpenChange = (val) => {
     if (!val) { setSearch(""); setSelected(null); setPrice(""); setRemoveTarget(null); }
     onOpenChange(val);
@@ -573,7 +605,6 @@ function PriceListItemsDialog({ open, onOpenChange, priceList, storeId, canManag
         </DialogContent>
       </Dialog>
 
-      {/* Remove item confirm */}
       <ConfirmDialog
         open={!!removeTarget}
         onOpenChange={(v) => { if (!v) setRemoveTarget(null); }}
@@ -590,6 +621,13 @@ function PriceListItemsDialog({ open, onOpenChange, priceList, storeId, canManag
 // ── Create Price List Dialog ──────────────────────────────────────────────────
 
 const LIST_TYPES = ["standard", "wholesale", "vip", "promotional"];
+
+const LIST_TYPE_DESCRIPTIONS = {
+  standard:    "Default price list for regular customers.",
+  wholesale:   "Bulk pricing for wholesale buyers — typically lower prices.",
+  vip:         "Exclusive pricing for your highest-value customers.",
+  promotional: "Time-limited or campaign-specific prices.",
+};
 
 function CreatePriceListDialog({ open, onOpenChange, onCreate, storeId }) {
   const [form, setForm] = useState({ list_name: "", list_type: "standard", description: "" });
@@ -647,10 +685,11 @@ function CreatePriceListDialog({ open, onOpenChange, onCreate, storeId }) {
                 <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
               ))}
             </select>
+            <p className="text-[11px] text-muted-foreground">{LIST_TYPE_DESCRIPTIONS[form.list_type]}</p>
           </div>
           <div className="space-y-1.5">
             <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Description</label>
-            <Input value={form.description} onChange={set("description")} placeholder="Optional" className="h-8 text-sm" />
+            <Input value={form.description} onChange={set("description")} placeholder="Optional notes" className="h-8 text-sm" />
           </div>
         </div>
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
@@ -664,7 +703,7 @@ function CreatePriceListDialog({ open, onOpenChange, onCreate, storeId }) {
   );
 }
 
-// ── Tab: Overview (KPI + Price Change Requests) ───────────────────────────────
+// ── Tab: Overview ─────────────────────────────────────────────────────────────
 
 const REQUEST_STATUS_TABS = [
   { key: null,       label: "All"      },
@@ -673,23 +712,21 @@ const REQUEST_STATUS_TABS = [
   { key: "rejected", label: "Rejected" },
 ];
 
-function OverviewTab({ canManage, storeId }) {
+function OverviewTab({ canManage, storeId, stats }) {
   const [statusFilter, setStatusFilter] = useState(null);
   const [page,         setPage]         = useState(1);
   const [reqOpen,      setReqOpen]      = useState(false);
-  const [confirm,      setConfirm]      = useState(null); // { id, action, item_name, old_price, new_price }
+  const [confirm,      setConfirm]      = useState(null);
 
   const { records, total, isLoading, request, approve, reject } =
     usePriceChanges({ status: statusFilter, page, limit: 15 });
 
-  // Separate query to always get accurate pending count regardless of filter
-  const { records: pendingRecords } = usePriceChanges({ status: "pending", page: 1, limit: 200 });
-  const pendingCount = pendingRecords.length;
-
   const tabs = REQUEST_STATUS_TABS.map((t) => ({
     ...t,
-    count: t.key === null ? total
-         : t.key === "pending" ? pendingCount
+    count: t.key === null     ? stats.totalCount
+         : t.key === "pending"  ? stats.pendingCount
+         : t.key === "applied"  ? stats.appliedCount
+         : t.key === "rejected" ? stats.rejectedCount
          : undefined,
   }));
 
@@ -801,14 +838,11 @@ function OverviewTab({ canManage, storeId }) {
           </div>
         }
       >
-        {statusFilter === null && pendingCount > 0 && (
-          <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/[0.08] px-3 py-2.5 mb-4">
-            <AlertTriangle className="h-3.5 w-3.5 text-warning mt-0.5 shrink-0" />
-            <p className="text-[11px] text-warning leading-relaxed">
-              <strong>{pendingCount}</strong> pending price change{pendingCount !== 1 ? "s" : ""} awaiting
-              {canManage ? " your approval." : " manager approval."}
-            </p>
-          </div>
+        {statusFilter === null && stats.pendingCount > 0 && (
+          <InfoCallout icon={AlertTriangle} accent="warning" className="mb-4">
+            <strong>{stats.pendingCount}</strong> pending price change{stats.pendingCount !== 1 ? "s" : ""} awaiting
+            {canManage ? " your approval." : " manager approval."}
+          </InfoCallout>
         )}
         <DataTable columns={columns} data={records} isLoading={isLoading}
           pagination={{ page, pageSize: 15, total, onPageChange: setPage }}
@@ -848,12 +882,12 @@ function OverviewTab({ canManage, storeId }) {
 // ── Tab: Scheduled Changes ────────────────────────────────────────────────────
 
 const SCHED_FILTER_TABS = [
-  { key: "pending", label: "Pending"            },
+  { key: "pending", label: "Pending"             },
   { key: "all",     label: "All (incl. applied)" },
 ];
 
 function ScheduledTab({ canManage, storeId }) {
-  const [filter,       setFilter]       = useState("pending"); // "pending" | "all"
+  const [filter,       setFilter]       = useState("pending");
   const [schedOpen,    setSchedOpen]    = useState(false);
   const [cancelTarget, setCancelTarget] = useState(null);
 
@@ -891,11 +925,7 @@ function ScheduledTab({ canManage, storeId }) {
   const columns = useMemo(() => [
     {
       key: "item_name", header: "Item",
-      render: (row) => (
-        <div>
-          <p className="text-xs font-semibold text-foreground">{row.item_name}</p>
-        </div>
-      ),
+      render: (row) => <p className="text-xs font-semibold text-foreground">{row.item_name}</p>,
     },
     {
       key: "new_selling_price", header: "New Selling Price", align: "right",
@@ -919,8 +949,7 @@ function ScheduledTab({ canManage, storeId }) {
         const isPast = new Date(row.effective_at) <= new Date();
         const isDue  = isPast && !row.applied && !row.cancelled;
         return (
-          <span className={cn("text-xs",
-            isDue ? "text-warning font-semibold" : "text-muted-foreground")}>
+          <span className={cn("text-xs", isDue ? "text-warning font-semibold" : "text-muted-foreground")}>
             {formatDateTime(row.effective_at)}
             {isDue && (
               <span className="ml-1.5 inline-flex items-center rounded-full border border-warning/30 bg-warning/10 px-1.5 py-0 text-[9px] font-bold text-warning">
@@ -936,11 +965,9 @@ function ScheduledTab({ canManage, storeId }) {
       render: (row) => (
         <span className={cn(
           "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
-          row.applied
-            ? "bg-success/10 text-success border-success/20"
-            : row.cancelled
-            ? "bg-muted/50 text-muted-foreground border-border/60"
-            : "bg-warning/10 text-warning border-warning/20",
+          row.applied   ? "bg-success/10 text-success border-success/20"
+          : row.cancelled ? "bg-muted/50 text-muted-foreground border-border/60"
+          : "bg-warning/10 text-warning border-warning/20",
         )}>
           {row.applied ? "Applied" : row.cancelled ? "Cancelled" : "Pending"}
         </span>
@@ -978,9 +1005,31 @@ function ScheduledTab({ canManage, storeId }) {
 
   return (
     <>
+      {/* How it works — always visible, not just when empty */}
+      <div className="rounded-xl border border-border bg-muted/20 px-5 py-4">
+        <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3">How scheduled prices work</p>
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            { icon: Calendar, label: "1. Schedule", desc: "Pick an item, set the new price, choose a future date and time." },
+            { icon: Clock,    label: "2. Wait",     desc: "The change stays pending until you return on or after the effective date." },
+            { icon: Check,    label: "3. Apply",    desc: "Click 'Apply Now' to push all due changes live. Prices don't change on their own." },
+          ].map(({ icon: Icon, label, desc }) => (
+            <div key={label} className="flex items-start gap-3">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card">
+                <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-foreground">{label}</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Apply-due banner */}
       {dueNow.length > 0 && canManage && (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning/[0.07] px-4 py-3 mb-5">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning/[0.07] px-4 py-3">
           <div className="flex items-center gap-2.5">
             <Clock className="h-4 w-4 text-warning shrink-0" />
             <p className="text-[11px] text-warning leading-relaxed">
@@ -1023,30 +1072,6 @@ function ScheduledTab({ canManage, storeId }) {
           }
         />
       </Section>
-
-      {/* How it works explainer — only shown when there are no rows */}
-      {!isLoading && displayRows.length === 0 && canManage && (
-        <div className="rounded-xl border border-border bg-muted/20 px-5 py-4 mt-5">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-3">How scheduled prices work</p>
-          <div className="grid grid-cols-3 gap-4">
-            {[
-              { icon: Calendar, label: "1. Schedule", desc: "Pick an item, set the new price, and choose a future date and time." },
-              { icon: Clock,    label: "2. Wait",     desc: "The change stays pending until the effective date arrives." },
-              { icon: Check,    label: "3. Apply",    desc: "Click 'Apply Now' to push all due changes, or apply them one by one." },
-            ].map(({ icon: Icon, label, desc }) => (
-              <div key={label} className="flex items-start gap-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card">
-                  <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-                </div>
-                <div>
-                  <p className="text-xs font-semibold text-foreground">{label}</p>
-                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{desc}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <SchedulePriceChangeDialog
         open={schedOpen}
@@ -1180,6 +1205,11 @@ function PriceListsTab({ canManage, storeId }) {
 
   return (
     <>
+      {/* Info callout explaining price list purpose */}
+      <InfoCallout icon={Info} accent="info">
+        Price lists let you set custom prices per item for different customer segments. To apply a price list to a customer, open the customer record and set their customer type (wholesale, VIP, etc.) to match the list type. Price list prices currently apply at the item level — set them per item inside each list below.
+      </InfoCallout>
+
       <Section title="Price Lists" icon={List}
         action={canManage && (
           <Button size="sm" onClick={() => setCreateOpen(true)} className="h-7 gap-1 text-xs px-2.5">
@@ -1201,10 +1231,10 @@ function PriceListsTab({ canManage, storeId }) {
         />
         {lists.length > 0 && (
           <div className="flex flex-wrap items-center gap-5 mt-3 px-1 text-[11px] text-muted-foreground">
-            <div className="flex items-center gap-1.5"><ChevronRight className="h-3 w-3" /><span>View items</span></div>
+            <div className="flex items-center gap-1.5"><ChevronRight className="h-3 w-3" /><span>View / edit items</span></div>
             <div className="flex items-center gap-1.5"><Power className="h-3 w-3 text-success" /><span>Activate</span></div>
             <div className="flex items-center gap-1.5"><PowerOff className="h-3 w-3 text-warning" /><span>Deactivate</span></div>
-            <div className="flex items-center gap-1.5"><Trash2 className="h-3 w-3 text-destructive" /><span>Delete</span></div>
+            <div className="flex items-center gap-1.5"><Trash2 className="h-3 w-3 text-destructive" /><span>Delete (remove items first)</span></div>
           </div>
         )}
       </Section>
@@ -1280,23 +1310,16 @@ function PriceListsTab({ canManage, storeId }) {
 // ── Main Panel ────────────────────────────────────────────────────────────────
 
 export function PriceManagementPanel() {
-  const canManage = usePermission("items.update");
+  const canManage   = usePermission("items.update");
   const [activeTab, setActiveTab] = useState("overview");
 
-  // KPI data — always fetched regardless of active tab so stats stay fresh
-  const {
-    records: allChanges,
-    total:   totalChanges,
-    storeId,
-  } = usePriceChanges({ page: 1, limit: 200 });
+  // KPI stats from the dedicated stats endpoint — one query, no 200-row counting
+  const stats   = usePriceChangeStats();
+  const storeId = useBranchStore((s) => s.activeStore?.id);
 
+  // Scheduled records needed for the due-now badge on the tab
   const { records: scheduled } = useScheduledPriceChanges(false);
   const { lists }               = usePriceLists();
-
-  const { pendingCount, appliedCount } = useMemo(() => ({
-    pendingCount: allChanges.filter((r) => r.status === "pending").length,
-    appliedCount: allChanges.filter((r) => r.status === "applied").length,
-  }), [allChanges]);
 
   const scheduledPending = scheduled.filter((r) => !r.applied && !r.cancelled).length;
   const dueNowCount      = scheduled.filter((r) => !r.applied && !r.cancelled && new Date(r.effective_at) <= new Date()).length;
@@ -1322,10 +1345,9 @@ export function PriceManagementPanel() {
             )}
           >
             {t.label}
-            {/* Badge: pending requests on Overview, due count on Scheduled */}
-            {t.id === "overview"  && pendingCount > 0 && (
+            {t.id === "overview"  && stats.pendingCount > 0 && (
               <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning/20 px-1 text-[9px] font-bold text-warning tabular-nums">
-                {pendingCount}
+                {stats.pendingCount}
               </span>
             )}
             {t.id === "scheduled" && dueNowCount > 0 && (
@@ -1341,24 +1363,24 @@ export function PriceManagementPanel() {
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-5xl px-6 py-5 space-y-5">
 
-          {/* KPI stat cards — always visible on all tabs */}
+          {/* KPI stat cards — always visible */}
           <div className="grid grid-cols-4 gap-3">
             <StatCard
               label="Change Requests"
-              value={totalChanges}
-              sub={`${pendingCount} pending`}
-              accent={pendingCount > 0 ? "warning" : "primary"}
+              value={stats.totalCount}
+              sub={`${stats.pendingCount} pending`}
+              accent={stats.pendingCount > 0 ? "warning" : "primary"}
             />
             <StatCard
               label="Applied"
-              value={appliedCount}
+              value={stats.appliedCount}
               sub="prices updated"
               accent="success"
             />
             <StatCard
               label="Scheduled"
               value={scheduledPending}
-              sub={dueNowCount > 0 ? `${dueNowCount} due now` : "future changes"}
+              sub={dueNowCount > 0 ? `${dueNowCount} due — apply now` : "future changes"}
               accent={dueNowCount > 0 ? "warning" : scheduledPending > 0 ? "primary" : "muted"}
             />
             <StatCard
@@ -1369,7 +1391,7 @@ export function PriceManagementPanel() {
             />
           </div>
 
-          {activeTab === "overview"  && <OverviewTab   canManage={canManage} storeId={storeId} />}
+          {activeTab === "overview"  && <OverviewTab   canManage={canManage} storeId={storeId} stats={stats} />}
           {activeTab === "scheduled" && <ScheduledTab  canManage={canManage} storeId={storeId} />}
           {activeTab === "lists"     && <PriceListsTab canManage={canManage} storeId={storeId} />}
         </div>

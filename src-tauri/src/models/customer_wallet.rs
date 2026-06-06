@@ -44,5 +44,6 @@ pub struct AdjustWalletDto {
     pub customer_id: i32,
     pub store_id:    i32,
     pub amount:      f64,
-    pub notes:       Option<String>,
+    /// Mandatory reason for manual wallet adjustments.
+    pub reason:      String,
 }

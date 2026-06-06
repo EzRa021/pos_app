@@ -475,8 +475,13 @@ function PartialRefundModal({ open, onOpenChange, tx, txItems, onConfirm, isLoad
       const s = itemState[item.item_id];
       if (!s?.enabled) return;
       count++;
-      const unitPrice = parseFloat(item.line_total) / parseFloat(item.quantity);
-      total += unitPrice * s.quantity;
+      // Use unit_price + proportional discount to match backend's per-line math.
+      const qtyNum = parseFloat(item.quantity);
+      const unitPrice = parseFloat(item.unit_price);
+      const lineDiscountTotal = item.discount != null ? parseFloat(item.discount) : 0;
+      const unitDiscount = qtyNum > 0 ? (lineDiscountTotal / qtyNum) : 0;
+      const unitRefund = unitPrice - unitDiscount;
+      total += unitRefund * s.quantity;
     });
     return { refundTotal: total, selectedCount: count };
   }, [itemState, txItems]);
@@ -515,9 +520,13 @@ function PartialRefundModal({ open, onOpenChange, tx, txItems, onConfirm, isLoad
           <div className="max-h-[300px] overflow-y-auto space-y-2 pr-0.5 -mr-0.5">
             {(txItems ?? []).map((item) => {
               const s = itemState[item.item_id] ?? { enabled: false, quantity: 1, reason: "" };
-              const maxQty = Math.floor(parseFloat(item.quantity));
-              const unitPrice = parseFloat(item.line_total) / parseFloat(item.quantity);
-              const lineRef = s.enabled ? formatCurrency(unitPrice * s.quantity) : null;
+              const maxQty = parseFloat(item.quantity);
+              const qtyNum = parseFloat(item.quantity);
+              const unitPrice = parseFloat(item.unit_price);
+              const lineDiscountTotal = item.discount != null ? parseFloat(item.discount) : 0;
+              const unitDiscount = qtyNum > 0 ? (lineDiscountTotal / qtyNum) : 0;
+              const unitRefund = unitPrice - unitDiscount;
+              const lineRef = s.enabled ? formatCurrency(unitRefund * s.quantity) : null;
 
               return (
                 <div
@@ -636,7 +645,7 @@ export function TransactionDetailPanel() {
   const canVoid   = usePermission("transactions.void");
   const canRefund = usePermission("transactions.refund");
 
-  const isPartiallyRefunded = tx?.status === "partially_refunded";
+  const isPartiallyRefunded = tx?.payment_status === "partially_refunded";
   const { data: returnedQtyRaw } = useQuery({
     queryKey:  ["tx-returned-qty", tx?.id],
     queryFn:   () => getTransactionReturnedQty(tx.id),
@@ -655,7 +664,7 @@ export function TransactionDetailPanel() {
   const { print, isPrinting } = usePrintReceipt();
 
   async function handleReprint() {
-    try { await print(tx?.id); }
+    try { await print(tx?.id); toast.success("Receipt sent to printer"); }
     catch { toast.error("Print failed. Please try again."); }
   }
 
@@ -857,7 +866,10 @@ export function TransactionDetailPanel() {
               {/* Financial summary */}
               <Section title="Summary" icon={Banknote}>
                 <SummaryLine label="Subtotal (ex-VAT)" value={formatCurrency(subtotal)} />
-                <SummaryLine label="VAT (7.5%)"        value={formatCurrency(tax)} />
+                <SummaryLine
+                  label={`VAT (${subtotal > 0 ? ((tax / subtotal) * 100).toFixed(1) : "—"}%)`}
+                  value={formatCurrency(tax)}
+                />
                 {discount > 0 && (
                   <SummaryLine label="Discount" value={`−${formatCurrency(discount)}`} accent="destructive" />
                 )}

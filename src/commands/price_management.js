@@ -47,6 +47,10 @@ export const rejectPriceChange = (id) =>
 export const getPriceChanges = (params = {}) =>
   rpc("get_price_changes", params);
 
+// KPI stats: { total_count, pending_count, applied_count, rejected_count }
+export const getPriceChangeStats = (storeId) =>
+  rpc("get_price_change_stats", { store_id: storeId });
+
 // ── Scheduled Price Changes ───────────────────────────────────────────────────
 
 // SchedulePriceChangeDto: { item_id, store_id, new_selling_price, new_cost_price?,

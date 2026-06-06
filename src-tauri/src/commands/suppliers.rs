@@ -33,9 +33,10 @@ async fn fetch_supplier(pool: &sqlx::PgPool, id: i32) -> AppResult<Supplier> {
     .ok_or_else(|| AppError::NotFound(format!("Supplier {id} not found")))
 }
 
-async fn generate_supplier_code(pool: &sqlx::PgPool) -> AppResult<String> {
+async fn generate_supplier_code(pool: &sqlx::PgPool, store_id: i32) -> AppResult<String> {
     let last: Option<String> = sqlx::query_scalar!(
-        "SELECT supplier_code FROM suppliers ORDER BY id DESC LIMIT 1"
+        "SELECT supplier_code FROM suppliers WHERE store_id = $1 ORDER BY id DESC LIMIT 1",
+        store_id
     )
     .fetch_optional(pool)
     .await?;
@@ -112,12 +113,18 @@ pub async fn search_suppliers(
     state: State<'_, AppState>,
     token: String,
     query: String,
+    store_id: Option<i32>,
     limit: Option<i64>,
 ) -> AppResult<Vec<Supplier>> {
-    guard_permission(&state, &token, "suppliers.read").await?;
+    let claims = guard_permission(&state, &token, "suppliers.read").await?;
     let pool   = state.pool().await?;
     let search = format!("%{}%", query.trim());
     let lim    = limit.unwrap_or(10).clamp(1, 50);
+    let effective_store_id = if claims.is_global {
+        store_id
+    } else {
+        Some(claims.store_id.ok_or(AppError::Forbidden)?)
+    };
 
     sqlx::query_as!(
         Supplier,
@@ -126,11 +133,13 @@ pub async fn search_suppliers(
                   is_active, created_at, updated_at
            FROM   suppliers
            WHERE  is_active = TRUE
+             AND ($2::int IS NULL OR store_id = $2)
              AND (supplier_name ILIKE $1 OR supplier_code ILIKE $1
                   OR contact_name ILIKE $1 OR phone ILIKE $1 OR email ILIKE $1)
            ORDER  BY supplier_name
-           LIMIT  $2"#,
+           LIMIT  $3"#,
         search,
+        effective_store_id,
         lim,
     )
     .fetch_all(&pool)
@@ -146,9 +155,16 @@ pub async fn get_supplier(
     token: String,
     id:    i32,
 ) -> AppResult<Supplier> {
-    guard_permission(&state, &token, "suppliers.read").await?;
+    let claims = guard_permission(&state, &token, "suppliers.read").await?;
     let pool = state.pool().await?;
-    fetch_supplier(&pool, id).await
+    let supplier = fetch_supplier(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if supplier.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+    Ok(supplier)
 }
 
 // ── Supplier stats ────────────────────────────────────────────────────────────
@@ -179,8 +195,15 @@ pub async fn get_supplier_stats(
     token: String,
     id:    i32,
 ) -> AppResult<SupplierStats> {
-    guard_permission(&state, &token, "suppliers.read").await?;
+    let claims = guard_permission(&state, &token, "suppliers.read").await?;
     let pool = state.pool().await?;
+    let supplier = fetch_supplier(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if supplier.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     let row = sqlx::query!(
         r#"SELECT
@@ -196,8 +219,10 @@ pub async fn get_supplier_stats(
                         ELSE NULL END
                )                                                                          AS avg_lead_time_days
            FROM purchase_orders
-           WHERE supplier_id = $1"#,
-        id
+           WHERE supplier_id = $1
+             AND store_id = $2"#,
+        id,
+        supplier.store_id
     )
     .fetch_one(&pool)
     .await?;
@@ -221,8 +246,15 @@ pub async fn get_supplier_spend_timeline(
     token: String,
     id:    i32,
 ) -> AppResult<Vec<SupplierMonthlySpend>> {
-    guard_permission(&state, &token, "suppliers.read").await?;
+    let claims = guard_permission(&state, &token, "suppliers.read").await?;
     let pool = state.pool().await?;
+    let supplier = fetch_supplier(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if supplier.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     let rows = sqlx::query!(
         r#"SELECT
@@ -231,11 +263,13 @@ pub async fn get_supplier_spend_timeline(
                COUNT(*)                                             AS "order_count!: i64"
            FROM   purchase_orders
            WHERE  supplier_id = $1
+             AND  store_id = $2
              AND  status IN ('received', 'pending', 'approved', 'partial')
              AND  ordered_at >= NOW() - INTERVAL '13 months'
            GROUP  BY DATE_TRUNC('month', ordered_at)
            ORDER  BY 1 ASC"#,
-        id
+        id,
+        supplier.store_id
     )
     .fetch_all(&pool)
     .await?;
@@ -260,7 +294,13 @@ pub async fn create_supplier(
 ) -> AppResult<Supplier> {
     let claims   = guard_permission(&state, &token, "suppliers.create").await?;
     let pool         = state.pool().await?;
-    let code         = generate_supplier_code(&pool).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if payload.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+    let code         = generate_supplier_code(&pool, payload.store_id).await?;
     let credit_limit = payload.credit_limit.map(|v| to_dec(v));
 
     let id: i32 = sqlx::query_scalar!(
@@ -292,15 +332,10 @@ pub async fn create_supplier(
 
     crate::database::sync::queue_row(
         &pool, "suppliers", "INSERT", &id.to_string(),
-        serde_json::json!({
-            "id": id, "store_id": payload.store_id,
-            "supplier_name": payload.supplier_name,
-            "supplier_code": code,
-            "contact_name": payload.contact_name,
-            "email": payload.email,
-            "phone": payload.phone,
-            "is_active": true,
-        }),
+        serde_json::to_value(&supplier).unwrap_or_else(|_| serde_json::json!({
+            "id": supplier.id,
+            "store_id": supplier.store_id
+        })),
         Some(payload.store_id),
     ).await;
 
@@ -316,6 +351,13 @@ pub async fn update_supplier(
 ) -> AppResult<Supplier> {
     let claims   = guard_permission(&state, &token, "suppliers.update").await?;
     let pool         = state.pool().await?;
+    let current = fetch_supplier(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if current.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
     let credit_limit = payload.credit_limit.map(|v| to_dec(v));
 
     sqlx::query!(
@@ -348,20 +390,15 @@ pub async fn update_supplier(
     .await?;
 
     let supplier = fetch_supplier(&pool, id).await?;
-    write_audit_log(&pool, claims.user_id, None, "update", "supplier",
+    write_audit_log(&pool, claims.user_id, Some(supplier.store_id), "update", "supplier",
         &format!("Updated supplier id {id}"), "info").await;
-
-    let store_id: Option<i32> = sqlx::query_scalar!("SELECT store_id FROM suppliers WHERE id = $1", id)
-        .fetch_optional(&pool).await.ok().flatten();
     crate::database::sync::queue_row(
         &pool, "suppliers", "UPDATE", &id.to_string(),
-        serde_json::json!({
-            "id": id, "store_id": store_id,
-            "supplier_name": payload.supplier_name,
-            "contact_name": payload.contact_name,
-            "is_active": payload.is_active,
-        }),
-        store_id,
+        serde_json::to_value(&supplier).unwrap_or_else(|_| serde_json::json!({
+            "id": supplier.id,
+            "store_id": supplier.store_id
+        })),
+        Some(supplier.store_id),
     ).await;
 
     Ok(supplier)
@@ -375,11 +412,21 @@ pub async fn activate_supplier(
     token: String,
     id:    i32,
 ) -> AppResult<Supplier> {
-    guard_permission(&state, &token, "suppliers.update").await?;
+    let claims = guard_permission(&state, &token, "suppliers.update").await?;
     let pool = state.pool().await?;
+    let supplier = fetch_supplier(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if supplier.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
     sqlx::query!("UPDATE suppliers SET is_active = TRUE, updated_at = NOW() WHERE id = $1", id)
         .execute(&pool).await?;
-    fetch_supplier(&pool, id).await
+    let updated = fetch_supplier(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, Some(updated.store_id), "activate", "supplier",
+        &format!("Activated supplier '{}'", updated.supplier_name), "warning").await;
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -388,11 +435,27 @@ pub async fn deactivate_supplier(
     token: String,
     id:    i32,
 ) -> AppResult<Supplier> {
-    guard_permission(&state, &token, "suppliers.update").await?;
+    let claims = guard_permission(&state, &token, "suppliers.update").await?;
     let pool = state.pool().await?;
+    let supplier = fetch_supplier(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if supplier.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
     sqlx::query!("UPDATE suppliers SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id)
         .execute(&pool).await?;
-    fetch_supplier(&pool, id).await
+    let updated = fetch_supplier(&pool, id).await?;
+    write_audit_log(&pool, claims.user_id, Some(updated.store_id), "deactivate", "supplier",
+        &format!("Deactivated supplier '{}'", updated.supplier_name), "warning").await;
+    Ok(updated)
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteSupplierResult {
+    pub deleted: bool,
+    pub deactivated: bool,
 }
 
 #[tauri::command]
@@ -400,26 +463,46 @@ pub async fn delete_supplier(
     state: State<'_, AppState>,
     token: String,
     id:    i32,
-) -> AppResult<()> {
+) -> AppResult<DeleteSupplierResult> {
     let claims = guard_permission(&state, &token, "suppliers.delete").await?;
     let pool = state.pool().await?;
+    let supplier = fetch_supplier(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if supplier.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
+    let mut tx = pool.begin().await?;
     let po_count: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM purchase_orders WHERE supplier_id = $1", id
+        "SELECT COUNT(*) FROM purchase_orders WHERE supplier_id = $1",
+        id
     )
-    .fetch_one(&pool)
+    .fetch_one(&mut *tx)
+    .await?
+    .unwrap_or(0);
+    let payment_count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM supplier_payments WHERE supplier_id = $1",
+        id
+    )
+    .fetch_one(&mut *tx)
     .await?
     .unwrap_or(0);
 
-    if po_count > 0 {
+    let result = if po_count > 0 || payment_count > 0 {
         // Cannot hard delete; soft-delete instead
         sqlx::query!("UPDATE suppliers SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id)
-            .execute(&pool).await?;
+            .execute(&mut *tx).await?;
+        DeleteSupplierResult { deleted: false, deactivated: true }
     } else {
         sqlx::query!("DELETE FROM suppliers WHERE id = $1", id)
-            .execute(&pool).await?;
-    }
-    write_audit_log(&pool, claims.user_id, None, "delete", "supplier",
+            .execute(&mut *tx).await?;
+        DeleteSupplierResult { deleted: true, deactivated: false }
+    };
+    tx.commit().await?;
+
+    write_audit_log(&pool, claims.user_id, Some(supplier.store_id), "delete", "supplier",
         &format!("Deleted supplier id {id}"), "warning").await;
-    Ok(())
+    Ok(result)
 }

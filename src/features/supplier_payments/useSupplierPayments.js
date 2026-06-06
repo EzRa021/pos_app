@@ -39,7 +39,7 @@ export function useSupplierPayments(supplierId, { page = 1, limit = 25 } = {}) {
   });
 
   return {
-    payments:   data?.data  ?? [],
+    payments:   Array.isArray(data) ? data : (data?.data ?? []),
     total:      data?.total ?? 0,
     isLoading,
     record,

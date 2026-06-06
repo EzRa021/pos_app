@@ -102,7 +102,10 @@ function ConditionChip({ value, selected, onClick }) {
 
 // ── ItemRow ────────────────────────────────────────────────────────────────────
 function ItemRow({ item, state, onChange, alreadyReturned = 0, highlighted = false }) {
-  const soldQty  = parseFloat(item.quantity ?? 1);
+  // FRONTEND FAULT #5 fix: floor consistently for non-weighted items.
+  const soldQty = item.measurement_type && item.measurement_type !== "quantity"
+    ? parseFloat(item.quantity ?? 1)
+    : Math.floor(parseFloat(item.quantity ?? 1));
   // Cap max returnable qty to what hasn't been returned yet
   const remaining = Math.max(0, soldQty - alreadyReturned);
   const maxQty    = remaining;
@@ -543,11 +546,14 @@ export function InitiateReturnModal({
                   <SelectValue placeholder="Select method…" />
                 </SelectTrigger>
                 <SelectContent>
-                  {REFUND_METHODS.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>
-                      {m.label}
-                    </SelectItem>
-                  ))}
+                  {REFUND_METHODS.map((m) => {
+                    const disabled = m.value === "store_credit" && !transaction?.customer_id;
+                    return (
+                      <SelectItem key={m.value} value={m.value} disabled={disabled}>
+                        {m.label}{disabled ? " (requires customer)" : ""}
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
             </div>

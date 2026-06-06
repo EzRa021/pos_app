@@ -7,11 +7,11 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { cn }         from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 
-const TYPE_STYLES = {
-  earn:       "bg-success/10 text-success border-success/20",
-  redeem:     "bg-primary/10 text-primary border-primary/20",
-  adjust:     "bg-warning/10 text-warning border-warning/20",
-  expire:     "bg-muted/40 text-muted-foreground border-border/40",
+const TYPE_META = {
+  earn:   { label: "Earn",   cls: "bg-success/10 text-success border-success/20"       },
+  redeem: { label: "Redeem", cls: "bg-primary/10 text-primary border-primary/20"       },
+  adjust: { label: "Adjust", cls: "bg-warning/10 text-warning border-warning/20"       },
+  expire: { label: "Expire", cls: "bg-muted/40 text-muted-foreground border-border/40" },
 };
 
 export function LoyaltyHistoryTable({ customerId }) {
@@ -21,35 +21,42 @@ export function LoyaltyHistoryTable({ customerId }) {
     {
       key: "type",
       header: "Type",
-      render: (row) => (
-        <span className={cn(
-          "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
-          TYPE_STYLES[row.type] ?? "bg-muted/40 text-muted-foreground border-border/40",
-        )}>
-          {row.type}
-        </span>
-      ),
+      render: (row) => {
+        const meta = TYPE_META[row.type] ?? {
+          label: row.type,
+          cls: "bg-muted/40 text-muted-foreground border-border/40",
+        };
+        return (
+          <span className={cn(
+            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
+            meta.cls,
+          )}>
+            {meta.label}
+          </span>
+        );
+      },
     },
     {
       key: "points",
       header: "Points",
       align: "right",
       render: (row) => {
+        // Stored as signed int: earn=+N, redeem/expire=-N, adjust=±N
         const pts = parseInt(row.points ?? 0, 10);
-        const isAdd = row.type === "earn" || (row.type === "adjust" && pts > 0);
+        const positive = pts > 0;
         return (
           <span className={cn(
             "text-xs font-mono font-bold tabular-nums",
-            isAdd ? "text-success" : "text-destructive",
+            positive ? "text-success" : "text-destructive",
           )}>
-            {isAdd ? "+" : ""}{pts.toLocaleString()}
+            {positive ? "+" : ""}{pts.toLocaleString()}
           </span>
         );
       },
     },
     {
       key: "balance_after",
-      header: "Balance",
+      header: "Balance After",
       align: "right",
       render: (row) => (
         <span className="text-xs font-mono tabular-nums text-foreground">
@@ -58,17 +65,24 @@ export function LoyaltyHistoryTable({ customerId }) {
       ),
     },
     {
-      key: "source",
-      header: "Source",
+      key: "transaction_id",
+      header: "Transaction",
       render: (row) => (
-        <span className="text-xs text-muted-foreground">{row.source ?? "—"}</span>
+        <span className="text-xs font-mono text-muted-foreground">
+          {row.transaction_id ? `#${row.transaction_id}` : "—"}
+        </span>
       ),
     },
     {
       key: "notes",
       header: "Notes",
       render: (row) => (
-        <span className="text-xs text-muted-foreground">{row.notes ?? "—"}</span>
+        <span
+          className="text-xs text-muted-foreground max-w-[200px] truncate block"
+          title={row.notes ?? ""}
+        >
+          {row.notes ?? "—"}
+        </span>
       ),
     },
     {

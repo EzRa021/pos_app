@@ -18,6 +18,9 @@ export const getCustomer = (id) =>
 export const getCustomerStats = (id) =>
   rpc("get_customer_stats", { id });
 
+export const getCustomerSummary = (store_id) =>
+  rpc("get_customer_summary", { store_id });
+
 // CustomerTransactionFilters: { id, page?, limit?, date_from?, date_to? }
 export const getCustomerTransactions = (id, params = {}) =>
   rpc("get_customer_transactions", { id, ...params });

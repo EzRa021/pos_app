@@ -14,6 +14,7 @@ import { useCustomer, useCustomerTransactions } from "./useCustomers";
 import { useCreditSales }        from "@/features/credit_sales/useCreditSales";
 import { WalletPanel }           from "@/features/wallet/WalletPanel";
 import { WalletHistoryTable }    from "@/features/wallet/WalletHistoryTable";
+import { useCustomerLoyalty } from "@/features/loyalty/useLoyalty";
 import { LoyaltyBalanceCard }    from "@/features/loyalty/LoyaltyBalanceCard";
 import { LoyaltyHistoryTable }   from "@/features/loyalty/LoyaltyHistoryTable";
 import { PageHeader }     from "@/components/shared/PageHeader";
@@ -157,10 +158,9 @@ function EditCustomerDialog({ open, onOpenChange, customer, onUpdate }) {
         credit_limit:   form.credit_limit !== "" ? parseFloat(form.credit_limit) : undefined,
         credit_enabled: form.credit_enabled,
       });
-      toast.success("Customer updated.");
       handleOpenChange(false);
     } catch (err) {
-      toast.error(err?.message ?? "Failed to save.");
+      toast.error(typeof err === "string" ? err : (err?.message ?? "Failed to save."));
     } finally {
       setSaving(false);
     }
@@ -342,7 +342,7 @@ function CustomerCreditSales({ customerId }) {
       align:  "right",
       render: (row) => (
         <Link
-          to="/credit-sales"
+          to={`/credit-sales?customer_id=${customerId}`}
           className="inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary transition-colors"
           onClick={(e) => e.stopPropagation()}
         >
@@ -350,7 +350,7 @@ function CustomerCreditSales({ customerId }) {
         </Link>
       ),
     },
-  ], []);
+  ], [customerId]);
 
   return (
     <DataTable
@@ -374,7 +374,14 @@ function CustomerCreditSales({ customerId }) {
 function TransactionHistory({ customerId }) {
   const navigate    = useNavigate();
   const [page, setPage] = useState(1);
-  const { items, total, isLoading } = useCustomerTransactions(customerId, { page, limit: 10 });
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const { items, total, isLoading } = useCustomerTransactions(customerId, {
+    page,
+    limit: 10,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
+  });
 
   const columns = useMemo(() => [
     {
@@ -432,20 +439,32 @@ function TransactionHistory({ customerId }) {
   ], [navigate]);
 
   return (
-    <DataTable
-      columns={columns}
-      data={items}
-      isLoading={isLoading}
-      onRowClick={(row) => navigate(`/transactions/${row.id}`)}
-      pagination={{ page, pageSize: 10, total, onPageChange: setPage }}
-      emptyState={
-        <EmptyState
-          icon={Receipt}
-          title="No transactions"
-          description="This customer has no transactions yet."
-        />
-      }
-    />
+    <div className="space-y-3">
+      <div className="flex items-end gap-2">
+        <div className="space-y-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">From</label>
+          <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} className="h-8 text-xs" />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">To</label>
+          <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} className="h-8 text-xs" />
+        </div>
+      </div>
+      <DataTable
+        columns={columns}
+        data={items}
+        isLoading={isLoading}
+        onRowClick={(row) => navigate(`/transactions/${row.id}`)}
+        pagination={{ page, pageSize: 10, total, onPageChange: setPage }}
+        emptyState={
+          <EmptyState
+            icon={Receipt}
+            title="No transactions"
+            description="This customer has no transactions yet."
+          />
+        }
+      />
+    </div>
   );
 }
 
@@ -461,6 +480,8 @@ export function CustomerDetailPanel() {
   const [toggleOpen, setToggleOpen] = useState(false);
 
   const { customer, stats, isLoading, error, update, activate, deactivate } = useCustomer(customerId);
+  // Live loyalty balance — authoritative source for the KPI card
+  const { balance: loyaltyBalanceData } = useCustomerLoyalty(customerId);
 
   if (isLoading) return <Spinner />;
   if (error || !customer) return (
@@ -483,7 +504,7 @@ export function CustomerDetailPanel() {
       toast.success(customer.is_active ? "Customer deactivated." : "Customer activated.");
       setToggleOpen(false);
     } catch (err) {
-      toast.error(err?.message ?? "Action failed.");
+      toast.error(typeof err === "string" ? err : (err?.message ?? "Action failed."));
     }
   };
 
@@ -491,7 +512,7 @@ export function CustomerDetailPanel() {
   const outstanding       = stats ? parseFloat(stats.outstanding_balance)  : parseFloat(customer.outstanding_balance ?? 0);
   const creditLimit       = stats ? parseFloat(stats.credit_limit)         : parseFloat(customer.credit_limit ?? 0);
   const availableCredit   = stats ? parseFloat(stats.available_credit)     : Math.max(0, creditLimit - outstanding);
-  const creditEnabled     = stats ? stats.credit_enabled                   : customer.credit_enabled ?? false;
+  const creditEnabled     = (customer.credit_enabled ?? false) || (stats?.credit_enabled ?? false);
   const totalTransactions = stats?.total_transactions ?? 0;
 
   return (
@@ -557,8 +578,10 @@ export function CustomerDetailPanel() {
             />
             <StatCard
               label="Loyalty Points"
-              value={customer.loyalty_points ?? 0}
-              sub="reward points earned"
+              value={(parseInt(loyaltyBalanceData?.points ?? customer.loyalty_points ?? 0, 10)).toLocaleString()}
+              sub={loyaltyBalanceData?.naira_value
+                ? `≈ ${formatCurrency(parseFloat(loyaltyBalanceData.naira_value))} value`
+                : "reward points earned"}
               accent="default"
             />
           </div>
@@ -682,7 +705,7 @@ export function CustomerDetailPanel() {
               icon={CreditCard}
               action={
                 <Link
-                  to="/credit-sales"
+                  to={`/credit-sales?customer_id=${customerId}`}
                   className="flex items-center gap-1 text-[11px] text-primary hover:underline"
                 >
                   View All <ArrowUpRight className="h-3 w-3" />

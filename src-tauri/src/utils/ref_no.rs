@@ -76,6 +76,58 @@ pub async fn next_series_ref_no(pool: &PgPool, store_id: i32, doc_type: &str) ->
     }
 }
 
+async fn next_series_ref_no_exec(
+    executor: &mut sqlx::PgConnection,
+    store_id: i32,
+    doc_type: &str,
+) -> String {
+    let (default_prefix, default_suffix, default_pad): (&str, &str, i32) = match doc_type {
+        "invoice"        => ("TNX-", "",    4),
+        "return"         => ("RTN-", "",    5),
+        "purchase_order" => ("PO-",  "",    4),
+        "receipt"        => ("RCP-", "",    5),
+        _                => ("TNX-", "",    4),
+    };
+
+    // Ensure a row exists so the UPDATE below always hits something.
+    let _ = sqlx::query(
+        "INSERT INTO number_series (store_id, doc_type, prefix, suffix, pad_length, next_number)
+         VALUES ($1, $2, $3, $4, $5, 1)
+         ON CONFLICT (store_id, doc_type) DO NOTHING",
+    )
+    .bind(store_id)
+    .bind(doc_type)
+    .bind(default_prefix)
+    .bind(default_suffix)
+    .bind(default_pad)
+    .execute(&mut *executor)
+    .await;
+
+    // Atomic increment — returns (value_used, prefix, suffix, pad_length).
+    let row: Result<Option<(i64, String, String, i32)>, _> = sqlx::query_as(
+        "UPDATE number_series
+         SET next_number = next_number + 1, updated_at = NOW()
+         WHERE store_id = $1 AND doc_type = $2
+         RETURNING next_number - 1, prefix, suffix, pad_length",
+    )
+    .bind(store_id)
+    .bind(doc_type)
+    .fetch_optional(&mut *executor)
+    .await;
+
+    match row.ok().flatten() {
+        Some((n, prefix, suffix, pad)) => {
+            let seq = format!("{:0>width$}", n, width = pad as usize);
+            if suffix.is_empty() {
+                format!("{}{}", prefix, seq)
+            } else {
+                format!("{}{}-{}", prefix, seq, suffix)
+            }
+        }
+        None => format!("{}{}", default_prefix, Utc::now().timestamp()),
+    }
+}
+
 /// Atomically increment and return the next reference number for a store.
 ///
 /// Falls back to a timestamp-based value if the row doesn't exist yet
@@ -198,12 +250,41 @@ pub async fn next_txn_ref_no(pool: &PgPool, store_id: i32, _slug: &str) -> Strin
     next_series_ref_no(pool, store_id, "invoice").await
 }
 
+/// Same as [`next_txn_ref_no`], but uses an `Executor` so it can be called inside
+/// a SQL transaction and roll back cleanly on abort.
+pub async fn next_txn_ref_no_exec(
+    executor: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    store_id: i32,
+    _slug: &str,
+) -> String {
+    next_series_ref_no_exec(executor.as_mut(), store_id, "invoice").await
+}
+
 /// Generate the next return reference number for a store.
 ///
 /// Delegates to `next_series_ref_no` with doc_type `"return"`.
 /// The `_slug` parameter is kept for call-site compatibility but ignored.
 pub async fn next_ret_ref_no(pool: &PgPool, store_id: i32, _slug: &str) -> String {
     next_series_ref_no(pool, store_id, "return").await
+}
+
+/// Same as [`next_ret_ref_no`], but uses an `Executor` so it can be called inside
+/// a SQL transaction and roll back cleanly on abort.
+pub async fn next_ret_ref_no_exec(
+    executor: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    store_id: i32,
+    _slug: &str,
+) -> String {
+    next_series_ref_no_exec(executor.as_mut(), store_id, "return").await
+}
+
+/// Generate the next purchase order reference number for a store, inside an
+/// existing SQL transaction.
+pub async fn next_po_ref_no_exec(
+    executor: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    store_id: i32,
+) -> String {
+    next_series_ref_no_exec(executor.as_mut(), store_id, "purchase_order").await
 }
 
 /// Generate the next unique item SKU for a store.

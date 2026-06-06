@@ -44,12 +44,15 @@ export function useCustomerLoyalty(customerId) {
     staleTime: 60_000,
   });
 
-  const { data: history = [], isLoading: loadingHistory } = useQuery({
+  const { data: historyRaw = [], isLoading: loadingHistory } = useQuery({
     queryKey: ["loyalty-history", customerId],
     queryFn:  () => getLoyaltyHistory(customerId, 50),
     enabled:  !!customerId,
     staleTime: 60_000,
   });
+
+  // getLoyaltyHistory returns Vec<LoyaltyTransaction> directly (not paginated)
+  const history = Array.isArray(historyRaw) ? historyRaw : (historyRaw?.data ?? []);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["loyalty-balance",  customerId] });

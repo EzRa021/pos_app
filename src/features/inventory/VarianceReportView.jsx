@@ -134,7 +134,8 @@ export function VarianceReportView({ sessionId }) {
   // Prevents re-applying to an already-fully-adjusted session or an in-progress one.
   const isCompleted   = session.status === "completed";
   const hasUnadjusted = isCompleted && items.some(
-    (i) => !i.is_adjusted && parseFloat(i.variance_quantity ?? 0) !== 0,
+    (i) => (i.is_adjusted === false || i.is_adjusted === null || i.is_adjusted === undefined)
+        && parseFloat(i.variance_quantity ?? 0) !== 0,
   );
 
   const filteredItems = items.filter((item) => {

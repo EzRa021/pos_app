@@ -132,7 +132,7 @@ export function AdjustInventoryDialog({ open, onOpenChange, item, mutation }) {
 
             <div className="flex gap-2 pt-1">
               <Button type="button" variant="outline" className="flex-1" disabled={mutation.isPending} onClick={() => onOpenChange(false)}>Cancel</Button>
-              <Button type="submit" className="flex-1" disabled={mutation.isPending || !adj || !reason}>
+              <Button type="submit" className="flex-1" disabled={mutation.isPending || !adj || !reason || parseFloat(adj) === 0 || isNaN(parseFloat(adj))}>
                 {mutation.isPending ? "Adjusting…" : "Apply Adjustment"}
               </Button>
             </div>

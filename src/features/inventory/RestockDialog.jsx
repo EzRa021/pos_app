@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { useState, useEffect } from "react";
+import { toast } from "sonner";
 import { Package, Plus } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -26,8 +27,13 @@ export function RestockDialog({ open, onOpenChange, item, mutation }) {
     e.preventDefault();
     const q = parseFloat(qty);
     if (!q || q <= 0) return;
+    const itemId = item?.id ?? item?.item_id;
+    if (!itemId) {
+      toast.error("Cannot determine item ID. Please close and reopen this dialog.");
+      return;
+    }
     mutation.mutate(
-      { itemId: item?.id ?? item?.item_id, quantity: q, note: note || null },
+      { itemId, quantity: q, note: note || null },
       { onSuccess: () => onOpenChange(false) },
     );
   }

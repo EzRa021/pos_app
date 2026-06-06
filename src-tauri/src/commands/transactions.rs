@@ -26,7 +26,7 @@ use crate::{
 };
 use super::auth::{guard, guard_permission};
 use super::audit::write_audit_log;
-use crate::utils::ref_no::{next_txn_ref_no, next_ret_ref_no, store_txn_slug};
+use crate::utils::ref_no::{next_txn_ref_no_exec, next_ret_ref_no, store_txn_slug};
 
 // ── VAT helpers (inclusive pricing — Nigeria standard) ────────────────────────
 
@@ -72,10 +72,12 @@ async fn fetch_transaction_items(pool: &sqlx::PgPool, tx_id: i32) -> AppResult<V
     sqlx::query_as!(
         TransactionItem,
         r#"SELECT ti.id, ti.tx_id, ti.item_id, ti.item_name, ti.sku,
+                  i.barcode                            AS "barcode?",
                   ti.quantity, ti.unit_price, ti.discount,
                   ti.tax_amount, ti.line_total,
                   ti.measurement_type, ti.unit_type
            FROM   transaction_items ti
+           JOIN   items i ON i.id = ti.item_id
            WHERE  ti.tx_id = $1
            ORDER  BY ti.id"#,
         tx_id
@@ -190,7 +192,6 @@ pub async fn create_transaction(
                 id:                   r.id,
                 item_name:            r.item_name,
                 sku:                  r.sku,
-                // cost_price fetched in the initial bulk query — no N+1 needed
                 cost_price:           r.cost_price,
                 selling_price:        r.selling_price,
                 discount_price:         r.discount_price,
@@ -214,24 +215,24 @@ pub async fn create_transaction(
     // ── STEP 5: Validate items and build line items ────────────────────────────
     #[allow(dead_code)]
     struct LineItem {
-        item_id:          Uuid,
-        item_name:        String,
-        sku:              String,
-        quantity:         Decimal,
-        unit_price:       Decimal,
-        item_discount:    Decimal,
-        cost_price:       Decimal,
-        net_amount:       Decimal,
-        vat_amount:       Decimal,
-        line_total:       Decimal,
-        track_stock:      bool,
-        measurement_type: String,
-        unit_type:        Option<String>,
+        item_id:             Uuid,
+        item_name:           String,
+        sku:                 String,
+        quantity:            Decimal,
+        unit_price:          Decimal,
+        item_discount:       Decimal,
+        cost_price:          Decimal,
+        net_amount:          Decimal,
+        vat_amount:          Decimal,
+        line_total:          Decimal,
+        track_stock:         bool,
+        allow_negative_stock: bool,
+        measurement_type:    String,
+        unit_type:           Option<String>,
     }
 
     let mut line_items: Vec<LineItem> = Vec::new();
 
-    // Load store settings (non-fatal — if missing, use permissive defaults)
     let store_settings = super::store_settings::fetch_settings(&pool, payload.store_id).await.ok();
 
     for dto_item in &payload.items {
@@ -254,16 +255,13 @@ pub async fn create_transaction(
             )));
         }
 
-        // Only use discount_price when the toggle is explicitly enabled.
         let unit_price = if item.discount_price_enabled {
             item.discount_price.unwrap_or(item.selling_price)
         } else {
             item.selling_price
         };
-        // cost_price was fetched in the bulk item query — no extra round-trip needed
         let cost_price_for_item = item.cost_price;
 
-        // Fix 6a: warn_sell_below_cost check
         if let Some(ref s) = store_settings {
             if s.warn_sell_below_cost && unit_price < cost_price_for_item {
                 eprintln!("[WARN] Selling '{}' below cost (sell: {}, cost: {})", item.item_name, unit_price, cost_price_for_item);
@@ -283,28 +281,27 @@ pub async fn create_transaction(
             }
         }
 
-        let tax_rate    = if item.taxable { item.tax_rate } else { Decimal::ZERO };
-        // Apply the cashier's per-line discount (flat amount) before VAT extraction
-        // so VAT is correctly computed on the actual charged amount, not the full price.
+        let tax_rate      = if item.taxable { item.tax_rate } else { Decimal::ZERO };
         let item_discount = to_dec(dto_item.discount.unwrap_or(0.0)).max(Decimal::ZERO);
         let gross         = ((unit_price * qty) - item_discount).max(Decimal::ZERO);
         let vat_amount    = vat_from_inclusive(gross, tax_rate);
         let net_amount    = net_from_inclusive(gross, vat_amount);
 
         line_items.push(LineItem {
-            item_id:          item.id,
-            item_name:        item.item_name.clone(),
-            sku:              item.sku.clone(),
-            quantity:         qty,
+            item_id:              item.id,
+            item_name:            item.item_name.clone(),
+            sku:                  item.sku.clone(),
+            quantity:             qty,
             unit_price,
             item_discount,
-            cost_price:       cost_price_for_item,
+            cost_price:           cost_price_for_item,
             net_amount,
             vat_amount,
-            line_total:       gross,
-            track_stock:      item.track_stock,
-            measurement_type: item.measurement_type.clone(),
-            unit_type:        item.unit_type.clone(),
+            line_total:           gross,
+            track_stock:          item.track_stock,
+            allow_negative_stock: item.allow_negative_stock,
+            measurement_type:     item.measurement_type.clone(),
+            unit_type:            item.unit_type.clone(),
         });
     }
 
@@ -316,9 +313,7 @@ pub async fn create_transaction(
     let amount_tend     = payload.amount_tendered.map(to_dec);
     let change_amount   = amount_tend.map(|t| if t >= total_amount { t - total_amount } else { Decimal::ZERO });
 
-    // ── Fix 6b: store_settings enforcement — discount cap & customer requirement ──
     if let Some(ref s) = store_settings {
-        // Discount percent limit
         if discount_amount > Decimal::ZERO && (subtotal + total_tax) > Decimal::ZERO {
             let pct = (discount_amount / (subtotal + total_tax) * Decimal::from(100)).round_dp(2);
             if pct > s.max_discount_percent {
@@ -328,7 +323,6 @@ pub async fn create_transaction(
                 )));
             }
         }
-        // Customer required above threshold
         if let Some(threshold) = s.require_customer_above_amount {
             if total_amount > threshold && payload.customer_id.is_none() {
                 return Err(AppError::Validation(format!(
@@ -339,58 +333,61 @@ pub async fn create_transaction(
         }
     }
 
-    // ── STEP 7: Credit limit check ────────────────────────────────────────────
-    if payload.payment_method == "credit" {
-        if let Some(cust_id) = payload.customer_id {
-            let row = sqlx::query!(
-                r#"SELECT credit_limit       AS "credit_limit: Decimal",
-                          outstanding_balance AS "outstanding_balance: Decimal",
-                          credit_enabled      AS "credit_enabled!: bool"
-                   FROM customers WHERE id = $1 AND store_id = $2"#,
-                cust_id, payload.store_id,
-            )
-            .fetch_optional(&pool)
-            .await?
-            .ok_or_else(|| AppError::Validation("Customer not found".into()))?;
+    // ── STEP 8: Begin DB transaction ──────────────────────────────────────────
+    let mut db_tx = pool.begin().await?;
 
-            if !row.credit_enabled {
-                return Err(AppError::Validation("Credit sales are not enabled for this customer".into()));
-            }
-            // Only enforce the credit cap when a limit > 0 is explicitly set.
-            // credit_limit = 0 means "no limit configured" (unlimited credit).
-            if row.credit_limit > Decimal::ZERO {
-                let available = row.credit_limit - row.outstanding_balance;
-                if total_amount > available {
-                    return Err(AppError::Validation(format!(
-                        "Insufficient credit. Available: ₦{}, Required: ₦{}",
-                        available.round_dp(2), total_amount.round_dp(2)
-                    )));
-                }
+    // ── Credit limit + wallet sufficiency checks (inside db_tx, race-safe) ────
+    if payload.payment_method == "credit" {
+        let cust_id = payload.customer_id.ok_or_else(||
+            AppError::Validation("Customer is required for credit sales".into())
+        )?;
+        // BACKEND FAULT #5 fix: lock customer row and enforce credit headroom
+        let row = sqlx::query!(
+            r#"SELECT credit_limit       AS "credit_limit: Decimal",
+                      outstanding_balance AS "outstanding_balance: Decimal",
+                      credit_enabled      AS "credit_enabled!: bool"
+               FROM customers WHERE id = $1 AND store_id = $2
+               FOR UPDATE"#,
+            cust_id, payload.store_id,
+        )
+        .fetch_optional(&mut *db_tx)
+        .await?
+        .ok_or_else(|| AppError::Validation("Customer not found".into()))?;
+
+        if !row.credit_enabled {
+            return Err(AppError::Validation("Credit sales are not enabled for this customer".into()));
+        }
+        if row.credit_limit > Decimal::ZERO {
+            let available = (row.credit_limit - row.outstanding_balance).max(Decimal::ZERO);
+            if total_amount > available {
+                return Err(AppError::Validation(format!(
+                    "Credit limit exceeded. Customer has ₦{} available credit, sale is ₦{}.",
+                    available.round_dp(2),
+                    total_amount.round_dp(2),
+                )));
             }
         }
     }
 
-    // ── Fix Bug 2: wallet balance pre-check ───────────────────────────────────
     if payload.payment_method == "wallet" {
         let cust_id = payload.customer_id.ok_or_else(||
             AppError::Validation("Customer is required for wallet payments".into())
         )?;
-        let balance: Option<Decimal> = sqlx::query_scalar!(
-            "SELECT wallet_balance FROM customers WHERE id = $1 AND store_id = $2",
+        // BACKEND FAULT #12 fix: lock wallet balance inside tx
+        let balance: Decimal = sqlx::query_scalar!(
+            "SELECT COALESCE(wallet_balance, 0) AS \"wallet_balance!: Decimal\" FROM customers WHERE id = $1 AND store_id = $2 FOR UPDATE",
             cust_id, payload.store_id,
         )
-        .fetch_optional(&pool)
-        .await?;
-        if balance.unwrap_or_default() < total_amount {
+        .fetch_optional(&mut *db_tx)
+        .await?
+        .unwrap_or(Decimal::ZERO);
+        if balance < total_amount {
             return Err(AppError::Validation(format!(
                 "Insufficient wallet balance. Available: ₦{:.2}, Required: ₦{:.2}",
-                balance.unwrap_or_default().round_dp(2), total_amount.round_dp(2)
+                balance.round_dp(2), total_amount.round_dp(2)
             )));
         }
     }
-
-    // ── STEP 8: Begin DB transaction ──────────────────────────────────────────
-    let mut db_tx = pool.begin().await?;
 
     // ── STEP 9: Generate reference number (per-store sequential) ──────────────
     let store_row = sqlx::query!(
@@ -405,7 +402,9 @@ pub async fn create_transaction(
         store_row.as_ref().and_then(|r| r.store_code.as_deref()),
         store_row.as_ref().map(|r| r.store_name.as_str()).unwrap_or("STR"),
     );
-    let ref_no = next_txn_ref_no(&pool, payload.store_id, &txn_slug).await;
+    // FAULT #12 fix: generate `reference_no` inside the DB transaction so
+    // rollbacks revert the underlying counter increment.
+    let ref_no = next_txn_ref_no_exec(&mut db_tx, payload.store_id, &txn_slug).await;
 
     // ── STEP 10: Insert transaction record ────────────────────────────────────
     let is_credit      = payload.payment_method == "credit";
@@ -454,6 +453,24 @@ pub async fn create_transaction(
         .await?;
 
         if line.track_stock {
+            // FAULT #2 fix: re-check stock availability inside the transaction with FOR UPDATE
+            // to serialise concurrent sales on the same item.
+            let locked = sqlx::query!(
+                r#"SELECT available_quantity AS "available_quantity: Decimal"
+                   FROM item_stock WHERE item_id = $1 AND store_id = $2 FOR UPDATE"#,
+                line.item_id, payload.store_id,
+            )
+            .fetch_optional(&mut *db_tx)
+            .await?;
+            if let Some(locked_row) = locked {
+                if !line.allow_negative_stock && locked_row.available_quantity < line.quantity {
+                    return Err(AppError::Validation(format!(
+                        "Insufficient stock for '{}': available {}, requested {}",
+                        line.item_name, locked_row.available_quantity, line.quantity
+                    )));
+                }
+            }
+
             sqlx::query!(
                 r#"UPDATE item_stock
                    SET quantity = quantity - $1, available_quantity = available_quantity - $1, updated_at = NOW()
@@ -463,14 +480,8 @@ pub async fn create_transaction(
             .execute(&mut *db_tx)
             .await?;
 
-            let unit_label = line
-                .unit_type
-                .as_deref()
-                .unwrap_or("unit(s)");
-            let desc = format!(
-                "POS Sale — {} {} of {}",
-                line.quantity, unit_label, line.item_name
-            );
+            let unit_label = line.unit_type.as_deref().unwrap_or("unit(s)");
+            let desc = format!("POS Sale — {} {} of {}", line.quantity, unit_label, line.item_name);
             sqlx::query!(
                 r#"INSERT INTO item_history
                        (item_id, store_id, event_type, event_description,
@@ -497,7 +508,6 @@ pub async fn create_transaction(
     // ── STEP 12: Record payment / credit sale / wallet debit ──────────────────
     let is_split = payload.payment_method == "split";
     if is_split {
-        // Insert one Payment row per split leg so the breakdown is fully visible
         let legs = payload.split_payments.as_deref().unwrap_or(&[]);
         if legs.is_empty() {
             return Err(AppError::Validation(
@@ -514,7 +524,6 @@ pub async fn create_transaction(
             .execute(&mut *db_tx)
             .await?;
         }
-        // If there is also a wallet leg, debit the customer wallet
         if let Some(wallet_amt_f64) = payload.wallet_amount {
             let wallet_dec = to_dec(wallet_amt_f64);
             if wallet_dec > Decimal::ZERO {
@@ -524,7 +533,14 @@ pub async fn create_transaction(
                     )
                     .fetch_optional(&mut *db_tx)
                     .await?;
-                    let new_balance = (current_balance.unwrap_or_default() - wallet_dec).max(Decimal::ZERO);
+                    let current_balance = current_balance.unwrap_or_default();
+                    if current_balance < wallet_dec {
+                        return Err(AppError::Validation(format!(
+                            "Insufficient wallet balance. Available: ₦{:.2}, Required: ₦{:.2}",
+                            current_balance.round_dp(2), wallet_dec.round_dp(2)
+                        )));
+                    }
+                    let new_balance = current_balance - wallet_dec;
                     sqlx::query!(
                         "UPDATE customers SET wallet_balance = $1, updated_at = NOW() WHERE id = $2",
                         new_balance, customer_id,
@@ -570,7 +586,6 @@ pub async fn create_transaction(
             .await?;
         }
     } else if is_wallet {
-        // Fix Bug 2: Debit wallet within the same DB transaction
         if let Some(customer_id) = payload.customer_id {
             let current_balance: Option<Decimal> = sqlx::query_scalar!(
                 "SELECT wallet_balance FROM customers WHERE id = $1 FOR UPDATE", customer_id,
@@ -578,7 +593,14 @@ pub async fn create_transaction(
             .fetch_optional(&mut *db_tx)
             .await?;
 
-            let new_balance = (current_balance.unwrap_or_default() - total_amount).max(Decimal::ZERO);
+            let current_balance = current_balance.unwrap_or_default();
+            if current_balance < total_amount {
+                return Err(AppError::Validation(format!(
+                    "Insufficient wallet balance. Available: ₦{:.2}, Required: ₦{:.2}",
+                    current_balance.round_dp(2), total_amount.round_dp(2)
+                )));
+            }
+            let new_balance = current_balance - total_amount;
             sqlx::query!(
                 "UPDATE customers SET wallet_balance = $1, updated_at = NOW() WHERE id = $2",
                 new_balance, customer_id,
@@ -597,7 +619,6 @@ pub async fn create_transaction(
             .execute(&mut *db_tx)
             .await?;
 
-            // Record as a payment entry too
             sqlx::query!(
                 r#"INSERT INTO payments (transaction_id, payment_method, amount, status, processed_by)
                    VALUES ($1,'wallet',$2,'completed',$3)"#,
@@ -617,7 +638,6 @@ pub async fn create_transaction(
 
     // ── STEP 14: Link sale to active shift ────────────────────────────────────
     let zero = Decimal::ZERO;
-    // For split payments, accumulate each method's contribution from the individual legs
     let (cash_inc, card_inc, xfer_inc, mobile_inc) = if is_split {
         let legs = payload.split_payments.as_deref().unwrap_or(&[]);
         let mut cash   = zero;
@@ -665,9 +685,7 @@ pub async fn create_transaction(
 
     db_tx.commit().await?;
 
-    // ════════════════════════════════════════════════════════════════════════════
-    // CLOUD SYNC — queue this transaction for replication (non-fatal)
-    // ════════════════════════════════════════════════════════════════════════════
+    // ── Cloud sync ────────────────────────────────────────────────────────────
     {
         let sync_data = serde_json::json!({
             "id":             tx_id,
@@ -695,7 +713,6 @@ pub async fn create_transaction(
         )
         .await;
 
-        // Queue each transaction_item row
         for line in &line_items {
             crate::database::sync::queue_row(
                 &pool,
@@ -716,7 +733,6 @@ pub async fn create_transaction(
             .await;
         }
 
-        // Queue payment row(s)
         crate::database::sync::queue_row(
             &pool,
             "payments",
@@ -732,7 +748,6 @@ pub async fn create_transaction(
         )
         .await;
 
-        // Queue credit_sale row if this was a credit transaction
         if is_credit {
             if let Some(customer_id) = payload.customer_id {
                 crate::database::sync::queue_row(
@@ -752,52 +767,87 @@ pub async fn create_transaction(
                     Some(payload.store_id),
                 )
                 .await;
+                crate::database::sync::queue_row(
+                    &pool,
+                    "customers",
+                    "UPDATE",
+                    &customer_id.to_string(),
+                    serde_json::json!({ "id": customer_id, "store_id": payload.store_id }),
+                    Some(payload.store_id),
+                )
+                .await;
+            }
+        }
+        if is_wallet {
+            if let Some(customer_id) = payload.customer_id {
+                crate::database::sync::queue_row(
+                    &pool,
+                    "customers",
+                    "UPDATE",
+                    &customer_id.to_string(),
+                    serde_json::json!({ "id": customer_id, "store_id": payload.store_id }),
+                    Some(payload.store_id),
+                )
+                .await;
+                crate::database::sync::queue_row(
+                    &pool,
+                    "customer_wallet_transactions",
+                    "INSERT",
+                    &format!("tx:{}", tx_id),
+                    serde_json::json!({ "transaction_id": tx_id, "customer_id": customer_id, "store_id": payload.store_id, "type": "debit", "amount": total_amount.to_string() }),
+                    Some(payload.store_id),
+                )
+                .await;
+            }
+        }
+        if is_split {
+            if let (Some(customer_id), Some(wallet_amt)) = (payload.customer_id, payload.wallet_amount) {
+                let wallet_dec = to_dec(wallet_amt);
+                if wallet_dec > Decimal::ZERO {
+                    crate::database::sync::queue_row(
+                        &pool,
+                        "customers",
+                        "UPDATE",
+                        &customer_id.to_string(),
+                        serde_json::json!({ "id": customer_id, "store_id": payload.store_id }),
+                        Some(payload.store_id),
+                    )
+                    .await;
+                    crate::database::sync::queue_row(
+                        &pool,
+                        "customer_wallet_transactions",
+                        "INSERT",
+                        &format!("tx:{}:wallet", tx_id),
+                        serde_json::json!({ "transaction_id": tx_id, "customer_id": customer_id, "store_id": payload.store_id, "type": "debit", "amount": wallet_dec.to_string() }),
+                        Some(payload.store_id),
+                    )
+                    .await;
+                }
             }
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════════════
-    // POST-COMMIT HOOKS (non-fatal — errors are logged, sale already committed)
-    // ════════════════════════════════════════════════════════════════════════════
-
-    // ── Earn loyalty points (non-credit, non-fatal) ────────────────────────────────────
-    // earn_points_internal is the ONLY place earn logic runs. The frontend
-    // must NOT also call earnPoints — that would double-credit the customer.
+    // ── Post-commit hooks ─────────────────────────────────────────────────────
     if let Some(customer_id) = payload.customer_id {
         if !is_credit {
             super::loyalty::earn_points_internal(
-                &pool,
-                payload.store_id,
-                customer_id,
-                tx_id,
-                total_amount,
-                claims.user_id,
+                &pool, payload.store_id, customer_id, tx_id, total_amount, claims.user_id,
             )
             .await
-            .ok(); // non-fatal
+            .ok();
         }
     }
 
-    // ── Redeem loyalty points if the cashier applied them as payment ────────────
-    // loyalty_points_redeemed is forwarded from the POS loyalty toggle.
-    // Running after earn_points_internal means the customer's balance reflects
-    // the earn THEN the deduction — keeping balance_after accurate in the log.
     if let (Some(customer_id), Some(pts)) = (payload.customer_id, payload.loyalty_points_redeemed) {
         if pts > 0 && !is_credit {
             super::loyalty::redeem_points_internal(
-                &pool,
-                payload.store_id,
-                customer_id,
-                tx_id,
-                pts,
-                claims.user_id,
+                &pool, payload.store_id, customer_id, tx_id, pts, claims.user_id,
             )
             .await
-            .ok(); // non-fatal
+            .ok();
         }
     }
 
-    // Fix 4 + 5: Check reorder alerts after stock deductions; push notifications for new alerts
     {
         let new_alert_count: u64 = sqlx::query!(
             r#"INSERT INTO reorder_alerts (item_id, store_id, current_qty, min_stock_level)
@@ -826,13 +876,12 @@ pub async fn create_transaction(
         .map(|r| r.rows_affected())
         .unwrap_or(0);
 
-        // Fix 5: Push notification if any new low-stock alerts were raised
         if new_alert_count > 0 {
             super::notifications::push_notification(
                 &pool,
                 CreateNotificationDto {
                     store_id:       payload.store_id,
-                    user_id:        None, // broadcast to all managers
+                    user_id:        None,
                     r#type:         "low_stock".into(),
                     title:          "Low Stock Alert".into(),
                     message:        format!("{new_alert_count} item(s) have fallen below reorder level"),
@@ -867,22 +916,30 @@ pub async fn get_transactions(
     let limit  = filters.limit.unwrap_or(25).clamp(1, 200);
     let offset = (page - 1) * limit;
 
-    // Build the search pattern once — wraps the term in % for ILIKE
     let search = filters.search
         .as_ref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| format!("%{s}%"));
 
-    // date_from: inclusive start   (cast to timestamptz, defaults to start of day)
-    // date_to:   inclusive end day (add 1 day so the entire last day is included)
-    let df = filters.date_from.as_deref();
-    let dt = filters.date_to.as_deref();
+    // UPGRADE #7: validate date strings before handing to PostgreSQL cast
+    if let Some(ref df_str) = filters.date_from {
+        if !df_str.is_empty() {
+            df_str.parse::<chrono::NaiveDate>()
+                .map_err(|_| AppError::Validation("Invalid date_from format. Expected YYYY-MM-DD".into()))?;
+        }
+    }
+    if let Some(ref dt_str) = filters.date_to {
+        if !dt_str.is_empty() {
+            dt_str.parse::<chrono::NaiveDate>()
+                .map_err(|_| AppError::Validation("Invalid date_to format. Expected YYYY-MM-DD".into()))?;
+        }
+    }
 
+    let df = filters.date_from.as_deref().filter(|s| !s.is_empty());
+    let dt = filters.date_to.as_deref().filter(|s| !s.is_empty());
     let ps = filters.payment_status.as_deref();
 
-    // ── COUNT (same WHERE conditions, no ORDER/LIMIT) ──────────────────────────
-    // LEFT JOINs are required here too because the search touches joined columns.
     let total: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*)
            FROM   transactions t
@@ -917,7 +974,6 @@ pub async fn get_transactions(
     .await?
     .unwrap_or(0);
 
-    // ── DATA (same WHERE, with ORDER BY + LIMIT/OFFSET) ────────────────────────
     let txns = sqlx::query_as!(
         Transaction,
         r#"SELECT t.id, t.reference_no, t.store_id, t.cashier_id,
@@ -974,23 +1030,32 @@ pub async fn get_transaction_stats(
     token:    String,
     store_id: Option<i32>,
 ) -> AppResult<TransactionStats> {
-    guard_permission(&state, &token, "transactions.read").await?;
-    let pool = state.pool().await?;
+    // RISK #1 fix: enforce store scope for non-global users
+    let claims = guard_permission(&state, &token, "transactions.read").await?;
+    let pool   = state.pool().await?;
+
+    let effective_store_id = if claims.is_global { store_id } else { claims.store_id };
 
     let row = sqlx::query!(
         r#"SELECT
-               COUNT(*)                                                                               AS "total!: i64",
-               COUNT(*) FILTER (WHERE t.status = 'completed')                                        AS "completed!: i64",
-               COUNT(*) FILTER (WHERE t.status = 'voided')                                           AS "voided!: i64",
-               COUNT(*) FILTER (WHERE t.status IN ('refunded', 'partially_refunded'))                 AS "refunded!: i64",
-               COUNT(*) FILTER (WHERE DATE(t.created_at) = CURRENT_DATE AND t.status = 'completed')  AS "today_count!: i64",
+               COUNT(*)                                                                                AS "total!: i64",
+               COUNT(*) FILTER (WHERE t.status = 'completed')                                         AS "completed!: i64",
+               COUNT(*) FILTER (WHERE t.status = 'voided')                                            AS "voided!: i64",
+               COUNT(*) FILTER (WHERE t.status IN ('refunded', 'partially_refunded'))                  AS "refunded!: i64",
+               COUNT(*) FILTER (
+                   WHERE DATE(t.created_at AT TIME ZONE 'Africa/Lagos') = CURRENT_DATE AT TIME ZONE 'Africa/Lagos'
+                     AND t.status = 'completed'
+               )                                                                                       AS "today_count!: i64",
                COALESCE(
-                   SUM(t.total_amount) FILTER (WHERE DATE(t.created_at) = CURRENT_DATE AND t.status = 'completed'),
+                   SUM(t.total_amount) FILTER (
+                       WHERE DATE(t.created_at AT TIME ZONE 'Africa/Lagos') = CURRENT_DATE AT TIME ZONE 'Africa/Lagos'
+                         AND t.status = 'completed'
+                   ),
                    0
-               )                                                                                      AS "today_revenue!: Decimal"
+               )                                                                                       AS "today_revenue!: Decimal"
            FROM transactions t
            WHERE ($1::int IS NULL OR t.store_id = $1)"#,
-        store_id,
+        effective_store_id,
     )
     .fetch_one(&pool)
     .await?;
@@ -1013,11 +1078,18 @@ pub async fn get_transaction(
     token: String,
     id:    i32,
 ) -> AppResult<TransactionDetail> {
-    guard_permission(&state, &token, "transactions.read").await?;
-    let pool = state.pool().await?;
+    // RISK #1 fix: enforce store scope for non-global users
+    let claims = guard_permission(&state, &token, "transactions.read").await?;
+    let pool   = state.pool().await?;
     let transaction = fetch_transaction(&pool, id).await?;
-    let items       = fetch_transaction_items(&pool, id).await?;
-    let payments    = fetch_transaction_payments(&pool, id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if transaction.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+    let items    = fetch_transaction_items(&pool, id).await?;
+    let payments = fetch_transaction_payments(&pool, id).await?;
     Ok(TransactionDetail { transaction, items, payments })
 }
 
@@ -1036,7 +1108,6 @@ pub async fn void_transaction(
 
     let tx = fetch_transaction(&pool, id).await?;
 
-    // Scope check: non-global users can only void transactions within their own store
     if !claims.is_global {
         let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
         if tx.store_id != user_store {
@@ -1054,7 +1125,6 @@ pub async fn void_transaction(
         return Err(AppError::Validation("Only completed transactions can be voided".into()));
     }
 
-    // Fix 6c: enforce store_settings void rules
     let settings = super::store_settings::fetch_settings(&pool, tx.store_id).await.ok();
     if let Some(ref s) = settings {
         let now     = Utc::now().date_naive();
@@ -1071,7 +1141,6 @@ pub async fn void_transaction(
             }
         }
     } else {
-        // Default: same-day only
         let now     = Utc::now().date_naive();
         let tx_date = tx.created_at.date_naive();
         if tx_date != now {
@@ -1081,17 +1150,48 @@ pub async fn void_transaction(
 
     let mut db_tx = pool.begin().await?;
 
+    // FAULT #5 fix: preserve original notes; store reason in cancelled_reason (migration 0091)
     sqlx::query!(
         r#"UPDATE transactions
-           SET status = 'voided', payment_status = 'refunded',
-               cancelled_at = NOW(), cancelled_by = $1, notes = $2
-           WHERE id = $3"#,
-        claims.user_id, payload.reason, id,
+           SET status           = 'voided',
+               payment_status   = 'refunded',
+               cancelled_at     = NOW(),
+               cancelled_by     = $1,
+               cancelled_reason = $2,
+               notes            = CASE
+                   WHEN notes IS NULL OR notes = '' THEN 'VOID: ' || $2
+                   ELSE notes || ' | VOID: ' || $2
+               END
+                   || CASE
+                          WHEN $3::text IS NOT NULL AND $3::text <> '' THEN ' | ' || $3::text
+                          ELSE ''
+                      END
+           WHERE id = $4"#,
+        claims.user_id,
+        payload.reason,
+        payload.notes.as_deref(),
+        id,
     )
     .execute(&mut *db_tx)
     .await?;
 
-    let items = fetch_transaction_items(&pool, id).await?;
+    // FAULT #9 fix: fetch items inside the transaction for a consistent snapshot
+    let items = sqlx::query_as!(
+        TransactionItem,
+        r#"SELECT ti.id, ti.tx_id, ti.item_id, ti.item_name, ti.sku,
+                  i.barcode                            AS "barcode?",
+                  ti.quantity, ti.unit_price, ti.discount,
+                  ti.tax_amount, ti.line_total,
+                  ti.measurement_type, ti.unit_type
+           FROM   transaction_items ti
+           JOIN   items i ON i.id = ti.item_id
+           WHERE  ti.tx_id = $1
+           ORDER  BY ti.id"#,
+        id
+    )
+    .fetch_all(&mut *db_tx)
+    .await?;
+
     for item in &items {
         sqlx::query!(
             r#"UPDATE item_stock
@@ -1103,24 +1203,147 @@ pub async fn void_transaction(
         .execute(&mut *db_tx)
         .await?;
 
+        // FAULT #1 fix: use canonical item_history schema (event_type, quantity columns)
+        let desc = format!(
+            "Void Restore — {} of {} (void: {})",
+            item.quantity, item.item_name, payload.reason
+        );
         sqlx::query!(
-            r#"INSERT INTO item_history (item_id, store_id, change_type, adjustment, reason, created_by)
-               VALUES ($1,$2,'void_restore',$3,$4,$5)"#,
-            item.item_id, tx.store_id, item.quantity,
-            format!("Void: {}", payload.reason), claims.user_id,
+            r#"INSERT INTO item_history
+                   (item_id, store_id, event_type, event_description,
+                    quantity_before, quantity_after, quantity_change,
+                    performed_by, reference_type, reference_id, notes)
+               VALUES ($1,$2,'VOID_RESTORE',$3,
+                       (SELECT quantity - $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                       (SELECT quantity       FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                       $4,
+                       $5,'transaction',$6,$7)"#,
+            item.item_id, tx.store_id, desc,
+            item.quantity,
+            claims.user_id,
+            tx.reference_no,
+            payload.reason,
         )
         .execute(&mut *db_tx)
         .await?;
     }
 
+    // FAULT #4 fix: restore credit or wallet balance
+    if tx.payment_method == "credit" {
+        if let Some(cust_id) = tx.customer_id {
+            sqlx::query!(
+                "UPDATE credit_sales SET status = 'cancelled' WHERE transaction_id = $1",
+                id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+            sqlx::query!(
+                "UPDATE customers SET outstanding_balance = GREATEST(0, outstanding_balance - $1) WHERE id = $2",
+                tx.total_amount, cust_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+        }
+    } else if tx.payment_method == "wallet" {
+        if let Some(cust_id) = tx.customer_id {
+            sqlx::query!(
+                "UPDATE customers SET wallet_balance = wallet_balance + $1, updated_at = NOW() WHERE id = $2",
+                tx.total_amount, cust_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+            sqlx::query!(
+                r#"INSERT INTO customer_wallet_transactions
+                       (customer_id, store_id, type, amount, balance_after,
+                        transaction_id, recorded_by, notes)
+                   VALUES ($1,$2,'credit',$3,
+                           (SELECT wallet_balance FROM customers WHERE id = $1),
+                           $4,$5,'Refund: transaction voided')"#,
+                cust_id, tx.store_id, tx.total_amount,
+                id, claims.user_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+        }
+    }
+
+    // RISK #5 fix: decrement sales counters alongside the return counters
+    // so shift reconciliation doesn't get inflated (cash drawer should not
+    // count voided/refunded sales).
+    let zero = Decimal::ZERO;
+    let (cash_dec, card_dec, xfer_dec, mobile_dec) = if tx.payment_method == "split" {
+        // For split payments we mirror `create_transaction`'s shift accounting:
+        // only cash/card/transfer/mobile_money legs affect the per-method totals.
+        let cash_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'cash'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        let card_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'card'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        let xfer_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'transfer'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        let mobile_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'mobile_money'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        (cash_dec, card_dec, xfer_dec, mobile_dec)
+    } else {
+        match tx.payment_method.as_str() {
+            "cash"         => (tx.total_amount, zero,             zero,          zero),
+            "card"         => (zero,           tx.total_amount,  zero,          zero),
+            "transfer"     => (zero,           zero,             tx.total_amount, zero),
+            "mobile_money" => (zero,           zero,             zero,          tx.total_amount),
+            _              => (zero,           zero,             zero,          zero),
+        }
+    };
+
     sqlx::query!(
         "UPDATE shifts SET
             return_count  = COALESCE(return_count,  0) + 1,
             total_returns = COALESCE(total_returns, 0) + $1,
+            total_sales        = GREATEST(0, COALESCE(total_sales, 0) - $1),
+            total_cash_sales   = GREATEST(0, COALESCE(total_cash_sales, 0) - $2),
+            total_card_sales   = GREATEST(0, COALESCE(total_card_sales, 0) - $3),
+            total_transfers    = GREATEST(0, COALESCE(total_transfers, 0) - $4),
+            total_mobile_sales = GREATEST(0, COALESCE(total_mobile_sales, 0) - $5),
             updated_at    = NOW()
-         WHERE opened_by = $2 AND store_id = $3
+         WHERE opened_by = $6 AND store_id = $7
            AND status IN ('open', 'active', 'suspended')",
-        tx.total_amount, claims.user_id, tx.store_id,
+        tx.total_amount,
+        cash_dec,
+        card_dec,
+        xfer_dec,
+        mobile_dec,
+        claims.user_id,
+        tx.store_id,
     )
     .execute(&mut *db_tx)
     .await
@@ -1128,7 +1351,22 @@ pub async fn void_transaction(
 
     db_tx.commit().await?;
 
-    // Post-void notification
+    // FAULT #11 fix: queue void update for cloud sync
+    crate::database::sync::queue_row(
+        &pool,
+        "transactions",
+        "UPDATE",
+        &id.to_string(),
+        serde_json::json!({
+            "id":             id,
+            "status":         "voided",
+            "payment_status": "refunded",
+            "store_id":       tx.store_id,
+        }),
+        Some(tx.store_id),
+    )
+    .await;
+
     super::notifications::push_notification(
         &pool,
         CreateNotificationDto {
@@ -1165,7 +1403,6 @@ pub async fn partial_refund(
 
     let tx = fetch_transaction(&pool, id).await?;
 
-    // Scope check: non-global users can only refund transactions within their own store
     if !claims.is_global {
         let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
         if tx.store_id != user_store {
@@ -1198,6 +1435,7 @@ pub async fn partial_refund(
 
     let mut refund_lines: Vec<RefundLine> = Vec::new();
     let mut total_refund = Decimal::ZERO;
+    let mut refund_item_ids: Vec<Uuid> = Vec::new();
 
     for r_item in &payload.items {
         let qty = to_dec(r_item.quantity);
@@ -1207,24 +1445,32 @@ pub async fn partial_refund(
         let tx_item = tx_items_map.get(&r_item.item_id).ok_or_else(|| {
             AppError::Validation(format!("Item {} not found in this transaction", r_item.item_id))
         })?;
-        if qty > tx_item.quantity {
+
+        // FAULT #3 fix: account for previously returned quantities
+        let already_returned: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(ri.quantity_returned), 0) AS "qty: Decimal"
+               FROM return_items ri
+               JOIN returns r ON r.id = ri.return_id
+               WHERE r.original_tx_id = $1 AND ri.item_id = $2
+                 AND r.status != 'cancelled'"#,
+            id, tx_item.item_id,
+        )
+        .fetch_one(&pool)
+        .await?
+        .unwrap_or(Decimal::ZERO);
+
+        let returnable = tx_item.quantity - already_returned;
+        if qty > returnable {
             return Err(AppError::Validation(format!(
-                "Cannot refund more than sold for item '{}'. Sold: {}, Requested: {}",
-                tx_item.item_name, tx_item.quantity, qty
+                "Cannot return {} of '{}' — only {} returnable (sold: {}, already returned: {})",
+                qty, tx_item.item_name, returnable, tx_item.quantity, already_returned
             )));
         }
 
         let unit_refund = tx_item.line_total / tx_item.quantity;
         let item_refund = (unit_refund * qty).round_dp(2);
         total_refund   += item_refund;
-
-        let track_stock: bool = sqlx::query_scalar!(
-            "SELECT track_stock FROM item_settings WHERE item_id = $1 LIMIT 1",
-            tx_item.item_id,
-        )
-        .fetch_optional(&pool)
-        .await?
-        .unwrap_or(false);
+        refund_item_ids.push(tx_item.item_id);
 
         refund_lines.push(RefundLine {
             item_id:       tx_item.item_id,
@@ -1234,15 +1480,28 @@ pub async fn partial_refund(
             unit_price:    tx_item.unit_price,
             refund_amount: item_refund,
             reason:        r_item.reason.clone().unwrap_or_else(|| "Customer request".into()),
-            track_stock,
+            track_stock:   false, // filled in by batch query below
             store_id:      tx.store_id,
         });
     }
 
-    let refund_ref = format!("REF-{}-{}", tx.reference_no, Utc::now().timestamp());
-    let mut db_tx  = pool.begin().await?;
+    // FAULT #7 fix: batch track_stock lookup — one query for all refund items
+    let tracked_ids: std::collections::HashSet<Uuid> = sqlx::query_scalar!(
+        r#"SELECT item_id AS "item_id: Uuid"
+           FROM item_settings
+           WHERE item_id = ANY($1) AND track_stock = TRUE"#,
+        &refund_item_ids as &[Uuid],
+    )
+    .fetch_all(&pool)
+    .await?
+    .into_iter()
+    .collect();
 
-    // Generate a per-store reference number for this return record
+    for line in &mut refund_lines {
+        line.track_stock = tracked_ids.contains(&line.item_id);
+    }
+
+    // Generate return reference number before starting db_tx
     let refund_store_row = sqlx::query!(
         "SELECT store_name, store_code FROM stores WHERE id = $1",
         tx.store_id
@@ -1258,6 +1517,8 @@ pub async fn partial_refund(
     let return_ref_no = next_ret_ref_no(&pool, tx.store_id, &refund_slug).await;
 
     let return_reason = payload.notes.as_deref().unwrap_or("Partial refund");
+
+    let mut db_tx = pool.begin().await?;
 
     let return_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO returns
@@ -1300,10 +1561,26 @@ pub async fn partial_refund(
             .execute(&mut *db_tx)
             .await?;
 
+            // FAULT #1 fix: use canonical item_history schema
+            let desc = format!(
+                "Partial Refund Restore — {} of {} ({})",
+                line.quantity, line.item_name, line.reason
+            );
             sqlx::query!(
-                r#"INSERT INTO item_history (item_id, store_id, change_type, adjustment, reason, created_by)
-                   VALUES ($1,$2,'refund_restore',$3,$4,$5)"#,
-                line.item_id, line.store_id, line.quantity, line.reason, claims.user_id,
+                r#"INSERT INTO item_history
+                       (item_id, store_id, event_type, event_description,
+                        quantity_before, quantity_after, quantity_change,
+                        performed_by, reference_type, reference_id, notes)
+                   VALUES ($1,$2,'REFUND_RESTORE',$3,
+                           (SELECT quantity - $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           (SELECT quantity       FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           $4,
+                           $5,'return',$6,$7)"#,
+                line.item_id, line.store_id, desc,
+                line.quantity,
+                claims.user_id,
+                return_ref_no,
+                line.reason,
             )
             .execute(&mut *db_tx)
             .await?;
@@ -1321,14 +1598,40 @@ pub async fn partial_refund(
     .await?;
 
     let refund_method = format!("refund_{}", tx.payment_method);
+    // UPGRADE #4 fix: use sequential return_ref_no instead of timestamp-based string
     sqlx::query!(
         r#"INSERT INTO payments
                (transaction_id, payment_method, amount, status, processed_by, reference_no)
            VALUES ($1,$2,$3,'refunded',$4,$5)"#,
-        id, refund_method, -total_refund, claims.user_id, refund_ref,
+        id, refund_method, -total_refund, claims.user_id, return_ref_no,
     )
     .execute(&mut *db_tx)
     .await?;
+
+    // FAULT #10 fix: update credit_sales and customer balance for credit transactions
+    if tx.payment_method == "credit" {
+        if let Some(cust_id) = tx.customer_id {
+            sqlx::query!(
+                r#"UPDATE credit_sales
+                   SET outstanding  = GREATEST(0, outstanding - $1),
+                       amount_paid  = amount_paid + $1,
+                       status       = CASE
+                           WHEN GREATEST(0, outstanding - $1) = 0 THEN 'paid'
+                           ELSE status
+                       END
+                   WHERE transaction_id = $2"#,
+                total_refund, id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+            sqlx::query!(
+                "UPDATE customers SET outstanding_balance = GREATEST(0, outstanding_balance - $1) WHERE id = $2",
+                total_refund, cust_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+        }
+    }
 
     sqlx::query!(
         "UPDATE shifts SET
@@ -1344,6 +1647,21 @@ pub async fn partial_refund(
     .ok();
 
     db_tx.commit().await?;
+
+    // FAULT #11 fix: queue partial refund for cloud sync
+    crate::database::sync::queue_row(
+        &pool,
+        "transactions",
+        "UPDATE",
+        &id.to_string(),
+        serde_json::json!({
+            "id":             id,
+            "payment_status": "partially_refunded",
+            "store_id":       tx.store_id,
+        }),
+        Some(tx.store_id),
+    )
+    .await;
 
     write_audit_log(&pool, claims.user_id, Some(tx.store_id), "partial_refund", "transaction",
         &format!("Partial refund ₦{} on transaction {}", total_refund.round_dp(2), tx.reference_no), "warning").await;
@@ -1379,7 +1697,6 @@ pub async fn full_refund(
 
     let tx = fetch_transaction(&pool, id).await?;
 
-    // Scope check: non-global users can only refund transactions within their own store
     if !claims.is_global {
         let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
         if tx.store_id != user_store {
@@ -1395,17 +1712,39 @@ pub async fn full_refund(
     }
 
     let tx_items = fetch_transaction_items(&pool, id).await?;
+    let item_ids: Vec<Uuid> = tx_items.iter().map(|i| i.item_id).collect();
+
+    // FAULT #7 fix: batch track_stock lookup
+    let tracked_ids: std::collections::HashSet<Uuid> = sqlx::query_scalar!(
+        r#"SELECT item_id AS "item_id: Uuid"
+           FROM item_settings
+           WHERE item_id = ANY($1) AND track_stock = TRUE"#,
+        &item_ids as &[Uuid],
+    )
+    .fetch_all(&pool)
+    .await?
+    .into_iter()
+    .collect();
+
+    // FAULT #6 fix: generate a return reference number for the returns record
+    let refund_store_row = sqlx::query!(
+        "SELECT store_name, store_code FROM stores WHERE id = $1",
+        tx.store_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+    let refund_slug = store_txn_slug(
+        refund_store_row.as_ref().and_then(|r| r.store_code.as_deref()),
+        refund_store_row.as_ref().map(|r| r.store_name.as_str()).unwrap_or("STR"),
+    );
+    let return_ref_no = next_ret_ref_no(&pool, tx.store_id, &refund_slug).await;
+
     let mut db_tx = pool.begin().await?;
 
     for item in &tx_items {
-        let track_stock: bool = sqlx::query_scalar!(
-            "SELECT track_stock FROM item_settings WHERE item_id = $1 LIMIT 1",
-            item.item_id,
-        )
-        .fetch_optional(&pool)
-        .await?
-        .unwrap_or(false);
-
+        let track_stock = tracked_ids.contains(&item.item_id);
         if track_stock {
             sqlx::query!(
                 r#"UPDATE item_stock
@@ -1416,15 +1755,62 @@ pub async fn full_refund(
             .execute(&mut *db_tx)
             .await?;
 
+            // FAULT #1 fix: use canonical item_history schema
+            let desc = format!(
+                "Full Refund Restore — {} of {} ({})",
+                item.quantity, item.item_name, payload.reason
+            );
             sqlx::query!(
-                r#"INSERT INTO item_history (item_id, store_id, change_type, adjustment, reason, created_by)
-                   VALUES ($1,$2,'full_refund_restore',$3,$4,$5)"#,
-                item.item_id, tx.store_id, item.quantity,
-                payload.reason.as_str(), claims.user_id,
+                r#"INSERT INTO item_history
+                       (item_id, store_id, event_type, event_description,
+                        quantity_before, quantity_after, quantity_change,
+                        performed_by, reference_type, reference_id, notes)
+                   VALUES ($1,$2,'FULL_REFUND_RESTORE',$3,
+                           (SELECT quantity - $4 FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           (SELECT quantity       FROM item_stock WHERE item_id = $1 AND store_id = $2),
+                           $4,
+                           $5,'transaction',$6,$7)"#,
+                item.item_id, tx.store_id, desc,
+                item.quantity,
+                claims.user_id,
+                tx.reference_no,
+                payload.reason,
             )
             .execute(&mut *db_tx)
             .await?;
         }
+    }
+
+    // FAULT #6 fix: create a returns record so full refunds are visible in the returns module
+    let return_id: i32 = sqlx::query_scalar!(
+        r#"INSERT INTO returns
+               (reference_no, original_tx_id, store_id, cashier_id, customer_id,
+                return_type, subtotal, tax_amount, total_amount,
+                refund_method, reason, notes, status)
+           VALUES ($1,$2,$3,$4,$5,'full',0,0,$6,$7,$8,$8,'completed')
+           RETURNING id"#,
+        return_ref_no,
+        id, tx.store_id, claims.user_id, tx.customer_id,
+        tx.total_amount,
+        tx.payment_method,
+        payload.reason,
+    )
+    .fetch_one(&mut *db_tx)
+    .await?;
+
+    for item in &tx_items {
+        sqlx::query!(
+            r#"INSERT INTO return_items
+                   (return_id, item_id, item_name, sku,
+                    quantity_returned, unit_price, line_total,
+                    condition, restocked, notes)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,'good',TRUE,$8)"#,
+            return_id, item.item_id, item.item_name, item.sku,
+            item.quantity, item.unit_price, item.line_total,
+            payload.reason,
+        )
+        .execute(&mut *db_tx)
+        .await?;
     }
 
     sqlx::query!(
@@ -1438,26 +1824,147 @@ pub async fn full_refund(
     sqlx::query!(
         r#"INSERT INTO payments (transaction_id, payment_method, amount, status, processed_by, reference_no)
            VALUES ($1,$2,$3,'refunded',$4,$5)"#,
-        id, refund_method, -tx.total_amount, claims.user_id,
-        format!("REFUND-{}-{}", tx.reference_no, Utc::now().timestamp()),
+        id, refund_method, -tx.total_amount, claims.user_id, return_ref_no,
     )
     .execute(&mut *db_tx)
     .await?;
+
+    // FAULT #4 fix: restore credit or wallet balance
+    if tx.payment_method == "credit" {
+        if let Some(cust_id) = tx.customer_id {
+            sqlx::query!(
+                "UPDATE credit_sales SET status = 'cancelled' WHERE transaction_id = $1",
+                id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+            sqlx::query!(
+                "UPDATE customers SET outstanding_balance = GREATEST(0, outstanding_balance - $1) WHERE id = $2",
+                tx.total_amount, cust_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+        }
+    } else if tx.payment_method == "wallet" {
+        if let Some(cust_id) = tx.customer_id {
+            sqlx::query!(
+                "UPDATE customers SET wallet_balance = wallet_balance + $1, updated_at = NOW() WHERE id = $2",
+                tx.total_amount, cust_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+            sqlx::query!(
+                r#"INSERT INTO customer_wallet_transactions
+                       (customer_id, store_id, type, amount, balance_after,
+                        transaction_id, recorded_by, notes)
+                   VALUES ($1,$2,'credit',$3,
+                           (SELECT wallet_balance FROM customers WHERE id = $1),
+                           $4,$5,'Refund: full refund processed')"#,
+                cust_id, tx.store_id, tx.total_amount,
+                id, claims.user_id,
+            )
+            .execute(&mut *db_tx)
+            .await?;
+        }
+    }
+
+    // RISK #5 fix: decrement sales counters alongside the return counters
+    // so shift reconciliation doesn't get inflated (cash drawer should not
+    // count voided/refunded sales).
+    let zero = Decimal::ZERO;
+    let (cash_dec, card_dec, xfer_dec, mobile_dec) = if tx.payment_method == "split" {
+        let cash_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'cash'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        let card_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'card'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        let xfer_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'transfer'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        let mobile_dec: Decimal = sqlx::query_scalar!(
+            r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+               FROM payments
+               WHERE transaction_id = $1
+                 AND payment_method = 'mobile_money'
+                 AND status = 'completed'"#,
+            id
+        )
+        .fetch_one(&mut *db_tx)
+        .await?;
+        (cash_dec, card_dec, xfer_dec, mobile_dec)
+    } else {
+        match tx.payment_method.as_str() {
+            "cash"         => (tx.total_amount, zero,             zero,          zero),
+            "card"         => (zero,           tx.total_amount,  zero,          zero),
+            "transfer"     => (zero,           zero,             tx.total_amount, zero),
+            "mobile_money" => (zero,           zero,             zero,          tx.total_amount),
+            _              => (zero,           zero,             zero,          zero),
+        }
+    };
 
     sqlx::query!(
         "UPDATE shifts SET
             return_count  = COALESCE(return_count,  0) + 1,
             total_returns = COALESCE(total_returns, 0) + $1,
+            total_sales        = GREATEST(0, COALESCE(total_sales, 0) - $1),
+            total_cash_sales   = GREATEST(0, COALESCE(total_cash_sales, 0) - $2),
+            total_card_sales   = GREATEST(0, COALESCE(total_card_sales, 0) - $3),
+            total_transfers    = GREATEST(0, COALESCE(total_transfers, 0) - $4),
+            total_mobile_sales = GREATEST(0, COALESCE(total_mobile_sales, 0) - $5),
             updated_at    = NOW()
-         WHERE opened_by = $2 AND store_id = $3
+         WHERE opened_by = $6 AND store_id = $7
            AND status IN ('open', 'active', 'suspended')",
-        tx.total_amount, claims.user_id, tx.store_id,
+        tx.total_amount,
+        cash_dec,
+        card_dec,
+        xfer_dec,
+        mobile_dec,
+        claims.user_id,
+        tx.store_id,
     )
     .execute(&mut *db_tx)
     .await
     .ok();
 
     db_tx.commit().await?;
+
+    // FAULT #11 fix: queue full refund for cloud sync
+    crate::database::sync::queue_row(
+        &pool,
+        "transactions",
+        "UPDATE",
+        &id.to_string(),
+        serde_json::json!({
+            "id":             id,
+            "status":         "refunded",
+            "payment_status": "refunded",
+            "store_id":       tx.store_id,
+        }),
+        Some(tx.store_id),
+    )
+    .await;
 
     write_audit_log(&pool, claims.user_id, Some(tx.store_id), "full_refund", "transaction",
         &format!("Full refund ₦{} on transaction {}", tx.total_amount.round_dp(2), tx.reference_no), "warning").await;
@@ -1481,8 +1988,7 @@ pub async fn full_refund(
 // ── Transaction Search (command palette / global search) ────────────────────
 
 /// Fast text search returning slim result rows.
-/// Matches reference_no, customer name, cashier name, notes, and payment_method.
-/// Capped at `limit` (default 8, max 20) — designed for the command palette.
+/// HTTP-only — not registered as a Tauri command. Call via rpc("search_transactions", ...).
 pub(crate) async fn search_transactions_inner(
     state:    &AppState,
     token:    String,
@@ -1531,8 +2037,23 @@ pub async fn hold_transaction(
     token:   String,
     payload: HoldTransactionDto,
 ) -> AppResult<HeldTransaction> {
-    let claims = guard(&state, &token).await?;
+    // RISK #3 fix: require pos.sale permission, not just authentication
+    let claims = guard_permission(&state, &token, "pos.sale").await?;
     let pool   = state.pool().await?;
+
+    // UPGRADE #5 fix: cap held transactions per cashier to prevent abuse
+    let held_count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM held_transactions WHERE store_id = $1 AND cashier_id = $2",
+        payload.store_id, claims.user_id,
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
+    if held_count >= 20 {
+        return Err(AppError::Validation(
+            "Maximum of 20 held transactions per cashier. Please resume or delete some before holding more.".into()
+        ));
+    }
 
     let id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO held_transactions (store_id, cashier_id, label, cart_data)
@@ -1558,7 +2079,8 @@ pub async fn get_held_transactions(
     token:    String,
     store_id: i32,
 ) -> AppResult<Vec<HeldTransaction>> {
-    let claims = guard(&state, &token).await?;
+    // RISK #3 fix: require pos.sale permission
+    let claims = guard_permission(&state, &token, "pos.sale").await?;
     let pool   = state.pool().await?;
 
     sqlx::query_as!(
@@ -1589,8 +2111,6 @@ pub async fn delete_held_transaction(
 }
 
 // ── HTTP-server inner wrappers ────────────────────────────────────────────────
-// These thin wrappers allow http_server.rs to call Tauri commands directly
-// without going through the Tauri State<> machinery.
 
 #[inline]
 fn as_tauri_state(s: &AppState) -> tauri::State<'_, AppState> {

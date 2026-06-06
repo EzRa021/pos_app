@@ -1,7 +1,7 @@
 // ============================================================================
 // features/customers/CustomersPanel.jsx
 // ============================================================================
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { usePaginationParams } from "@/hooks/usePaginationParams";
 import {
@@ -9,7 +9,7 @@ import {
   CreditCard, Star, AlertTriangle, Phone, Mail,
 } from "lucide-react";
 
-import { useCustomers }   from "./useCustomers";
+import { useCustomers, useCustomerSummary }   from "./useCustomers";
 import { PageHeader }     from "@/components/shared/PageHeader";
 import { DataTable }      from "@/components/shared/DataTable";
 import { EmptyState }     from "@/components/shared/EmptyState";
@@ -193,10 +193,8 @@ function CustomerFormDialog({ open, onOpenChange, customer, onCreate, onUpdate, 
       };
       if (isEdit) {
         await onUpdate({ id: customer.id, ...payload });
-        toast.success("Customer updated.");
       } else {
         await onCreate({ store_id: storeId, ...payload });
-        toast.success("Customer created.");
       }
       handleOpenChange(false);
     } catch (err) {
@@ -465,10 +463,13 @@ export function CustomersPanel() {
     usePaginationParams({ defaultPageSize: 25 });
   const [statusTab, setStatusTab] = useState("all");
   const [typeTab,   setTypeTab]   = useState("");
+  const [searchInput, setSearchInput] = useState(search ?? "");
+  useEffect(() => { setSearchInput(search ?? ""); }, [search]);
 
   const debounceRef = useRef(null);
   const handleSearchChange = useCallback((e) => {
     const q = e.target.value;
+    setSearchInput(q);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => setUrlSearch(q), 300);
   }, [setUrlSearch]);
@@ -481,28 +482,27 @@ export function CustomersPanel() {
 
   const { items, total, totalPages, isLoading, error, create, update, activate, deactivate, remove } =
     useCustomers({ search: search || undefined, isActive, customerType: typeTab || undefined, page });
+  const { summary } = useCustomerSummary(storeId);
 
-  const { activeCount, inactiveCount, vipCount, wholesaleCount, regularCount } = useMemo(() => {
-    const active    = items.filter((i) =>  i.is_active).length;
-    const inactive  = items.filter((i) => !i.is_active).length;
-    const vip       = items.filter((i) => i.customer_type === "vip").length;
-    const wholesale = items.filter((i) => i.customer_type === "wholesale").length;
-    const regular   = items.filter((i) => i.customer_type === "regular" || !i.customer_type).length;
-    return { activeCount: active, inactiveCount: inactive, vipCount: vip, wholesaleCount: wholesale, regularCount: regular };
-  }, [items]);
+  const activeCount = summary?.active_count ?? 0;
+  const inactiveCount = summary?.inactive_count ?? 0;
+  const vipCount = summary?.vip_count ?? 0;
+  const wholesaleCount = summary?.wholesale_count ?? 0;
+  const regularCount = summary?.regular_count ?? 0;
+  const summaryTotal = summary?.total ?? total;
 
   const statusCounts = useMemo(() => ({
-    all:      total,
+    all:      summaryTotal,
     active:   activeCount,
     inactive: inactiveCount,
-  }), [total, activeCount, inactiveCount]);
+  }), [summaryTotal, activeCount, inactiveCount]);
 
   const typeCounts = useMemo(() => ({
-    "":          total,
+    "":          summaryTotal,
     regular:     regularCount,
     vip:         vipCount,
     wholesale:   wholesaleCount,
-  }), [total, regularCount, vipCount, wholesaleCount]);
+  }), [summaryTotal, regularCount, vipCount, wholesaleCount]);
 
   const openCreate = useCallback(() => { setEditTarget(null); setFormOpen(true); }, []);
   const openEdit   = useCallback((c) => { setEditTarget(c);   setFormOpen(true); }, []);
@@ -656,7 +656,7 @@ export function CustomersPanel() {
 
           {/* Stats */}
           <div className="grid grid-cols-4 gap-3">
-            <StatCard label="Total Customers" value={total}         sub="in this store"       accent="primary" />
+            <StatCard label="Total Customers" value={summaryTotal}  sub="in this store"       accent="primary" />
             <StatCard label="Active"          value={activeCount}   sub="visible in POS"      accent="success" />
             <StatCard label="Inactive"        value={inactiveCount} sub="hidden from POS"     accent={inactiveCount > 0 ? "warning" : "muted"} />
             <StatCard label="VIP / Wholesale" value={vipCount + wholesaleCount} sub="premium customers" accent="default" />
@@ -676,8 +676,7 @@ export function CustomersPanel() {
             <div className="relative mb-4">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                key={search}
-                defaultValue={search}
+                value={searchInput}
                 onChange={handleSearchChange}
                 placeholder="Search by name, phone or email…"
                 className="pl-9 pr-9 h-8 text-sm"
@@ -685,7 +684,7 @@ export function CustomersPanel() {
               {search && (
                 <button
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  onClick={() => setUrlSearch("")}
+                  onClick={() => { setSearchInput(""); setUrlSearch(""); }}
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>

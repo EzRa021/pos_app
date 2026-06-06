@@ -115,9 +115,17 @@ pub async fn get_credit_sale(
     token: String,
     id:    i32,
 ) -> AppResult<CreditSale> {
-    guard_permission(&state, &token, "credit_sales.read").await?;
+    let claims = guard_permission(&state, &token, "credit_sales.read").await?;
     let pool = state.pool().await?;
-    fetch_credit_sale(&pool, id).await
+    let cs = fetch_credit_sale(&pool, id).await?;
+    // BACKEND FAULT #8 fix: enforce store scope for non-global users
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if cs.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+    Ok(cs)
 }
 
 // ── Record payment ────────────────────────────────────────────────────────────
@@ -131,33 +139,60 @@ pub async fn record_credit_payment(
     let claims = guard_permission(&state, &token, "credit_sales.update").await?;
     let pool   = state.pool().await?;
 
-    let cs = fetch_credit_sale(&pool, payload.credit_sale_id).await?;
-
-    if cs.status == "paid" {
-        return Err(AppError::Validation("Credit sale is already fully paid".into()));
-    }
-    if cs.status == "cancelled" {
-        return Err(AppError::Validation("Cannot record payment for cancelled credit sale".into()));
-    }
-
     let amount = Decimal::try_from(payload.amount)
         .map_err(|_| AppError::Validation("Invalid payment amount".into()))?;
 
     if amount <= Decimal::ZERO {
         return Err(AppError::Validation("Payment amount must be positive".into()));
     }
-    if amount > cs.outstanding {
-        return Err(AppError::Validation(format!(
-            "Payment exceeds outstanding balance of {}", cs.outstanding
-        )));
-    }
 
     let mut db_tx = pool.begin().await?;
 
-    sqlx::query!(
+    // BACKEND FAULT #1 fix: lock credit sale and validate outstanding inside db_tx
+    let locked = sqlx::query!(
+        r#"SELECT id, store_id, customer_id,
+                  total_amount, amount_paid, outstanding, status
+           FROM credit_sales
+           WHERE id = $1
+           FOR UPDATE"#,
+        payload.credit_sale_id,
+    )
+    .fetch_optional(&mut *db_tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("Credit sale {} not found", payload.credit_sale_id)))?;
+
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if locked.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
+
+    if locked.status == "paid" {
+        return Err(AppError::Validation(format!(
+            "Credit sale {} is already fully paid.", payload.credit_sale_id
+        )));
+    }
+    if locked.status == "cancelled" {
+        return Err(AppError::Validation("Cannot record payment on a cancelled credit sale.".into()));
+    }
+    if locked.outstanding == Decimal::ZERO {
+        return Err(AppError::Validation(format!(
+            "Credit sale {} is already fully paid.", payload.credit_sale_id
+        )));
+    }
+    if amount > locked.outstanding {
+        return Err(AppError::Validation(format!(
+            "Payment of {} exceeds outstanding balance of {}",
+            amount, locked.outstanding
+        )));
+    }
+
+    let payment_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO credit_payments
                (credit_sale_id, amount, payment_method, reference, paid_by, notes)
-           VALUES ($1,$2,$3,$4,$5,$6)"#,
+           VALUES ($1,$2,$3,$4,$5,$6)
+           RETURNING id"#,
         payload.credit_sale_id,
         amount,
         payload.payment_method,
@@ -165,11 +200,12 @@ pub async fn record_credit_payment(
         claims.user_id,
         payload.notes,
     )
-    .execute(&mut *db_tx)
+    .fetch_one(&mut *db_tx)
     .await?;
 
-    let new_paid        = cs.amount_paid + amount;
-    let new_outstanding = cs.total_amount - new_paid;
+    // BACKEND FAULT #9 fix: derive consistent new totals from locked row
+    let new_outstanding = (locked.outstanding - amount).max(Decimal::ZERO);
+    let new_paid        = locked.total_amount - new_outstanding;
     let new_status      = if new_outstanding <= Decimal::ZERO { "paid" }
                           else if new_paid > Decimal::ZERO { "partial" }
                           else { "outstanding" };
@@ -191,24 +227,43 @@ pub async fn record_credit_payment(
 
     // Update customer outstanding balance
     sqlx::query!(
-        "UPDATE customers SET outstanding_balance = GREATEST(0, outstanding_balance - $1) WHERE id = $2",
+        "UPDATE customers SET outstanding_balance = GREATEST(0, outstanding_balance - $1), updated_at = NOW() WHERE id = $2",
         amount,
-        cs.customer_id,
+        locked.customer_id,
     )
     .execute(&mut *db_tx)
     .await?;
 
     db_tx.commit().await?;
 
+    // BACKEND FAULT #6 fix: sync credit_payments + credit_sales + customer
+    crate::database::sync::queue_row(
+        &pool,
+        "credit_payments",
+        "INSERT",
+        &payment_id.to_string(),
+        serde_json::json!({ "id": payment_id, "credit_sale_id": payload.credit_sale_id, "amount": amount.to_string() }),
+        Some(locked.store_id),
+    )
+    .await;
     crate::database::sync::queue_row(
         &pool, "credit_sales", "UPDATE", &payload.credit_sale_id.to_string(),
         serde_json::json!({ "id": payload.credit_sale_id,
-                            "store_id": cs.store_id,
+                            "store_id": locked.store_id,
                             "amount_paid": new_paid.to_string(),
                             "outstanding": new_outstanding.max(Decimal::ZERO).to_string(),
                             "status": new_status }),
-        Some(cs.store_id),
+        Some(locked.store_id),
     ).await;
+    crate::database::sync::queue_row(
+        &pool,
+        "customers",
+        "UPDATE",
+        &locked.customer_id.to_string(),
+        serde_json::json!({ "id": locked.customer_id, "store_id": locked.store_id }),
+        Some(locked.store_id),
+    )
+    .await;
 
     fetch_credit_sale(&pool, payload.credit_sale_id).await
 }
@@ -221,8 +276,17 @@ pub async fn get_credit_payments(
     token:          String,
     credit_sale_id: i32,
 ) -> AppResult<Vec<CreditPayment>> {
-    guard_permission(&state, &token, "credit_sales.read").await?;
+    let claims = guard_permission(&state, &token, "credit_sales.read").await?;
     let pool = state.pool().await?;
+
+    // Enforce store scope (non-global users can only read payments for their store's credit sales)
+    let cs = fetch_credit_sale(&pool, credit_sale_id).await?;
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if cs.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     sqlx::query_as!(
         CreditPayment,
@@ -247,9 +311,16 @@ pub async fn cancel_credit_sale(
     id:     i32,
     reason: Option<String>,
 ) -> AppResult<CreditSale> {
-    guard_permission(&state, &token, "credit_sales.update").await?;
+    let claims = guard_permission(&state, &token, "credit_sales.update").await?;
     let pool = state.pool().await?;
     let cs   = fetch_credit_sale(&pool, id).await?;
+
+    if !claims.is_global {
+        let user_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if cs.store_id != user_store {
+            return Err(AppError::Forbidden);
+        }
+    }
 
     if cs.status == "paid" {
         return Err(AppError::Validation("Cannot cancel a fully paid credit sale".into()));
@@ -288,6 +359,25 @@ pub async fn cancel_credit_sale(
     .await?;
 
     db_tx.commit().await?;
+
+    crate::database::sync::queue_row(
+        &pool,
+        "credit_sales",
+        "UPDATE",
+        &id.to_string(),
+        serde_json::json!({ "id": id, "store_id": cs.store_id, "status": "cancelled" }),
+        Some(cs.store_id),
+    )
+    .await;
+    crate::database::sync::queue_row(
+        &pool,
+        "customers",
+        "UPDATE",
+        &cs.customer_id.to_string(),
+        serde_json::json!({ "id": cs.customer_id, "store_id": cs.store_id }),
+        Some(cs.store_id),
+    )
+    .await;
 
     fetch_credit_sale(&pool, id).await
 }

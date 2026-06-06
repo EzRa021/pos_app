@@ -9,9 +9,9 @@ export const depositToWallet = (payload) =>
 export const getWalletBalance = (customerId) =>
   rpc("get_wallet_balance", { customer_id: customerId });
 
-export const getWalletHistory = (customerId, limit = 50) =>
-  rpc("get_wallet_history", { customer_id: customerId, limit });
+export const getWalletHistory = (customerId, { page = 1, limit = 50 } = {}) =>
+  rpc("get_wallet_history", { customer_id: customerId, page, limit });
 
-// AdjustWalletDto: { customer_id, store_id, amount (signed), notes? }
+// AdjustWalletDto: { customer_id, store_id, amount (signed), reason }
 export const adjustWallet = (payload) =>
   rpc("adjust_wallet", payload);

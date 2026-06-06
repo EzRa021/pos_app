@@ -408,9 +408,10 @@ export function ShiftDetailPage() {
   const itemAnalyticsFilters = useMemo(() => {
     if (!shift) return null;
     return {
-      store_id:  shift.store_id,                          // scope to this store
-      date_from: shift.opened_at,                         // full ISO timestamp
-      date_to:   shift.closed_at ?? new Date().toISOString(), // full ISO or now
+      store_id:   shift.store_id,                              // scope to this store
+      cashier_id: shift.opened_by,                             // scope to this cashier
+      date_from:  shift.opened_at,                             // full ISO timestamp
+      date_to:    shift.closed_at ?? new Date().toISOString(), // full ISO or now
       limit: 10,
     };
   }, [shift]);

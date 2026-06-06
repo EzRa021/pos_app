@@ -98,6 +98,7 @@ export function useReturn(id) {
     queryFn:   () => getReturn(parseInt(id, 10)),
     enabled:   !!id,
     staleTime: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   const invalidate = useCallback(() => {
@@ -143,7 +144,8 @@ export function useCreateReturn() {
         "Return Processed",
         `Refund of ${amount} has been issued.`,
       );
-      invalidateAfterReturn(storeId);
+      const affectedStoreId = result?.ret?.store_id ?? storeId;
+      invalidateAfterReturn(affectedStoreId);
     },
     onError: (e) => onMutationError("Return Failed", e),
   });
@@ -161,7 +163,8 @@ export function useVoidReturn() {
       toastSuccess("Return Voided", `${ref} has been voided and stock reversed.`);
       // Invalidate the specific return + all related lists
       qc.invalidateQueries({ queryKey: returnKey(result?.ret?.id) });
-      invalidateAfterReturn(storeId);
+      const affectedStoreId = result?.ret?.store_id ?? storeId;
+      invalidateAfterReturn(affectedStoreId);
     },
     onError: (e) => onMutationError("Void Failed", e),
   });

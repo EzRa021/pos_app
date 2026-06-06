@@ -77,9 +77,9 @@ function MovementRow({ movement, isLast }) {
               {movement.reason}
             </p>
           )}
-          {movement.reference && (
+          {movement.reference_number && (
             <p className="text-[10px] text-muted-foreground/60 mt-0.5 font-mono">
-              ref: {movement.reference}
+              ref: {movement.reference_number}
             </p>
           )}
         </div>

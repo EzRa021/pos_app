@@ -149,32 +149,58 @@ pub async fn apply_scheduled_prices(
     .fetch_all(&pool)
     .await?;
 
-    let count   = due.len() as i64;
+    let count       = due.len() as i64;
     let mut applied = 0i64;
 
     for rec in &due {
         let mut tx = pool.begin().await?;
+
+        // Read old price inside the transaction for a consistent snapshot
         let old_price: Option<Decimal> = sqlx::query_scalar!(
-            "SELECT selling_price FROM items WHERE id=$1", rec.item_id
+            "SELECT selling_price FROM items WHERE id = $1", rec.item_id
         )
         .fetch_optional(&mut *tx)
         .await?;
 
-        let mut sql = format!("UPDATE items SET selling_price={}, updated_at=NOW()", rec.new_selling_price);
-        if let Some(cp) = rec.new_cost_price { sql.push_str(&format!(", cost_price={cp}")); }
-        sql.push_str(&format!(" WHERE id='{}'", rec.item_id));
+        // Apply selling price — always needed
+        let update_sell = sqlx::query!(
+            "UPDATE items SET selling_price = $1, updated_at = NOW() WHERE id = $2",
+            rec.new_selling_price, rec.item_id,
+        )
+        .execute(&mut *tx)
+        .await;
 
-        if sqlx::query(&sql).execute(&mut *tx).await.is_err() { tx.rollback().await.ok(); continue; }
+        if update_sell.is_err() {
+            tx.rollback().await.ok();
+            continue;
+        }
+
+        // Apply cost price only when explicitly set
+        if let Some(new_cost) = rec.new_cost_price {
+            let update_cost = sqlx::query!(
+                "UPDATE items SET cost_price = $1, updated_at = NOW() WHERE id = $2",
+                new_cost, rec.item_id,
+            )
+            .execute(&mut *tx)
+            .await;
+
+            if update_cost.is_err() {
+                tx.rollback().await.ok();
+                continue;
+            }
+        }
 
         sqlx::query!(
-            "INSERT INTO price_history (item_id, store_id, old_price, new_price, changed_by, reason) VALUES ($1,$2,$3,$4,$5,'Scheduled price change')",
+            "INSERT INTO price_history (item_id, store_id, old_price, new_price, changed_by, reason) \
+             VALUES ($1, $2, $3, $4, $5, 'Scheduled price change')",
             rec.item_id, rec.store_id, old_price, rec.new_selling_price, claims.user_id,
         )
         .execute(&mut *tx)
         .await?;
 
         sqlx::query!(
-            "UPDATE scheduled_price_changes SET applied=TRUE, applied_at=NOW() WHERE id=$1", rec.id,
+            "UPDATE scheduled_price_changes SET applied = TRUE, applied_at = NOW() WHERE id = $1",
+            rec.id,
         )
         .execute(&mut *tx)
         .await?;

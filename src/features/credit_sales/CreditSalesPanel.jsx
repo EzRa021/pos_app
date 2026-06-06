@@ -44,8 +44,9 @@ const STATUS_CFG = {
   outstanding: { cls: "bg-warning/10 text-warning border-warning/20",             dot: "bg-warning"          },
   partial:     { cls: "bg-primary/10 text-primary border-primary/20",             dot: "bg-primary"          },
   paid:        { cls: "bg-success/10 text-success border-success/20",             dot: "bg-success"          },
-  overdue:     { cls: "bg-destructive/10 text-destructive border-destructive/20", dot: "bg-destructive"      },
+  overdue:     { cls: "bg-destructive/15 text-destructive border-destructive/30", dot: "bg-destructive"      },
   cancelled:   { cls: "bg-muted/50 text-muted-foreground border-border/60",       dot: "bg-muted-foreground" },
+  written_off: { cls: "bg-muted text-muted-foreground border-border line-through", dot: "bg-muted-foreground" },
 };
 
 const PAYMENT_METHODS = [
@@ -160,7 +161,14 @@ function DateRangePicker({ dateFrom, dateTo, onDateRangeChange }) {
 
 function CreditStatusBadge({ status }) {
   const cfg = STATUS_CFG[status] ?? STATUS_CFG.outstanding;
-  const labels = { outstanding: "Unpaid", partial: "Partial", paid: "Paid", overdue: "Overdue", cancelled: "Cancelled" };
+  const labels = {
+    outstanding: "Unpaid",
+    partial: "Partial",
+    paid: "Paid",
+    overdue: "Overdue",
+    cancelled: "Cancelled",
+    written_off: "Written Off",
+  };
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
@@ -910,7 +918,7 @@ export function CreditSalesPanel({ preFilterCustomerId } = {}) {
                     <div className="relative flex-1 min-w-[180px]">
                       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
                       <Input
-                        value={search} onChange={(e) => setSearch(e.target.value)}
+                        value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                         placeholder="Reference, customer…"
                         className="pl-8 h-8 text-xs bg-muted/30 border-border/60 focus:bg-background"
                       />

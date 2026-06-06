@@ -52,13 +52,6 @@ function StatRow({ label, value, valueClass, borderTop }) {
   );
 }
 
-// Compute shift number (must match useShift.js logic)
-function computeShiftNumber(shift) {
-  if (!shift) return "—";
-  const date = new Date(shift.opened_at).toISOString().slice(0, 10).replace(/-/g, "");
-  return `SH-${date}-${String(shift.id).padStart(3, "0")}`;
-}
-
 export function CloseShiftModal({ open, onOpenChange }) {
   const [notes,           setNotes]           = useState("");
   const [showDenom,       setShowDenom]       = useState(false);
@@ -89,7 +82,7 @@ export function CloseShiftModal({ open, onOpenChange }) {
   const closingNum      = manualOverride !== null ? (parseFloat(manualOverride) || 0) : denomTotal;
   const expectedBalance = parseFloat(summary?.expected_balance ?? "0");
   const variance        = closingNum - expectedBalance;
-  const hasClosing      = showDenom ? true : (manualOverride !== null && manualOverride !== "");
+  const hasClosing      = showDenom ? denomTotal > 0 : (manualOverride !== null && manualOverride !== "");
 
   const totalSales       = parseFloat(summary?.total_sales       ?? "0");
   const totalRefunds     = parseFloat(summary?.total_returns     ?? "0");
@@ -132,7 +125,7 @@ export function CloseShiftModal({ open, onOpenChange }) {
     mutation.mutate();
   }
 
-  const shiftNum = computeShiftNumber(activeShift);
+  const shiftNum = activeShift?.shift_number ?? "—";
 
   return (
     <Dialog open={open} onOpenChange={(v) => !mutation.isPending && onOpenChange(v)}>

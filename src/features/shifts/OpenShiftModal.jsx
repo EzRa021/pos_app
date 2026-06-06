@@ -17,6 +17,7 @@ import { useBranchStore } from "@/stores/branch.store";
 import { queryClient }    from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/format";
 import { cn }             from "@/lib/utils";
+import { toast }          from "sonner";
 
 export function OpenShiftModal({ open, onOpenChange }) {
   const [balance, setBalance] = useState("");
@@ -40,6 +41,9 @@ export function OpenShiftModal({ open, onOpenChange }) {
       setBalance("");
       setNotes("");
       onOpenChange(false);
+    },
+    onError: (err) => {
+      toast.error(typeof err === "string" ? err : "Failed to open shift.");
     },
   });
 

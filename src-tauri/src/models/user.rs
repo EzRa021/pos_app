@@ -45,7 +45,7 @@ pub struct UpdateUserDto {
     pub last_name:  Option<String>,
     pub phone:      Option<String>,
     pub role_id:    Option<i32>,
-    pub store_id:   Option<i32>,
+    pub store_id:   Option<Option<i32>>,
     pub is_active:  Option<bool>,
 }
 

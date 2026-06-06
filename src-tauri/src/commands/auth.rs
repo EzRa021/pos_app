@@ -28,6 +28,7 @@ pub(crate) async fn login_inner(state: &AppState, payload: LoginRequest) -> AppR
         r#"
         SELECT u.id, u.username, u.email, u.password_hash,
                u.first_name, u.last_name, u.is_active,
+               u.avatar,
                u.failed_login_attempts, u.locked_until,
                r.id   AS role_id,
                r.role_slug,
@@ -168,6 +169,7 @@ pub(crate) async fn login_inner(state: &AppState, payload: LoginRequest) -> AppR
             store_id:    row.store_id,
             is_global:   row.is_global,
             is_active:   row.is_active,
+            avatar:      row.avatar,
             permissions,
         },
     })
@@ -256,6 +258,7 @@ pub(crate) async fn refresh_token_inner(state: &AppState, payload: RefreshReques
         r#"
         SELECT u.id, u.username, u.email, u.password_hash,
                u.first_name, u.last_name, u.is_active,
+               u.avatar,
                u.failed_login_attempts, u.locked_until,
                r.id   AS role_id,
                r.role_slug,
@@ -357,6 +360,7 @@ pub(crate) async fn refresh_token_inner(state: &AppState, payload: RefreshReques
             store_id:    row.store_id,
             is_global:   row.is_global,
             is_active:   row.is_active,
+            avatar:      row.avatar,
             permissions,
         },
     })

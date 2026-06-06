@@ -397,6 +397,7 @@ pub fn run() {
             commands::customers::deactivate_customer,
             commands::customers::get_customer_stats,
             commands::customers::get_customer_transactions,
+            commands::customers::get_customer_summary,
             // ── Suppliers ─────────────────────────────────────────────────────
             commands::suppliers::get_suppliers,
             commands::suppliers::get_supplier,
@@ -503,6 +504,7 @@ pub fn run() {
             commands::price_management::approve_price_change,
             commands::price_management::reject_price_change,
             commands::price_management::get_price_changes,
+            commands::price_management::get_price_change_stats,
             commands::price_management::get_price_history,
             // ── Excel Import / Export ─────────────────────────────────────────
             commands::excel::import_items,

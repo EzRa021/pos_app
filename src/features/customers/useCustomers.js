@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useBranchStore } from "@/stores/branch.store";
 import {
   getCustomers, getCustomer, getCustomerStats, getCustomerTransactions,
+  getCustomerSummary,
   createCustomer, updateCustomer,
   activateCustomer, deactivateCustomer, deleteCustomer,
 } from "@/commands/customers";
@@ -72,8 +73,9 @@ export function useCustomers({ storeIdOverride, search, isActive, customerType, 
   });
   const remove = useMutation({
     mutationFn: (id) => deleteCustomer(id),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       toastSuccess("Customer Removed", "The customer record has been deleted.");
+      qc.invalidateQueries({ queryKey: ["customer", id] });
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Remove Customer", e),
@@ -81,6 +83,16 @@ export function useCustomers({ storeIdOverride, search, isActive, customerType, 
 
   return { storeId, items, total, totalPages, isLoading, error: error ?? null, refetch,
            create, update, activate, deactivate, remove };
+}
+
+export function useCustomerSummary(storeId) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["customer-summary", storeId],
+    queryFn: () => getCustomerSummary(storeId),
+    enabled: !!storeId,
+    staleTime: 2 * 60 * 1000,
+  });
+  return { summary: data, isLoading, error: error ?? null };
 }
 
 // ── Single customer + stats hook ──────────────────────────────────────────────

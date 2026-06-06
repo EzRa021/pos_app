@@ -213,11 +213,9 @@ export default function PosPage() {
   const loyaltyPoints = parseInt(loyaltyData?.points      ?? 0, 10);
   const loyaltyNaira  = parseFloat(loyaltyData?.naira_value ?? 0);
 
-  // Whether the store's loyalty programme is active.
-  // getLoyaltyBalance now includes programme_active, but we also query
-  // loyalty settings directly so the button state is correct even before
-  // a customer is selected (avoids the button appearing enabled when the
-  // programme has never been turned on).
+  // Store loyalty settings: programme_active flag + min_redemption_points.
+  // Queried separately so the POS button is in the right state even before
+  // a customer is selected.
   const { data: loyaltySettings } = useQuery({
     queryKey: ["loyalty-settings", storeId],
     queryFn:  () => getLoyaltySettings(storeId),
@@ -225,6 +223,7 @@ export default function PosPage() {
     staleTime: 5 * 60_000,
   });
   const loyaltyProgrammeActive = loyaltySettings?.is_active ?? false;
+  const minRedemptionPts = parseInt(loyaltySettings?.min_redemption_points ?? 100, 10);
 
   // ── Products filter state ─────────────────────────────────────────────────
   const [searchTerm,  setSearchTerm]  = useState("");
@@ -520,6 +519,10 @@ export default function PosPage() {
       toast.error("Customer has no redeemable loyalty points.");
       return;
     }
+    if (loyaltyPoints < minRedemptionPts) {
+      toast.error(`Minimum redemption is ${minRedemptionPts} points. Customer has ${loyaltyPoints}.`);
+      return;
+    }
     const alreadyOn = !!payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY);
     if (alreadyOn) {
       setPayments((prev) => prev.filter((p) => p.type !== PAYMENT_METHODS.LOYALTY));
@@ -531,7 +534,7 @@ export default function PosPage() {
         loyaltyPoints,
       }]);
     }
-  }, [activeCustomer, loyaltyPoints, loyaltyNaira, total, payments]);
+  }, [activeCustomer, loyaltyPoints, loyaltyNaira, total, payments, minRedemptionPts]);
 
   // ── Payment handlers ──────────────────────────────────────────────────────
   const handlePaymentClick = useCallback((type, opts = {}) => {
@@ -1103,6 +1106,7 @@ export default function PosPage() {
         loyaltyNaira={loyaltyNaira}
         loyaltyProgrammeActive={loyaltyProgrammeActive}
         loyaltyApplied={!!payments.find((p) => p.type === PAYMENT_METHODS.LOYALTY)}
+        minRedemptionPts={minRedemptionPts}
         onWalletPay={handleWalletPay}
         onLoyaltyToggle={handleLoyaltyToggle}
         taxInclusive={taxInclusive}
@@ -1613,7 +1617,7 @@ function BottomBar({
   totalPaid, remaining, change, amountDue,
   isBalanced, isCharging,
   walletBalance, loyaltyPoints, loyaltyNaira, loyaltyApplied,
-  loyaltyProgrammeActive,
+  loyaltyProgrammeActive, minRedemptionPts = 100,
   onWalletPay, onLoyaltyToggle,
   taxInclusive,
   configuredMethods = [],
@@ -1700,11 +1704,11 @@ function BottomBar({
               {/* Loyalty */}
               <Button
                 variant="outline" size="sm"
-                disabled={!hasCart || !loyaltyProgrammeActive}
+                disabled={!hasCart || !loyaltyProgrammeActive || loyaltyPoints < minRedemptionPts}
                 onClick={onLoyaltyToggle}
                 className={cn(
                   "h-8 gap-1.5 text-[11px] font-semibold transition-all",
-                  loyaltyProgrammeActive
+                  loyaltyProgrammeActive && loyaltyPoints >= minRedemptionPts
                     ? PM_CONFIG[PAYMENT_METHODS.LOYALTY].btnCls
                     : "border-border/40 text-muted-foreground/40 cursor-not-allowed",
                   "disabled:opacity-40",
@@ -1713,9 +1717,11 @@ function BottomBar({
                 title={
                   !loyaltyProgrammeActive
                     ? "Loyalty programme is not active — enable it in Settings → Loyalty"
-                    : activeCustomer
-                      ? `${loyaltyPoints} pts = ${formatCurrency(loyaltyNaira)}`
-                      : "Select a customer first"
+                    : !activeCustomer
+                      ? "Select a customer to redeem points"
+                      : loyaltyPoints < minRedemptionPts
+                        ? `Minimum ${minRedemptionPts} pts required — customer has ${loyaltyPoints}`
+                        : `${loyaltyPoints} pts = ${formatCurrency(loyaltyNaira)}`
                 }
               >
                 <Star className="h-3.5 w-3.5" />

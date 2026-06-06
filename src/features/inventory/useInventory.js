@@ -113,14 +113,17 @@ export function useInventory({
   };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ── useInventoryItem — single item detail ─────────────────────────────────────
 export function useInventoryItem(itemId, storeId) {
   const qc = useQueryClient();
+  const isValidUuid = !!itemId && UUID_RE.test(itemId);
 
   const { data, isLoading, error } = useQuery({
     queryKey:  inventoryItemKey(itemId, storeId),
     queryFn:   () => getInventoryItem(itemId, storeId),
-    enabled:   !!(itemId && storeId),
+    enabled:   !!(itemId && storeId && isValidUuid),
     staleTime: 60_000,
   });
 
@@ -166,8 +169,8 @@ export function useMovementHistory(storeId, {
     page, limit,
     item_id:    itemId    || null,
     event_type: eventType || null,
-    start_date: dateFrom  ? `${dateFrom}T00:00:00.000Z` : null,
-    end_date:   dateTo    ? `${dateTo}T23:59:59.999Z`   : null,
+    start_date: dateFrom  ? `${dateFrom}T00:00:00` : null,
+    end_date:   dateTo    ? `${dateTo}T23:59:59`  : null,
   }), [page, limit, itemId, eventType, dateFrom, dateTo]);
 
   const { data, isLoading, error } = useQuery({

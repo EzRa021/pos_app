@@ -132,7 +132,7 @@ export function invalidateAfterSale({
   // Loyalty: invalidate whenever a customer is attached so balance + history
   // panels refresh after the charge() earn call and any redemption.
   if (customerId) {
-    inv(["loyalty-balance", customerId]);
+    inv(["loyalty-balance"]);
     inv(["loyalty-history", customerId]);
   }
 

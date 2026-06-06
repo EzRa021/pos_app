@@ -19,12 +19,16 @@ import { EmptyState }    from "@/components/shared/EmptyState";
 import { StatusBadge }   from "@/components/shared/StatusBadge";
 import { Button }        from "@/components/ui/button";
 import { Input }         from "@/components/ui/input";
+import { usePermission } from "@/hooks/usePermission";
 import {
   Select, SelectContent, SelectItem,
   SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { cn }            from "@/lib/utils";
 import { formatCurrency, formatDateTime, formatRef } from "@/lib/format";
+import { useBranchStore } from "@/stores/branch.store";
+import { CustomerSearchBar } from "@/features/pos/CustomerSearchBar";
+import { useUsers, useRoles } from "@/features/users/useUsers";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const STATUS_TABS = [
@@ -158,7 +162,23 @@ function fmtDate(iso) {
 }
 
 // ── Filter Bar ────────────────────────────────────────────────────────────────
-function FilterBar({ search, paymentMethod, dateFrom, dateTo, hasFilters, onSearchChange, onPaymentChange, onDateRangeChange, onClear }) {
+function FilterBar({
+  search,
+  paymentMethod,
+  dateFrom,
+  dateTo,
+  hasFilters,
+  onSearchChange,
+  onPaymentChange,
+  onDateRangeChange,
+  onClear,
+  cashierId,
+  onCashierChange,
+  cashiers,
+  customerId,
+  customerLabel,
+  onCustomerOpen,
+}) {
   const [calOpen, setCalOpen] = useState(false);
 
   // Convert ISO strings → Date objects for react-day-picker
@@ -227,6 +247,38 @@ function FilterBar({ search, paymentMethod, dateFrom, dateTo, hasFilters, onSear
             ))}
           </SelectContent>
         </Select>
+
+        {/* Cashier filter */}
+        {Array.isArray(cashiers) && cashiers.length > 0 && (
+          <Select
+            value={cashierId || "ALL"}
+            onValueChange={(v) => onCashierChange(v === "ALL" ? "" : v)}
+          >
+            <SelectTrigger className="h-8 w-[160px] text-xs bg-muted/30 border-border/60">
+              <Filter className="h-3 w-3 mr-1.5 text-muted-foreground shrink-0" />
+              <SelectValue placeholder="All Cashiers" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All Cashiers</SelectItem>
+              {cashiers.map((c) => (
+                <SelectItem key={c.id} value={String(c.id)}>
+                  {[c.first_name, c.last_name].filter(Boolean).join(" ") || c.username || `Cashier #${c.id}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
+        {/* Customer filter */}
+        <Button
+          variant={customerId ? "default" : "outline"}
+          size="xs"
+          onClick={onCustomerOpen}
+          className="h-8 text-xs bg-card"
+        >
+          <User className="h-3.5 w-3.5 mr-1.5 text-primary" />
+          {customerLabel || "Customer"}
+        </Button>
 
         {/* Date range — calendar popover */}
         <Popover open={calOpen} onOpenChange={setCalOpen}>
@@ -340,12 +392,37 @@ export function TransactionsPanel() {
   const [paymentMethod, setPaymentMethod] = useState("");
   const [dateFrom,      setDateFrom]      = useState("");
   const [dateTo,        setDateTo]        = useState("");
+  const [cashierId,     setCashierId]    = useState("");
+  const [customerId,   setCustomerId]  = useState(null);
+  const [activeCustomer, setActiveCustomer] = useState(null);
+  const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
+
+  const storeId = useBranchStore((s) => s.activeStore?.id);
+  const canViewCashierFilter = usePermission("users.read") && usePermission("transactions.read");
+  const canViewCustomerFilter = usePermission("customers.read") && usePermission("transactions.read");
+
+  const { data: roles = [] } = useRoles();
+  const cashierRoleId = useMemo(() => {
+    const role = roles.find(
+      (r) => r.role_slug === "cashier" || (r.role_name ?? "").toLowerCase() === "cashier"
+    );
+    return role?.id ?? -1; // -1 → guaranteed no results (keeps API calls from returning non-cashiers)
+  }, [roles]);
+
+  const { data: cashiersPaged } = useUsers({
+    store_id: storeId ?? null,
+    role_id: cashierRoleId,
+    is_active: true,
+    page: 1,
+    limit: 200,
+  });
+  const cashiers = cashiersPaged?.data ?? [];
 
   const debounceTimer = useRef(null);
   const handleSearchChange = useCallback((e) => {
     const val = e.target.value;
     clearTimeout(debounceTimer.current);
-    debounceTimer.current = setTimeout(() => setUrlSearch(val), 400);
+    debounceTimer.current = setTimeout(() => { setUrlSearch(val); setPage(1); }, 400);
   }, [setUrlSearch]);
 
   const handleDateRangeChange = useCallback((from, to) => {
@@ -356,16 +433,23 @@ export function TransactionsPanel() {
     clearTimeout(debounceTimer.current);
     setUrlSearch("");
     setDateFrom(""); setDateTo("");
-    setStatus(""); setPaymentMethod(""); setPage(1);
+    setStatus(""); setPaymentMethod("");
+    setCashierId("");
+    setCustomerId(null);
+    setActiveCustomer(null);
+    setCustomerSearchOpen(false);
+    setPage(1);
   }, [setUrlSearch, setPage]);
 
-  const hasFilters = search || dateFrom || dateTo || status || paymentMethod;
+  const hasFilters = search || dateFrom || dateTo || status || paymentMethod || !!cashierId || !!customerId;
 
   const { transactions, total, totalPages, isLoading, isFetching } = useTransactions({
     page, limit: 25,
     search:        search         || undefined,
     status:        status         || undefined,
     paymentMethod: paymentMethod  || undefined,
+    cashierId:     cashierId      ? Number(cashierId) : undefined,
+    customerId:    customerId    ?? undefined,
     dateFrom:      dateFrom       || undefined,
     dateTo:        dateTo         || undefined,
   });
@@ -378,6 +462,12 @@ export function TransactionsPanel() {
     voided:      stats.voided,
     refunded:    stats.refunded,
   }), [stats]);
+
+  const customerLabel = activeCustomer
+    ? ([activeCustomer.first_name, activeCustomer.last_name].filter(Boolean).join(" ") ||
+       activeCustomer.name ||
+       `Customer #${activeCustomer.id}`)
+    : "";
 
   const columns = useMemo(() => [
     {
@@ -541,6 +631,28 @@ export function TransactionsPanel() {
                 onPaymentChange={(v) => { setPaymentMethod(v); setPage(1); }}
                 onDateRangeChange={handleDateRangeChange}
                 onClear={clearFilters}
+                cashierId={cashierId}
+                onCashierChange={(v) => { setCashierId(v); setPage(1); }}
+                cashiers={cashiers}
+                customerId={customerId}
+                customerLabel={customerLabel}
+                onCustomerOpen={() => setCustomerSearchOpen(true)}
+              />
+
+              <CustomerSearchBar
+                open={customerSearchOpen}
+                onOpenChange={setCustomerSearchOpen}
+                activeCustomer={activeCustomer}
+                onSelect={(c) => {
+                  setActiveCustomer(c);
+                  setCustomerId(c.id);
+                  setPage(1);
+                }}
+                onClear={() => {
+                  setActiveCustomer(null);
+                  setCustomerId(null);
+                  setPage(1);
+                }}
               />
 
               {/* Status tabs */}
