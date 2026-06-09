@@ -708,70 +708,86 @@ export function PurchaseOrderDetailPanel() {
                 {items.length === 0 ? (
                   <EmptyState icon={Package} title="No items" description="This purchase order has no line items." />
                 ) : (
-                  <div className="space-y-0">
-                    {/* Column headers */}
-                    <div className="grid grid-cols-[1fr_80px_80px_100px_90px] gap-2 px-1 pb-2 border-b border-border/40">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</span>
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-center">Ordered</span>
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-center">Received</span>
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-right">Unit Cost</span>
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-right">Total</span>
-                    </div>
-
-                    {items.map((item) => {
-                      const ordered  = parseFloat(item.quantity_ordered);
-                      const received = parseFloat(item.quantity_received ?? 0);
-                      const isShort  = isReceived && received < ordered;
-                      const isFullRx = isReceived && received >= ordered;
-                      return (
-                        <div key={item.id}
-                          className="grid grid-cols-[1fr_80px_80px_100px_90px] gap-2 items-center py-3 border-b border-border/30 last:border-0">
-                          <div className="min-w-0 flex items-center gap-2">
-                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-primary/20 bg-primary/8 text-[9px] font-bold text-primary uppercase">
-                              {(item.item_name ?? "").slice(0, 2)}
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-xs font-semibold text-foreground truncate">{item.item_name}</p>
-                              <p className="text-[10px] font-mono text-muted-foreground">{item.sku}</p>
-                            </div>
-                          </div>
-                          <div className="text-center">
-                            <span className="text-xs font-mono text-foreground">{formatQuantity(ordered, item.measurement_type, item.unit_type)}</span>
-                          </div>
-                          <div className="text-center">
-                            {isReceived ? (
-                              <span className={cn(
-                                "text-xs font-mono font-semibold",
-                                isFullRx ? "text-success" : isShort ? "text-warning" : "text-muted-foreground",
-                              )}>
-                                {formatQuantity(received, item.measurement_type, item.unit_type)}
-                                {isShort && <span className="text-[9px] text-warning ml-0.5">▼</span>}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-muted-foreground/40">—</span>
-                            )}
-                          </div>
-                          <div className="text-right">
-                            <span className="text-xs font-mono text-muted-foreground">
-                              {formatCurrency(parseFloat(item.unit_cost))}
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm">
+                      <thead>
+                        <tr className="border-b border-border/60 bg-muted/20">
+                          <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</th>
+                          <th className="px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-24">Ordered</th>
+                          <th className="px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-24">Received</th>
+                          <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-28">Unit Cost</th>
+                          <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-28">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {items.map((item) => {
+                          const ordered  = parseFloat(item.quantity_ordered);
+                          const received = parseFloat(item.quantity_received ?? 0);
+                          const isShort  = isReceived && received < ordered;
+                          const isFullRx = isReceived && received >= ordered;
+                          return (
+                            <tr key={item.id} className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors">
+                              <td className="px-3 py-2.5">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-primary/20 bg-primary/8 text-[9px] font-bold text-primary uppercase">
+                                    {(item.item_name ?? "").slice(0, 2)}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-semibold text-foreground truncate">{item.item_name}</p>
+                                    <p className="text-[10px] font-mono text-muted-foreground">{item.sku}</p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-3 py-2.5 text-center">
+                                <span className="text-xs font-mono text-foreground tabular-nums">
+                                  {formatQuantity(ordered, item.measurement_type, item.unit_type)}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2.5 text-center">
+                                {isReceived ? (
+                                  <span className={cn(
+                                    "text-xs font-mono font-semibold tabular-nums",
+                                    isFullRx ? "text-success" : isShort ? "text-warning" : "text-muted-foreground",
+                                  )}>
+                                    {formatQuantity(received, item.measurement_type, item.unit_type)}
+                                    {isShort && <span className="text-[9px] text-warning ml-0.5">▼</span>}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground/40">—</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2.5 text-right">
+                                <span className="text-xs font-mono text-muted-foreground tabular-nums">
+                                  {formatCurrency(parseFloat(item.unit_cost))}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2.5 text-right">
+                                <span className="text-xs font-mono font-bold text-foreground tabular-nums">
+                                  {formatCurrency(parseFloat(item.line_total))}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t border-border bg-muted/10">
+                          <td colSpan={3} className="px-3 py-2.5">
+                            <span className="text-xs font-semibold text-foreground">
+                              {items.length} item{items.length !== 1 ? "s" : ""}
                             </span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-xs font-mono font-semibold text-foreground">
-                              {formatCurrency(parseFloat(item.line_total))}
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Order Total</span>
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <span className="text-sm font-bold font-mono tabular-nums text-primary">
+                              {formatCurrency(totalValue)}
                             </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {/* Total row */}
-                    <div className="flex items-center justify-between pt-3 border-t border-border">
-                      <span className="text-xs font-semibold text-foreground">Order Total</span>
-                      <span className="text-sm font-bold font-mono tabular-nums text-primary">
-                        {formatCurrency(totalValue)}
-                      </span>
-                    </div>
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
                   </div>
                 )}
               </Section>
@@ -791,34 +807,54 @@ export function PurchaseOrderDetailPanel() {
                 )
               }
             >
-              <div className="space-y-0">
-                <div className="grid grid-cols-[120px_1fr_120px_140px] gap-2 px-1 pb-2 border-b border-border/40">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Method</span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Reference</span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-right">Amount</span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground text-right">Date</span>
-                </div>
-                {poPayments.map((p, idx) => (
-                  <div key={p.id ?? idx}
-                    className="grid grid-cols-[120px_1fr_120px_140px] gap-2 items-center py-2.5 border-b border-border/30 last:border-0">
-                    <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground w-fit">
-                      {PM_LABELS[p.payment_method] ?? p.payment_method ?? "—"}
-                    </span>
-                    <span className="text-xs font-mono text-muted-foreground truncate">{p.reference ?? "—"}</span>
-                    <span className="text-xs font-mono font-bold text-success text-right tabular-nums">
-                      {formatCurrency(parseFloat(p.amount ?? 0))}
-                    </span>
-                    <span className="text-xs text-muted-foreground text-right">
-                      {formatDateTime(p.created_at)}
-                    </span>
-                  </div>
-                ))}
-                <div className="flex items-center justify-between pt-3 border-t border-border mt-1">
-                  <span className="text-xs font-semibold text-foreground">Total Paid (this PO)</span>
-                  <span className="text-sm font-bold font-mono tabular-nums text-success">
-                    {formatCurrency(poPayments.reduce((s, p) => s + parseFloat(p.amount ?? 0), 0))}
-                  </span>
-                </div>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border/60 bg-muted/20">
+                      <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-32">Method</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Reference</th>
+                      <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-28">Amount</th>
+                      <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground w-36">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {poPayments.map((p, idx) => (
+                      <tr key={p.id ?? idx} className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors">
+                        <td className="px-3 py-2.5">
+                          <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground whitespace-nowrap">
+                            {PM_LABELS[p.payment_method] ?? p.payment_method ?? "—"}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span className="text-xs font-mono text-muted-foreground truncate block max-w-[180px]">{p.reference ?? "—"}</span>
+                          {p.notes && <span className="text-[10px] text-muted-foreground/70 truncate block">{p.notes}</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <span className="text-xs font-mono font-bold text-success tabular-nums">
+                            {formatCurrency(parseFloat(p.amount ?? 0))}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            {formatDateTime(p.created_at)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-border bg-muted/10">
+                      <td colSpan={2} className="px-3 py-2.5">
+                        <span className="text-xs font-semibold text-foreground">Total Paid (this PO)</span>
+                      </td>
+                      <td colSpan={2} className="px-3 py-2.5 text-right">
+                        <span className="text-sm font-bold font-mono tabular-nums text-success">
+                          {formatCurrency(poPayments.reduce((s, p) => s + parseFloat(p.amount ?? 0), 0))}
+                        </span>
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
             </Section>
           )}

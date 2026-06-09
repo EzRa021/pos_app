@@ -99,6 +99,29 @@ fn table_ts_expr(table: &str) -> &'static str {
     }
 }
 
+/// Returns the actual JSON column name to read when tracking the pull cursor.
+/// This mirrors table_ts_expr but returns the plain column name so we can
+/// extract the timestamp value from row_to_json output to advance the cursor
+/// to the exact max row timestamp — not Utc::now() which would race ahead.
+fn ts_col_for_pull(table: &str) -> &'static str {
+    match table {
+        "item_stock" => "updated_at",
+        "transactions"         |
+        "payments"             |
+        "returns"              |
+        "purchase_orders"      |
+        "cash_movements"       |
+        "reorder_alerts"       |
+        "notifications"        |
+        "expenses"             |
+        "transaction_items"    |
+        "return_items"         |
+        "purchase_order_items" |
+        "shifts"               => "created_at",
+        _ => "updated_at",
+    }
+}
+
 /// Load the current business_id from app_config. Returns None when onboarding
 /// has not yet completed. Used as a fallback inside queue_row and backfill.
 async fn load_biz_id(pool: &PgPool) -> Option<Uuid> {
@@ -127,6 +150,52 @@ pub async fn is_cloud_sync_enabled(pool: &PgPool) -> bool {
         .flatten()
         .map(|s| s.trim() == "true")
         .unwrap_or(false)
+}
+
+/// On startup, reset any sync_queue rows stuck in 'syncing' status back to
+/// 'pending' so they are retried. Rows get stuck when the app crashes or is
+/// force-quit while a push cycle is in progress — the worker claims the row
+/// ('syncing') but never marks it 'synced' or 'failed'. Without this reset
+/// they would be permanently invisible to the push worker on the next launch.
+pub async fn reset_syncing_rows(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"UPDATE sync_queue
+           SET status  = 'pending',
+               error   = 'Reset from syncing state on startup'
+           WHERE status = 'syncing'"#
+    )
+    .execute(pool)
+    .await?;
+
+    let n = result.rows_affected();
+    if n > 0 {
+        tracing::info!("Sync: reset {n} stuck 'syncing' row(s) to pending on startup.");
+    }
+    Ok(n)
+}
+
+/// Auto-enable cloud sync when embedded Supabase credentials connect
+/// successfully on first launch. Uses INSERT ... ON CONFLICT DO NOTHING so a
+/// user who has explicitly disabled sync is never overridden.
+pub async fn auto_enable_sync_if_needed(pool: &PgPool) {
+    let result = sqlx::query!(
+        "INSERT INTO app_config (key, value) VALUES ('cloud_sync_enabled', 'true')
+         ON CONFLICT (key) DO NOTHING"
+    )
+    .execute(pool)
+    .await;
+
+    match result {
+        Ok(r) if r.rows_affected() > 0 => {
+            tracing::info!("Sync: cloud_sync_enabled auto-enabled via embedded credentials.");
+        }
+        Ok(_) => {
+            tracing::debug!("Sync: cloud_sync_enabled already set — not overriding.");
+        }
+        Err(e) => {
+            tracing::warn!("Sync: could not auto-enable cloud_sync_enabled: {e}");
+        }
+    }
 }
 
 /// On startup, reset any sync_queue rows that failed due to FK-constraint
@@ -712,8 +781,13 @@ fn pk_col(table: &str) -> &'static str {
 /// Spawn the background pull loop. Should be called once at app startup,
 /// alongside `run_sync_loop`. Polls Supabase every POLL_SECS for rows that
 /// are newer than the stored cursor and UPSERTs them into local PostgreSQL.
-/// All tables are filtered by business_id directly (every table has the column
-/// via migration 0055 + trigger 0075) — no indirect store_id resolution needed.
+///
+/// # Cursor accuracy
+/// The cursor is advanced to the MAX timestamp of the pulled rows — NOT to
+/// `Utc::now()`. Advancing to now() races ahead of rows that arrive at Supabase
+/// with a timestamp slightly behind the wall clock (network lag, batch writes),
+/// silently skipping them forever. Using the actual max pulled timestamp ensures
+/// every row is seen at least once.
 pub async fn run_pull_loop(state: AppState) {
     tracing::info!("Cloud pull worker started — polling every {POLL_SECS}s");
     loop {
@@ -780,6 +854,11 @@ pub async fn run_pull_loop(state: AppState) {
 
         let biz_id_str = business_id.to_string();
         let mut any_pulled = false;
+        // Track the maximum row timestamp seen across all pulled tables.
+        // We advance the cursor to this value — NOT to Utc::now() — so rows
+        // that arrive at Supabase with a timestamp behind the wall clock are
+        // never silently skipped.
+        let mut max_pulled_ts: Option<chrono::DateTime<Utc>> = None;
 
         for table in SYNC_TABLES {
             let ts_expr = table_ts_expr(table);
@@ -813,12 +892,30 @@ pub async fn run_pull_loop(state: AppState) {
             tracing::debug!("Pull: {} row(s) from {table}", cloud_rows.len());
             any_pulled = true;
 
+            // Column to read for timestamp tracking — mirrors table_ts_expr but
+            // gives the plain JSON key so we can extract it from row_to_json output.
+            let ts_col = ts_col_for_pull(table);
+
             for row_val in cloud_rows {
                 let obj = match row_val.as_object() {
                     Some(o) => o,
                     None    => continue,
                 };
                 if obj.is_empty() { continue; }
+
+                // ── Cursor tracking: record max timestamp of pulled rows ───────
+                // Postgres row_to_json emits timestamptz as ISO 8601 with offset
+                // (e.g. "2024-01-15T10:30:00.123456+00:00"), which is valid RFC3339.
+                if let Some(ts_str) = obj.get(ts_col).and_then(|v| v.as_str()) {
+                    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(ts_str) {
+                        let ts = parsed.with_timezone(&Utc);
+                        max_pulled_ts = Some(match max_pulled_ts {
+                            None                          => ts,
+                            Some(existing) if ts > existing => ts,
+                            Some(existing)                => existing,
+                        });
+                    }
+                }
 
                 let cols: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
                 let pk = pk_col(table);
@@ -846,11 +943,19 @@ pub async fn run_pull_loop(state: AppState) {
         }
 
         if any_pulled {
-            let now = Utc::now().to_rfc3339();
+            // Advance the cursor to the actual max row timestamp we pulled.
+            // Fall back to Utc::now() only if every row had an unparseable
+            // timestamp (should not happen in practice).
+            let new_cursor = max_pulled_ts
+                .map(|ts| ts.to_rfc3339())
+                .unwrap_or_else(|| Utc::now().to_rfc3339());
+
+            tracing::debug!("Pull: advancing cursor to {new_cursor}");
+
             let _ = sqlx::query!(
                 "INSERT INTO app_config (key, value) VALUES ('cloud_pull_cursor', $1)
                  ON CONFLICT (key) DO UPDATE SET value = $1",
-                now,
+                new_cursor,
             )
             .execute(&local_pool)
             .await;

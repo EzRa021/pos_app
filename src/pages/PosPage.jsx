@@ -676,6 +676,12 @@ export default function PosPage() {
       }
 
       // Skip all other shortcuts when a modal is open or modifier key held
+      // Exception: Ctrl+K / Cmd+K must always pass through to the global
+      // command palette handler registered in AppShell — don't swallow it here.
+      const isMac   = navigator.platform.toUpperCase().includes("MAC");
+      const paletteHotkey = isMac ? e.metaKey : e.ctrlKey;
+      if (paletteHotkey && (e.key === "k" || e.key === "K")) return; // let AppShell handle it
+
       if (modalOpen() || e.ctrlKey || e.altKey || e.metaKey) return;
 
       if (e.key === "F1") { e.preventDefault(); handlePaymentClick(PAYMENT_METHODS.CASH);     return; }

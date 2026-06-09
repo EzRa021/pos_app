@@ -18,7 +18,7 @@ import {
   ShoppingCart, Receipt, RotateCcw, Clock, Package, Boxes, Truck,
   ClipboardList, Users, CreditCard, Wallet, BarChart3, Tag, UserCog,
   Settings, Bell, FileText, ArrowLeftRight, ShieldCheck, Banknote,
-  Search, Loader2, ChevronRight, Store,
+  Search, Loader2, ChevronRight, Store, Building2, BadgePercent, FolderTree,
 } from "lucide-react";
 
 import { useUiStore }     from "@/stores/ui.store";
@@ -35,8 +35,8 @@ const NAV_PAGES = [
   { title: "EOD Reports",      path: "/eod",              icon: FileText,      group: "Operations", roles: ["super_admin","admin","manager"] },
   { title: "Notifications",    path: "/notifications",    icon: Bell,          group: "Operations" },
   { title: "Products",         path: "/products",         icon: Package,       group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
-  { title: "Categories",       path: "/categories",       icon: Tag,           group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
-  { title: "Departments",      path: "/departments",      icon: Tag,           group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
+  { title: "Categories",       path: "/categories",       icon: FolderTree,    group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
+  { title: "Departments",      path: "/departments",      icon: Building2,     group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
   { title: "Inventory",          path: "/inventory",          icon: Boxes,         group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
   { title: "Stock Counts",       path: "/stock-counts",       icon: ClipboardList, group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
   { title: "Suppliers",          path: "/suppliers",          icon: Truck,         group: "Catalog",    roles: ["super_admin","admin","manager","stock_keeper"] },
@@ -47,8 +47,8 @@ const NAV_PAGES = [
   { title: "Credit Sales",       path: "/credit-sales",       icon: CreditCard,    group: "Customers",  roles: ["super_admin","admin","manager","cashier"] },
   { title: "Wallets",            path: "/wallet",             icon: Wallet,        group: "Customers",  roles: ["super_admin","admin","manager","cashier"] },
   { title: "Expenses",           path: "/expenses",           icon: Receipt,       group: "Finance",    roles: ["super_admin","admin","manager"] },
-  { title: "Analytics",        path: "/analytics",        icon: BarChart3,     group: "Finance",    roles: ["super_admin","admin","manager"] },
-  { title: "Price Management", path: "/price-management", icon: Tag,           group: "Finance",    roles: ["super_admin","admin","manager"] },
+  { title: "Analytics",        path: "/analytics/overview", icon: BarChart3,     group: "Finance",    roles: ["super_admin","admin","manager"] },
+  { title: "Price Management", path: "/price-management", icon: BadgePercent,  group: "Finance",    roles: ["super_admin","admin","manager"] },
   { title: "Users",            path: "/users",            icon: UserCog,       group: "Admin",      roles: ["super_admin","admin"] },
   { title: "Audit Log",        path: "/audit",            icon: ShieldCheck,   group: "Admin",      roles: ["super_admin","admin"] },
   { title: "Settings",         path: "/settings",         icon: Settings,      group: "Admin",      roles: ["super_admin","admin","manager"] },

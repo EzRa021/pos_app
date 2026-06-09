@@ -3,6 +3,7 @@
 // Create PO with item search — item module integration
 // ============================================================================
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import ReactDOM from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
   Truck, Package, Search, X, Plus, Minus, Trash2,
@@ -122,7 +123,9 @@ function ItemSearchBox({ storeId, onAdd, addedIds }) {
 function SupplierSearchBox({ storeId, value, onChange }) {
   const [query,   setQuery]   = useState(value?.supplier_name ?? "");
   const [open,    setOpen]    = useState(false);
-  const ref = useRef(null);
+  const [dropPos, setDropPos] = useState({ top: 0, left: 0, width: 0 });
+  const ref      = useRef(null);
+  const inputRef = useRef(null);
 
   const { data: results = [], isFetching } = useQuery({
     queryKey: ["supplier-search-po", storeId, query],
@@ -131,8 +134,32 @@ function SupplierSearchBox({ storeId, value, onChange }) {
     staleTime: 30 * 1000,
   });
 
+  // Recalculate dropdown position every time it opens or window scrolls/resizes
+  const reposition = useCallback(() => {
+    if (!inputRef.current) return;
+    const r = inputRef.current.getBoundingClientRect();
+    setDropPos({ top: r.bottom + 6, left: r.left, width: r.width });
+  }, []);
+
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    if (!open) return;
+    reposition();
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open, reposition]);
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (
+        ref.current && !ref.current.contains(e.target) &&
+        !document.getElementById("supplier-dropdown-portal")?.contains(e.target)
+      ) setOpen(false);
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
@@ -149,61 +176,94 @@ function SupplierSearchBox({ storeId, value, onChange }) {
     setOpen(false);
   };
 
+  const showDropdown = open && query.trim().length >= 1;
+
   return (
-    <div ref={ref} className="relative">
-      <div className="relative">
-        <Truck className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-        <Input
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); onChange(null); setOpen(true); }}
-          onFocus={() => query && setOpen(true)}
-          placeholder="Search and select a supplier…"
-          className={cn("pl-9 pr-8 h-9 text-sm", value && "border-success/40 bg-success/5")}
-        />
-        {(query || value) && (
-          <button onClick={handleClear}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-            <X className="h-3.5 w-3.5" />
-          </button>
+    <>
+      <div ref={ref} className="relative">
+        <div className="relative">
+          <Truck className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); onChange(null); setOpen(true); }}
+            onFocus={() => { if (query) setOpen(true); }}
+            placeholder="Search and select a supplier…"
+            className={cn("pl-9 pr-8 h-9 text-sm", value && "border-success/40 bg-success/5")}
+            autoComplete="off"
+          />
+          {(query || value) && (
+            <button
+              onClick={handleClear}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+
+        {value && (
+          <div className="mt-2 flex items-center gap-2 rounded-lg border border-success/20 bg-success/5 px-3 py-2">
+            <Check className="h-3.5 w-3.5 text-success shrink-0" />
+            <div>
+              <p className="text-xs font-semibold text-foreground">{value.supplier_name}</p>
+              <p className="text-[10px] text-muted-foreground">
+                {value.supplier_code} · {value.payment_terms ?? "Net 30"}
+              </p>
+            </div>
+          </div>
         )}
       </div>
 
-      {open && query.trim().length >= 1 && (
-        <div className="absolute top-full mt-1 left-0 right-0 z-50 rounded-xl border border-border bg-card shadow-lg overflow-hidden">
+      {/* Portal dropdown — rendered at root level so overflow:hidden on card never clips it */}
+      {showDropdown && typeof document !== "undefined" && ReactDOM.createPortal(
+        <div
+          id="supplier-dropdown-portal"
+          style={{
+            position: "fixed",
+            top:      dropPos.top,
+            left:     dropPos.left,
+            width:    dropPos.width,
+            zIndex:   9999,
+          }}
+          className="rounded-xl border border-border bg-card shadow-xl overflow-hidden"
+        >
           {isFetching && (
             <div className="px-4 py-3 text-[11px] text-muted-foreground">Searching…</div>
           )}
           {!isFetching && results.length === 0 && (
-            <div className="px-4 py-3 text-[11px] text-muted-foreground">No suppliers found</div>
+            <div className="px-4 py-3 text-[11px] text-muted-foreground">No suppliers found for &ldquo;{query}&rdquo;</div>
           )}
           {results.map((s) => (
-            <button key={s.id} onClick={() => handleSelect(s)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50 transition-colors">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-primary/25 bg-primary/10 text-[9px] font-bold text-primary uppercase">
+            <button
+              key={s.id}
+              onMouseDown={(e) => { e.preventDefault(); handleSelect(s); }}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/60 transition-colors border-b border-border/40 last:border-0"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-[10px] font-bold text-primary uppercase">
                 {(s.supplier_name ?? "").slice(0, 2)}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-semibold text-foreground truncate">{s.supplier_name}</p>
-                {s.contact_name && <p className="text-[10px] text-muted-foreground">{s.contact_name}</p>}
+                {s.contact_name && (
+                  <p className="text-[10px] text-muted-foreground truncate">{s.contact_name}</p>
+                )}
+                {s.email && (
+                  <p className="text-[10px] text-muted-foreground font-mono truncate">{s.email}</p>
+                )}
               </div>
-              <span className="text-[10px] font-mono text-muted-foreground shrink-0">{s.supplier_code}</span>
+              <div className="text-right shrink-0">
+                <span className="text-[10px] font-mono text-muted-foreground">{s.supplier_code}</span>
+                {s.payment_terms && (
+                  <p className="text-[9px] text-muted-foreground">{s.payment_terms}</p>
+                )}
+              </div>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
-
-      {value && (
-        <div className="mt-2 flex items-center gap-2 rounded-lg border border-success/20 bg-success/5 px-3 py-2">
-          <Check className="h-3.5 w-3.5 text-success shrink-0" />
-          <div>
-            <p className="text-xs font-semibold text-foreground">{value.supplier_name}</p>
-            <p className="text-[10px] text-muted-foreground">
-              {value.supplier_code} · {value.payment_terms ?? "Net 30"}
-            </p>
-          </div>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 

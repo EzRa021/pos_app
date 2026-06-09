@@ -12,8 +12,9 @@ use crate::{
     state::{AppState, SupabaseConfig},
 };
 use crate::commands::auth::guard_permission;
-use crate::database::pool::create_cloud_pool;
+use crate::database::pool::create_cloud_pool_with_migrations;
 use crate::database::sync::is_cloud_sync_enabled;
+use uuid::Uuid;
 
 const STORE_FILE:       &str = "settings.json";
 const SUPABASE_CFG_KEY: &str = "supabase_config";
@@ -31,13 +32,8 @@ pub struct SaveSupabaseConfigPayload {
 pub struct SupabaseConfigResponse {
     pub url:           String,
     pub anon_key:      String,
-    /// db_url is intentionally omitted — it contains a password and must never
-    /// be returned to the frontend. The frontend only needs url + anon_key.
     pub is_configured: bool,
-    /// Whether the cloud DB pool is currently reachable.
     pub is_connected:  bool,
-    /// True when credentials were embedded at build time (SUPABASE_DB_URL env).
-    /// False = credentials came from user-configured settings.json.
     pub is_embedded:   bool,
 }
 
@@ -47,15 +43,41 @@ pub struct SyncStatusResponse {
     pub failed:             i64,
     pub synced_today:       i64,
     pub is_cloud_connected: bool,
-    /// Background push/pull to Supabase — off by default (`app_config.cloud_sync_enabled`).
     pub cloud_sync_enabled: bool,
+    pub last_synced_at:     Option<String>,
+}
+
+/// A single failed sync_queue row surfaced to the frontend so the user can
+/// see what failed and why without needing to read backend logs.
+#[derive(Debug, Serialize)]
+pub struct FailedSyncRow {
+    pub id:         i64,   // sync_queue.id is BIGINT → i64
+    pub table_name: String,
+    pub operation:  String,
+    pub row_id:     String,
+    pub retries:    i32,   // retries is INT → i32
+    pub error:      Option<String>,
+}
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+
+async fn load_biz_id(pool: &sqlx::PgPool) -> Option<Uuid> {
+    sqlx::query_scalar!("SELECT value FROM app_config WHERE key = 'business_id'")
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<Uuid>().ok())
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-/// Save Supabase credentials, persist them to settings.json, then attempt to
-/// connect. If the host is unreachable right now the config is still saved —
-/// the background sync worker will retry every 5 seconds.
+/// Save Supabase credentials, persist them to settings.json, then connect
+/// and automatically migrate the cloud schema.
+///
+/// Migrations run unconditionally — they are idempotent and fast when the
+/// schema is already up to date. This guarantees the cloud DB is always in
+/// sync with the binary regardless of how credentials were configured.
 #[tauri::command]
 pub async fn save_supabase_config(
     state:   State<'_, AppState>,
@@ -74,7 +96,7 @@ pub async fn save_supabase_config(
         db_url:   payload.db_url.trim().to_string(),
     };
 
-    // ── Persist to settings.json (via stored AppHandle) ───────────────────────
+    // ── Persist to settings.json ──────────────────────────────────────────────
     {
         let handle_guard = state.app_handle.lock().await;
         if let Some(ref handle) = *handle_guard {
@@ -92,8 +114,6 @@ pub async fn save_supabase_config(
                 }
                 Err(e) => tracing::warn!("Could not open settings store: {e}"),
             }
-        } else {
-            tracing::warn!("AppHandle not yet set — Supabase config will not persist across restarts.");
         }
     }
 
@@ -103,17 +123,20 @@ pub async fn save_supabase_config(
         *cfg_guard = Some(config.clone());
     }
 
-    // ── Try to connect — non-fatal if unreachable right now ───────────────────
-    let is_connected = match create_cloud_pool(&config.db_url).await {
+    // ── Connect AND auto-migrate the cloud schema ─────────────────────────────
+    // Using create_cloud_pool_with_migrations (not create_cloud_pool) so the
+    // schema is always consistent with the binary — no extra "run migrations"
+    // step required from the user. Idempotent migrations make this safe.
+    let is_connected = match create_cloud_pool_with_migrations(&config.db_url).await {
         Ok(cloud_pool) => {
             let mut cloud_guard = state.cloud_db.lock().await;
             *cloud_guard = Some(cloud_pool);
-            tracing::info!("Supabase cloud DB connected.");
+            tracing::info!("Supabase connected and schema migrated.");
             true
         }
         Err(e) => {
             tracing::warn!(
-                "Supabase cloud connect failed ({}). Config saved — sync worker will retry.",
+                "Supabase connect/migrate failed ({}). Config saved — sync worker will retry.",
                 e
             );
             false
@@ -125,7 +148,7 @@ pub async fn save_supabase_config(
         anon_key:      payload.anon_key.trim().to_string(),
         is_configured: true,
         is_connected,
-        is_embedded:   false, // user-configured, not embedded
+        is_embedded:   false,
     })
 }
 
@@ -137,7 +160,6 @@ pub async fn clear_supabase_config(
 ) -> AppResult<()> {
     guard_permission(&state, &token, "settings.update").await?;
 
-    // Remove from settings.json
     {
         let handle_guard = state.app_handle.lock().await;
         if let Some(ref handle) = *handle_guard {
@@ -169,11 +191,10 @@ pub async fn get_supabase_config(
     state: State<'_, AppState>,
     token: String,
 ) -> AppResult<Option<SupabaseConfigResponse>> {
-    // Any authenticated user can retrieve the anon key — it's a public key
     let _ = crate::commands::auth::guard(&state, &token).await?;
 
-    let cfg_guard   = state.supabase_config.read().await;
-    let is_conn     = state.cloud_pool().await.is_some();
+    let cfg_guard = state.supabase_config.read().await;
+    let is_conn   = state.cloud_pool().await.is_some();
 
     Ok(cfg_guard.as_ref().map(|c| SupabaseConfigResponse {
         url:           c.url.clone(),
@@ -184,7 +205,7 @@ pub async fn get_supabase_config(
     }))
 }
 
-/// Return current sync queue statistics.
+/// Return current sync queue statistics, filtered to the current business.
 #[tauri::command]
 pub async fn get_sync_status(
     state: State<'_, AppState>,
@@ -193,26 +214,84 @@ pub async fn get_sync_status(
     guard_permission(&state, &token, "settings.read").await?;
     let pool = state.pool().await?;
 
-    let pending: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM sync_queue WHERE status = 'pending'"
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or(0);
+    let biz_id: Option<Uuid> = load_biz_id(&pool).await;
 
-    let failed: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM sync_queue WHERE status = 'failed'"
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or(0);
+    let (pending, failed, synced_today, last_synced_at) = match biz_id {
+        Some(bid) => {
+            let pending: i64 = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM sync_queue
+                 WHERE status = 'pending'
+                   AND (business_id = $1 OR business_id IS NULL)",
+                bid,
+            )
+            .fetch_one(&pool)
+            .await?
+            .unwrap_or(0);
 
-    let synced_today: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM sync_queue WHERE status = 'synced' AND synced_at >= CURRENT_DATE"
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or(0);
+            let failed: i64 = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM sync_queue
+                 WHERE status = 'failed'
+                   AND (business_id = $1 OR business_id IS NULL)",
+                bid,
+            )
+            .fetch_one(&pool)
+            .await?
+            .unwrap_or(0);
+
+            let synced_today: i64 = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM sync_queue
+                 WHERE status = 'synced'
+                   AND synced_at >= CURRENT_DATE
+                   AND (business_id = $1 OR business_id IS NULL)",
+                bid,
+            )
+            .fetch_one(&pool)
+            .await?
+            .unwrap_or(0);
+
+            let last_synced_at: Option<String> = sqlx::query_scalar!(
+                "SELECT synced_at::text FROM sync_queue
+                 WHERE status = 'synced'
+                   AND synced_at >= CURRENT_DATE
+                   AND (business_id = $1 OR business_id IS NULL)
+                 ORDER BY synced_at DESC
+                 LIMIT 1",
+                bid,
+            )
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+
+            (pending, failed, synced_today, last_synced_at)
+        }
+        None => {
+            let pending: i64 = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM sync_queue WHERE status = 'pending'"
+            )
+            .fetch_one(&pool)
+            .await?
+            .unwrap_or(0);
+
+            let failed: i64 = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM sync_queue WHERE status = 'failed'"
+            )
+            .fetch_one(&pool)
+            .await?
+            .unwrap_or(0);
+
+            let synced_today: i64 = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM sync_queue
+                 WHERE status = 'synced' AND synced_at >= CURRENT_DATE"
+            )
+            .fetch_one(&pool)
+            .await?
+            .unwrap_or(0);
+
+            (pending, failed, synced_today, None)
+        }
+    };
 
     let is_cloud_connected = state.cloud_pool().await.is_some();
     let cloud_sync_enabled = is_cloud_sync_enabled(&pool).await;
@@ -223,13 +302,11 @@ pub async fn get_sync_status(
         synced_today,
         is_cloud_connected,
         cloud_sync_enabled,
+        last_synced_at,
     })
 }
 
-/// Persist whether background cloud replication is allowed (`app_config.cloud_sync_enabled`).
-/// This flag gates the push worker (sync_queue → Supabase) and the pull worker
-/// (Supabase → local). It does NOT affect onboarding read paths — those call the
-/// cloud pool directly and are always available when credentials are configured.
+/// Enable or disable background cloud replication.
 #[tauri::command]
 pub async fn set_cloud_sync_enabled(
     state:   State<'_, AppState>,
@@ -238,7 +315,7 @@ pub async fn set_cloud_sync_enabled(
 ) -> AppResult<()> {
     guard_permission(&state, &token, "settings.update").await?;
     let pool = state.pool().await?;
-    let val = if enabled { "true" } else { "false" };
+    let val  = if enabled { "true" } else { "false" };
     sqlx::query!(
         "INSERT INTO app_config (key, value) VALUES ('cloud_sync_enabled', $1)
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
@@ -246,12 +323,11 @@ pub async fn set_cloud_sync_enabled(
     )
     .execute(&pool)
     .await?;
-    tracing::info!("cloud_sync_enabled set to {enabled} by authenticated user.");
+    tracing::info!("cloud_sync_enabled set to {enabled}.");
     Ok(())
 }
 
 /// Backfill the sync_queue with any local rows that haven't been queued yet.
-/// Call this once after a fresh install, a migration, or a sync reset.
 #[tauri::command]
 pub async fn trigger_backfill_sync(
     state: State<'_, AppState>,
@@ -277,11 +353,45 @@ pub async fn retry_failed_sync(
     let pool = state.pool().await?;
 
     let affected = sqlx::query!(
-        "UPDATE sync_queue SET status = 'pending', retries = 0, error = NULL WHERE status = 'failed'"
+        "UPDATE sync_queue
+         SET status = 'pending', retries = 0, error = NULL
+         WHERE status = 'failed'"
     )
     .execute(&pool)
     .await?
     .rows_affected();
 
     Ok(serde_json::json!({ "retried": affected }))
+}
+
+/// Return the first 50 failed sync_queue rows with their error messages.
+#[tauri::command]
+pub async fn get_failed_sync_rows(
+    state: State<'_, AppState>,
+    token: String,
+) -> AppResult<Vec<FailedSyncRow>> {
+    guard_permission(&state, &token, "settings.read").await?;
+    let pool = state.pool().await?;
+
+    let rows = sqlx::query!(
+        r#"SELECT id, table_name, operation, row_id, retries, error
+           FROM sync_queue
+           WHERE status = 'failed'
+           ORDER BY retries DESC, id DESC
+           LIMIT 50"#
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| FailedSyncRow {
+            id:         r.id,
+            table_name: r.table_name,
+            operation:  r.operation,
+            row_id:     r.row_id,
+            retries:    r.retries,
+            error:      r.error,
+        })
+        .collect())
 }

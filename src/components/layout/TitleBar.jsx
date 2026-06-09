@@ -86,19 +86,26 @@ function SearchTrigger() {
   return (
     <button
       onClick={() => setOpen(true)}
+      tabIndex={0}
       className={cn(
         "hidden sm:flex items-center gap-1.5 shrink-0",
         "rounded-md border border-border/50 bg-muted/30 px-2 py-1",
         "text-[11px] text-muted-foreground/60 hover:text-muted-foreground",
         "hover:bg-muted/60 hover:border-border/80 transition-colors duration-100",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
       )}
-      tabIndex={-1}
+      title="Search (Ctrl+K)"
     >
       <Search className="h-3 w-3" />
       <span>Search</span>
-      <kbd className="ml-1 rounded border border-border/50 bg-muted px-1 py-px font-mono text-[9px] leading-none">
-        {isMac ? "⌘K" : "Ctrl K"}
-      </kbd>
+      <div className="ml-1 flex items-center gap-0.5">
+        <kbd className="rounded border border-border/50 bg-muted px-1 py-px font-mono text-[9px] leading-none">
+          {isMac ? "⌘" : "Ctrl"}
+        </kbd>
+        <kbd className="rounded border border-border/50 bg-muted px-1 py-px font-mono text-[9px] leading-none">
+          K
+        </kbd>
+      </div>
     </button>
   );
 }

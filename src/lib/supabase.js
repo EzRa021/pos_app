@@ -3,14 +3,16 @@
 // The anon key is safe for frontend use — it only grants read access to
 // realtime channels. All writes go through the Rust backend.
 //
-// The client is lazy — initialised on first call to getSupabaseClient().
+// The client is lazy — initialised on first call to initSupabaseClient().
 // Returns null if Supabase hasn't been configured yet.
 
 import { createClient } from "@supabase/supabase-js";
 import { rpc } from "@/lib/apiClient";
 
-let _client = null;
+let _client     = null;
 let _initPromise = null;
+/** Channel kept alive for the lifetime of the app session. */
+let _syncChannel = null;
 
 /**
  * Initialise the Supabase client by fetching config from the Rust backend.
@@ -32,7 +34,7 @@ export async function initSupabaseClient() {
           params: { eventsPerSecond: 10 },
         },
         auth: {
-          persistSession: false, // We manage auth ourselves
+          persistSession:   false,
           autoRefreshToken: false,
         },
       });
@@ -58,5 +60,72 @@ export function resetSupabaseClient() {
     _client.removeAllChannels();
     _client = null;
   }
+  _syncChannel = null;
   _initPromise = null;
+}
+
+/**
+ * Subscribe to Postgres change events on the given tables so the frontend
+ * can invalidate React Query caches the moment a remote write arrives —
+ * making pull truly real-time instead of waiting for the next 5s poll.
+ *
+ * @param {string[]} tables  - List of table names to watch (e.g. ["items", "transactions"]).
+ * @param {function} onEvent - Callback: (payload: { table, eventType, new, old }) => void.
+ *                             Typically calls queryClient.invalidateQueries().
+ * @returns {RealtimeChannel|null} The channel, or null if the client isn't ready.
+ *
+ * @example
+ * subscribeToSyncChanges(
+ *   ["items", "item_stock"],
+ *   ({ table }) => queryClient.invalidateQueries({ queryKey: [table] })
+ * );
+ */
+export async function subscribeToSyncChanges(tables = [], onEvent) {
+  // Ensure client is initialised before subscribing
+  const client = _client ?? (await initSupabaseClient());
+  if (!client || !tables.length) return null;
+
+  // Tear down any previous channel so we don't stack subscriptions on re-mounts
+  if (_syncChannel) {
+    await client.removeChannel(_syncChannel);
+    _syncChannel = null;
+  }
+
+  const channel = client.channel("quantum-pos-sync");
+
+  for (const table of tables) {
+    channel.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table },
+      (payload) => {
+        try {
+          onEvent?.({ ...payload, table });
+        } catch (err) {
+          console.warn(`[supabase] realtime handler error for ${table}:`, err);
+        }
+      }
+    );
+  }
+
+  channel.subscribe((status) => {
+    if (status === "SUBSCRIBED") {
+      console.info("[supabase] Realtime subscribed to:", tables.join(", "));
+    } else if (status === "CHANNEL_ERROR") {
+      console.warn("[supabase] Realtime channel error — will retry.");
+    }
+  });
+
+  _syncChannel = channel;
+  return channel;
+}
+
+/**
+ * Tear down the active realtime subscription.
+ * Safe to call even if no subscription is active.
+ */
+export async function unsubscribeFromSyncChanges() {
+  if (_syncChannel && _client) {
+    await _client.removeChannel(_syncChannel);
+    _syncChannel = null;
+  }
 }
