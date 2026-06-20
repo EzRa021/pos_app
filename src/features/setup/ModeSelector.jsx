@@ -6,46 +6,46 @@
 import { Server, Monitor, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-function ModeCard({ onClick, icon: Icon, iconClass, title, description, features, badge, badgeClass }) {
+function ModeCard({ onClick, icon: Icon, iconBg, title, description, features, badge, badgeClass, primary }) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "group relative w-full text-left rounded-xl border bg-card p-5",
-        "border-border hover:border-primary/50 hover:bg-primary/5",
-        "transition-all duration-200 hover:shadow-lg hover:shadow-primary/5",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        "active:scale-[0.99]"
+        "group relative w-full text-left rounded-xl border p-5",
+        "transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.99]",
+        primary
+          ? "border-primary/30 bg-primary/[0.04] hover:border-primary/60 hover:bg-primary/[0.08] hover:shadow-lg hover:shadow-primary/10"
+          : "border-border bg-muted/[0.03] hover:border-border/80 hover:bg-muted/[0.07]"
       )}
     >
       {/* Icon */}
-      <div className={cn(
-        "mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg",
-        iconClass
-      )}>
-        <Icon className="h-5 w-5" />
+      <div className={cn("mb-4 inline-flex h-10 w-10 items-center justify-center rounded-xl border", iconBg)}>
+        <Icon className="h-4.5 w-4.5" />
       </div>
 
-      {/* Title + desc */}
-      <h3 className="text-sm font-semibold text-foreground mb-1">{title}</h3>
-      <p className="text-xs text-muted-foreground leading-relaxed mb-4">{description}</p>
+      {/* Title */}
+      <h3 className="text-[13px] font-bold text-foreground tracking-tight mb-1">{title}</h3>
+      <p className="text-[11px] text-muted-foreground leading-relaxed mb-4">{description}</p>
 
       {/* Feature list */}
       <ul className="space-y-1.5 mb-5">
         {features.map((f, i) => (
-          <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
-            <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-primary/60 shrink-0" />
+          <li key={i} className="flex items-start gap-2 text-[11px] text-muted-foreground">
+            <span className={cn("mt-[5px] h-1.5 w-1.5 rounded-full shrink-0", primary ? "bg-primary/70" : "bg-muted-foreground/40")} />
             {f}
           </li>
         ))}
       </ul>
 
       {/* Footer */}
-      <div className="flex items-center justify-between">
-        <span className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-semibold border", badgeClass)}>
+      <div className="flex items-center justify-between pt-1 border-t border-border/40">
+        <span className={cn("rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide border", badgeClass)}>
           {badge}
         </span>
-        <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary group-hover:translate-x-0.5 transition-all" />
+        <ArrowRight className={cn(
+          "h-3.5 w-3.5 transition-all group-hover:translate-x-0.5",
+          primary ? "text-primary/60 group-hover:text-primary" : "text-muted-foreground/40 group-hover:text-muted-foreground"
+        )} />
       </div>
     </button>
   );
@@ -53,61 +53,66 @@ function ModeCard({ onClick, icon: Icon, iconClass, title, description, features
 
 export default function ModeSelector({ onSelect }) {
   return (
-    <div className="flex flex-col items-center gap-7 animate-fade-in">
+    <div className="flex flex-col gap-6 animate-fade-in">
 
       {/* Brand */}
-      <div className="flex flex-col items-center gap-3">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15 border border-primary/20">
-          <span className="text-2xl font-bold text-primary">Q</span>
+      <div className="flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-primary/30 bg-primary/[0.08]">
+          <span className="text-[18px] font-black text-primary leading-none">Q</span>
         </div>
-        <div className="text-center">
-          <h1 className="text-xl font-bold text-foreground tracking-tight">Quantum POS</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Point of Sale System</p>
+        <div>
+          <h1 className="text-[15px] font-black text-foreground tracking-tight leading-none">Quantum POS</h1>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mt-1">Initial Setup</p>
         </div>
       </div>
 
       {/* Prompt */}
-      <div className="text-center">
-        <h2 className="text-sm font-semibold text-foreground">How will this terminal operate?</h2>
-        <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-          Choose the role for this machine on your network. This only needs to be set once.
+      <div>
+        <h2 className="text-[20px] font-black text-foreground tracking-tight leading-tight">
+          How will this terminal<br />
+          <span className="text-primary">operate?</span>
+        </h2>
+        <p className="text-[12px] text-muted-foreground mt-2 leading-relaxed">
+          Choose the role for this machine. This only needs to be set once.
         </p>
       </div>
 
       {/* Mode cards */}
-      <div className="grid grid-cols-2 gap-3 w-full">
+      <div className="grid grid-cols-2 gap-3">
         <ModeCard
           onClick={() => onSelect("server")}
           icon={Server}
-          iconClass="bg-primary/15 text-primary border border-primary/20"
+          iconBg="border-primary/25 bg-primary/[0.08] text-primary"
           title="Server Mode"
-          description="This machine runs the database and API. Other terminals on the network connect to it."
+          description="Runs the database and API. Other terminals connect to this machine."
           features={[
             "Hosts the PostgreSQL database",
-            "Exposes API for client terminals",
-            "Best for main counter / back-office",
+            "Exposes API for clients",
+            "Main counter / back-office",
           ]}
-          badge="Primary machine"
-          badgeClass="bg-primary/10 text-primary border-primary/20"
+          badge="Primary"
+          badgeClass="bg-primary/10 text-primary border-primary/25"
+          primary
         />
         <ModeCard
           onClick={() => onSelect("client")}
           icon={Monitor}
-          iconClass="bg-muted text-muted-foreground border border-border"
+          iconBg="border-border bg-muted/40 text-muted-foreground"
           title="Client Mode"
-          description="This machine connects to an existing server on the network. No local database needed."
+          description="Connects to an existing server on the network. No local database needed."
           features={[
-            "Connects to a server via LAN",
-            "Enter the server IP and port",
-            "Best for additional checkout counters",
+            "Connects via LAN",
+            "Enter server IP and port",
+            "Additional checkout counters",
           ]}
-          badge="Requires a server"
-          badgeClass="bg-muted text-muted-foreground border-border"
+          badge="Requires server"
+          badgeClass="bg-muted/60 text-muted-foreground border-border"
+          primary={false}
         />
       </div>
 
-      <p className="text-[11px] text-muted-foreground text-center">
-        Server and client terminals must be on the same local network.
+      <p className="text-[10px] font-semibold text-muted-foreground/50 text-center uppercase tracking-wider">
+        Both terminals must be on the same local network
       </p>
     </div>
   );

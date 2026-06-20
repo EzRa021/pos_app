@@ -313,6 +313,12 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "get_user_activity" => {
+            let id = i32_param(&params, "id")?;
+            let result = users::get_user_activity(as_state(state), require_token()?, id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         "create_user" => {
             let payload: CreateUserDto = parse(params)?;
             let result = users::create_user(as_state(state), require_token()?, payload).await?;

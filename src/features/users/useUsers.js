@@ -4,7 +4,7 @@ import { toastSuccess, onMutationError } from "@/lib/toast";
 import {
   getUsers, getUser, createUser, updateUser,
   deleteUser, getRoles, activateUser, deactivateUser, resetUserPassword,
-  getPermissions, getRolePermissions, setRolePermissions,
+  getPermissions, getRolePermissions, setRolePermissions, getUserActivity,
 } from "@/commands/users";
 
 // ── List ──────────────────────────────────────────────────────────────────────
@@ -24,6 +24,16 @@ export function useUser(id) {
     queryFn:  () => getUser(id),
     enabled:  !!id,
     staleTime: 60_000,
+  });
+}
+
+// ── Activity stats (real, derived from transactions/returns/audit_logs) ───────
+export function useUserActivity(id) {
+  return useQuery({
+    queryKey: ["user_activity", id],
+    queryFn:  () => getUserActivity(id),
+    enabled:  !!id,
+    staleTime: 30_000,
   });
 }
 

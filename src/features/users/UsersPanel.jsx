@@ -20,6 +20,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+import { useNavigate }    from "react-router-dom";
 import { useAuthStore }   from "@/stores/auth.store";
 import { useBranchStore } from "@/stores/branch.store";
 import { usePermission }       from "@/hooks/usePermission";
@@ -40,6 +41,7 @@ const PAGE_SIZE = 15;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function UsersPanel() {
+  const navigate     = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
   const stores      = useBranchStore((s) => s.stores);
   const storeId     = useBranchStore((s) => s.activeStore?.id);
@@ -47,6 +49,7 @@ export function UsersPanel() {
 
   const canCreate = usePermission("users.create");
   const canUpdate = usePermission("users.update");
+  const canDelete = usePermission("users.delete");
 
   // ── Filters ───────────────────────────────────────────────────────────────
   const { page, search, setPage, setSearch } = usePaginationParams({ defaultPageSize: PAGE_SIZE });
@@ -120,6 +123,19 @@ export function UsersPanel() {
   };
 
   const handleReset = (id, pw) => resetPassword.mutateAsync({ id, newPassword: pw });
+
+  const handleDelete = async (targetUser) => {
+    const ok = window.confirm(
+      `Deactivate ${targetUser.first_name} ${targetUser.last_name}'s account? They will be signed out immediately and won't be able to log in until reactivated.`
+    );
+    if (!ok) return;
+    await handleDeactivate(targetUser.id);
+    setSelectedUser(null);
+  };
+
+  const handleViewFullProfile = (targetUser) => {
+    navigate(`/audit?user_id=${targetUser.id}`);
+  };
 
   const resetFilters = () => {
     setSearch(""); setRoleFilter("all"); setStatusFilter("all");
@@ -386,10 +402,13 @@ export function UsersPanel() {
         user={selectedUser}
         currentUserId={currentUser?.id}
         canUpdate={canUpdate}
+        canDelete={canDelete}
         onEdit={(u) => setEditUser(u)}
         onActivate={handleActivate}
         onDeactivate={handleDeactivate}
         onResetPassword={handleReset}
+        onDelete={handleDelete}
+        onViewFullProfile={handleViewFullProfile}
       />
 
       {/* ── Create dialog ─────────────────────────────────────────────── */}

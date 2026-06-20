@@ -8,6 +8,9 @@ export const getUsers = (filters = {}) =>
 export const getUser = (id) =>
   rpc("get_user", { id });
 
+export const getUserActivity = (id) =>
+  rpc("get_user_activity", { id });
+
 export const createUser = (payload) =>
   rpc("create_user", payload);
 

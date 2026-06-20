@@ -4,6 +4,7 @@
 
 use tauri::State;
 use serde::Serialize;
+use rust_decimal::Decimal;
 use crate::{
     error::{AppError, AppResult},
     models::user::{User, CreateUserDto, UpdateUserDto, UserFilters, Role, Permission},
@@ -19,6 +20,17 @@ pub struct UserStats {
     pub total: i64,
     pub active_count: i64,
     pub inactive_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserActivityStats {
+    pub total_transactions:     i64,
+    pub total_sales_amount:     Decimal,
+    pub products_added:         i64,
+    pub returns_processed:      i64,
+    pub returns_amount:         Decimal,
+    pub login_count:            i64,
+    pub failed_login_attempts:  i32,
 }
 
 async fn fetch_user_by_id(pool: &sqlx::PgPool, id: i32, include_avatar: bool) -> AppResult<User> {
@@ -206,6 +218,82 @@ pub async fn get_user(
         }
     }
     Ok(user)
+}
+
+/// Real activity stats for the User Details drawer — sourced from existing
+/// transactions / returns / audit_logs / login_history tables rather than
+/// fabricated fields. Scoped the same way as get_user (store-locked for
+/// non-global callers).
+#[tauri::command]
+pub async fn get_user_activity(
+    state: State<'_, AppState>,
+    token: String,
+    id:    i32,
+) -> AppResult<UserActivityStats> {
+    let claims = guard_permission(&state, &token, "users.read").await?;
+    let pool = state.pool().await?;
+
+    let target = fetch_user_by_id(&pool, id, false).await?;
+    if !claims.is_global {
+        let caller_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if target.store_id != Some(caller_store) {
+            return Err(AppError::Forbidden);
+        }
+    }
+
+    let tx_row = sqlx::query!(
+        r#"SELECT COUNT(*) AS "count!: i64",
+                  COALESCE(SUM(total_amount), 0) AS "total!: Decimal"
+           FROM transactions
+           WHERE cashier_id = $1 AND status = 'completed'"#,
+        id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    let ret_row = sqlx::query!(
+        r#"SELECT COUNT(*) AS "count!: i64",
+                  COALESCE(SUM(total_amount), 0) AS "total!: Decimal"
+           FROM returns
+           WHERE cashier_id = $1"#,
+        id,
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    let products_added: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM audit_logs WHERE user_id = $1 AND action = 'create' AND resource = 'item'",
+        id,
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
+
+    let login_count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) FROM login_history WHERE user_id = $1 AND status = 'success'",
+        id,
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
+
+    let failed_login_attempts: i32 = sqlx::query_scalar!(
+        "SELECT failed_login_attempts FROM users WHERE id = $1",
+        id,
+    )
+    .fetch_optional(&pool)
+    .await?
+    .unwrap_or(0);
+
+    Ok(UserActivityStats {
+        total_transactions: tx_row.count,
+        total_sales_amount: tx_row.total,
+        products_added,
+        returns_processed: ret_row.count,
+        returns_amount: ret_row.total,
+        login_count,
+        failed_login_attempts,
+    })
 }
 
 #[tauri::command]

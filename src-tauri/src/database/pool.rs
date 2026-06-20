@@ -66,7 +66,11 @@ pub async fn create_pool(cfg: &DbConfig) -> AppResult<PgPool> {
 
     tracing::info!("PostgreSQL connection established — running pending migrations…");
 
+    #[cfg(debug_assertions)]
     run_migrations(&pool, "./migrations").await?;
+
+    #[cfg(not(debug_assertions))]
+    run_migrations_embedded(&pool).await?;
 
     tracing::info!("All migrations up to date.");
 

@@ -31,19 +31,12 @@ const DEFAULT = {
   database: "pos_app",
 };
 
-function Label({ children, required }) {
-  return (
-    <label className="block text-xs font-medium text-foreground mb-1.5">
-      {children}
-      {required && <span className="text-destructive ml-0.5">*</span>}
-    </label>
-  );
-}
-
 function Field({ label, required, children }) {
   return (
     <div>
-      <Label required={required}>{label}</Label>
+      <label className="block text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+        {label}{required && <span className="text-destructive ml-0.5">*</span>}
+      </label>
       {children}
     </div>
   );
@@ -170,17 +163,28 @@ export default function ServerSetup({ onConnected, onBack }) {
   // ── Detecting (auto-try in progress) ─────────────────────────────────────
   if (status === "detecting") {
     return (
-      <div className="flex flex-col items-center gap-6 py-4 animate-fade-in">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 border border-primary/20">
-          <Database className="h-7 w-7 text-primary animate-pulse" />
+      <div className="flex flex-col gap-6 animate-fade-in">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-primary/30 bg-primary/[0.08]">
+            <span className="text-[18px] font-black text-primary leading-none">Q</span>
+          </div>
+          <div>
+            <h1 className="text-[15px] font-black text-foreground tracking-tight leading-none">Quantum POS</h1>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mt-1">Server Setup</p>
+          </div>
         </div>
-        <div className="text-center">
-          <h2 className="text-base font-bold text-foreground">Detecting Database</h2>
-          <p className="text-xs text-muted-foreground mt-1">Looking for a local PostgreSQL instance…</p>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Connecting to localhost…
+        <div className="flex flex-col items-center gap-4 py-6">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 border border-primary/20">
+            <Database className="h-6 w-6 text-primary animate-pulse" />
+          </div>
+          <div className="text-center">
+            <h2 className="text-[16px] font-black text-foreground tracking-tight">Detecting Database</h2>
+            <p className="text-[12px] text-muted-foreground mt-1">Looking for a local PostgreSQL instance…</p>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Connecting to localhost…
+          </div>
         </div>
       </div>
     );

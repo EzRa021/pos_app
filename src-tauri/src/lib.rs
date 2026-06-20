@@ -283,6 +283,7 @@ pub fn run() {
             commands::auth::reset_password,
             commands::users::get_users,
             commands::users::get_user,
+            commands::users::get_user_activity,
             commands::users::search_users,
             commands::users::create_user,
             commands::users::update_user,

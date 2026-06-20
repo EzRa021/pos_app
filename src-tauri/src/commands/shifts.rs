@@ -165,8 +165,8 @@ pub(crate) async fn open_shift_inner(
 
     // Log cash drawer event
     sqlx::query!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, amount, notes)
-           VALUES ($1, 'shift_opened', $2, $3, $4)"#,
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, created_by, amount, notes)
+           VALUES ($1, 'shift_opened', $2, $2, $3, $4)"#,
         id,
         claims.user_id,
         float,
@@ -256,8 +256,8 @@ pub(crate) async fn close_shift_inner(
     .await?;
 
     sqlx::query!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, amount, notes)
-           VALUES ($1, 'shift_closed', $2, $3, $4)"#,
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, created_by, amount, notes)
+           VALUES ($1, 'shift_closed', $2, $2, $3, $4)"#,
         id,
         claims.user_id,
         actual,
@@ -339,8 +339,8 @@ pub(crate) async fn suspend_shift_inner(
     }
 
     sqlx::query!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, notes)
-           VALUES ($1, 'shift_suspended', $2, $3)"#,
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, created_by, notes)
+           VALUES ($1, 'shift_suspended', $2, $2, $3)"#,
         id,
         claims.user_id,
         payload.reason.as_deref().unwrap_or("Shift suspended"),
@@ -398,8 +398,8 @@ pub(crate) async fn resume_shift_inner(
     }
 
     sqlx::query!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, notes)
-           VALUES ($1, 'shift_resumed', $2, 'Shift resumed')"#,
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, created_by, notes)
+           VALUES ($1, 'shift_resumed', $2, $2, 'Shift resumed')"#,
         id,
         claims.user_id,
     )
@@ -638,8 +638,8 @@ pub(crate) async fn add_cash_movement_inner(
     let id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO cash_movements
             (shift_id, movement_number, movement_type, amount,
-             reason, reference_number, performed_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+             reason, reference_number, performed_by, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
            RETURNING id"#,
         payload.shift_id,
         movement_number,
@@ -681,8 +681,8 @@ pub(crate) async fn add_cash_movement_inner(
     };
 
     sqlx::query!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, amount, notes)
-           VALUES ($1, $2, $3, $4, $5)"#,
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, created_by, amount, notes)
+           VALUES ($1, $2, $3, $3, $4, $5)"#,
         payload.shift_id,
         event_type,
         claims.user_id,
@@ -968,8 +968,8 @@ pub(crate) async fn cancel_shift_inner(
     }
 
     sqlx::query!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, notes)
-           VALUES ($1, 'shift_cancelled', $2, 'Shift cancelled by admin')"#,
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, created_by, notes)
+           VALUES ($1, 'shift_cancelled', $2, $2, 'Shift cancelled by admin')"#,
         id,
         claims.user_id,
     )
@@ -1031,8 +1031,8 @@ pub(crate) async fn reconcile_shift_inner(
     }
 
     sqlx::query!(
-        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, notes)
-           VALUES ($1, 'reconciled', $2, $3)"#,
+        r#"INSERT INTO cash_drawer_events (shift_id, event_type, user_id, created_by, notes)
+           VALUES ($1, 'reconciled', $2, $2, $3)"#,
         id,
         claims.user_id,
         notes.as_deref().unwrap_or("Shift reconciled"),
