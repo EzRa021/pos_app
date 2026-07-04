@@ -73,6 +73,38 @@ export default function ServerSetup({ onConnected, onBack }) {
         invoke("get_local_ip"),
         invoke("get_api_port"),
       ]);
+
+      // ── Verify the HTTP layer is ACTUALLY reachable ─────────────────────
+      // get_local_ip/get_api_port are Tauri IPC calls — they only prove the
+      // Rust process is alive, not that the WebView's real network stack can
+      // reach the Axum server. Firewalls, antivirus, or proxy env vars can
+      // block that even when IPC succeeds, so confirm with a real fetch
+      // before declaring success (up to 10s, since the server may still be
+      // finishing its bind/serve startup).
+      let httpReachable = false;
+      let lastHealthErr = null;
+      for (let attempt = 0; attempt < 20 && !httpReachable; attempt++) {
+        try {
+          const res = await fetch(`http://localhost:${port}/health`, {
+            signal: AbortSignal.timeout(1500),
+          });
+          if (res.ok) httpReachable = true;
+        } catch (e) {
+          lastHealthErr = e;
+        }
+        if (!httpReachable) await new Promise(r => setTimeout(r, 500));
+      }
+
+      if (!httpReachable) {
+        console.error("[ServerSetup] HTTP health check failed after DB connect:", lastHealthErr);
+        throw new Error(
+          "Database connected, but this machine cannot reach its own API server " +
+          `at localhost:${port} over HTTP. This is usually Windows Firewall, ` +
+          "antivirus, or a proxy blocking local network traffic — check for a " +
+          "firewall permission prompt for this app, or a system HTTP_PROXY setting."
+        );
+      }
+
       setLocalIp(ip);
       setApiPort(port);
 

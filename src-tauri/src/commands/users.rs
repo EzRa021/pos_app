@@ -178,7 +178,7 @@ pub async fn get_users(
                   u.role_id, r.role_slug, r.role_name, r.is_global,
                   u.store_id, s.store_name AS "store_name?",
                   u.is_active, u.last_login, u.created_at, u.updated_at,
-                  NULL::text AS "avatar?"
+                  u.avatar
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
            LEFT JOIN stores s ON s.id = u.store_id

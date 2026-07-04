@@ -135,6 +135,8 @@ pub async fn start(state: AppState, preferred_port: u16) {
                 || s.starts_with(b"http://127.")
                 || s.starts_with(b"http://192.168.")
                 || s.starts_with(b"http://10.")
+                || s.starts_with(b"tauri://localhost")
+                || s.starts_with(b"https://tauri.localhost")
         }))
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);

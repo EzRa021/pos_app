@@ -55,6 +55,17 @@ fn get_api_port(state: tauri::State<'_, AppState>) -> u16 {
     state.api_port.load(Ordering::Relaxed)
 }
 
+// ── open_devtools ─────────────────────────────────────────────────────────────
+// Lets the running app open its own WebView devtools without a rebuild —
+// useful for diagnosing fetch/network errors (firewall, proxy, CORS) that
+// only show up in the browser console, not in Rust's tracing logs.
+// Requires the `devtools` Cargo feature (enabled above) to work in release
+// builds; it's on by default in debug builds regardless.
+#[tauri::command]
+fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // ── Structured logging ────────────────────────────────────────────────────
@@ -267,6 +278,7 @@ pub fn run() {
         // ── Command registry ──────────────────────────────────────────────────
         .invoke_handler(tauri::generate_handler![
             get_api_port,
+            open_devtools,
             commands::app::db_connect,
             commands::app::db_disconnect,
             commands::app::db_status,

@@ -87,6 +87,10 @@ function Splash() {
 
 // ── Connection Error ──────────────────────────────────────────────────────────
 function ConnectionError({ config, onRetry, onReconfigure }) {
+  const isLocalhostMisconfig =
+    config.mode === 'client' &&
+    /^(localhost|127\.0\.0\.1|::1)$/i.test(config.host ?? '');
+
   return (
     <ScreenShell>
       <div className="rounded-2xl border border-border bg-card shadow-2xl shadow-black/40 p-8 flex flex-col gap-6 animate-fade-in">
@@ -107,6 +111,28 @@ function ConnectionError({ config, onRetry, onReconfigure }) {
             Make sure the server is running and reachable on the network.
           </p>
         </div>
+
+        {isLocalhostMisconfig && (
+          <div className="rounded-lg border border-warning/25 bg-warning/8 px-4 py-3">
+            <p className="text-[11px] text-warning font-medium">
+              This terminal is set to Client Mode pointing at "localhost" —
+              that means this exact machine, not a remote server. Client Mode
+              only works when a different terminal is running Server Mode.
+            </p>
+            <p className="text-[11px] text-warning/80 mt-1">
+              If this machine should host the database itself, tap "Change
+              Server" below and choose Server Mode instead.
+            </p>
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => invoke('open_devtools').catch(() => {})}
+          className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors self-center"
+        >
+          Open DevTools (or press F12) for the exact error
+        </button>
 
         <div className="flex flex-col gap-2">
           <Button onClick={onRetry} className="w-full" size="lg">
@@ -213,17 +239,25 @@ export default function App() {
       // on the first or second iteration regardless of the attempt limit.
       const baseUrl = apiClient.defaults.baseURL;
       let serverReady = false;
+      let lastFetchError = null;
       for (let attempt = 0; attempt < 60 && !serverReady; attempt++) {
         try {
           const res = await fetch(`${baseUrl}/health`, {
             signal: AbortSignal.timeout(2000),
           });
           if (res.ok) serverReady = true;
-        } catch { /* not ready yet */ }
+        } catch (fetchErr) {
+          lastFetchError = fetchErr;
+        }
         if (!serverReady) await new Promise(r => setTimeout(r, 500));
       }
 
-      if (!serverReady) throw new Error('API server did not respond in time');
+      if (!serverReady) {
+        // Surface the real fetch error (e.g. CSP/CORS block shows as
+        // "TypeError: Failed to fetch") instead of a generic timeout message.
+        console.error('[initConnection] /health polling exhausted. Last fetch error:', lastFetchError);
+        throw new Error('API server did not respond in time');
+      }
 
       // ── Run onboarding check + session restore in parallel ──────────────────
       // Both resolve before we clear isChecking so the user sees one clean
@@ -248,7 +282,12 @@ export default function App() {
       setOnboardingComplete(isComplete);
       setOnboardingStatus(onboardingResult);
       setIsChecking(false);
-    } catch {
+    } catch (err) {
+      // Log the real failure reason — this was previously a silent catch,
+      // which made every connection failure indistinguishable (CORS/CSP
+      // rejection, DNS failure, timeout, DB auth error, etc. all looked
+      // identical to the user and to us when debugging).
+      console.error('[initConnection] Connection failed:', err);
       setConnectFailed(true);
       setIsChecking(false);
     }
@@ -272,6 +311,19 @@ export default function App() {
       setIsChecking(false);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── F12 opens native WebView devtools ────────────────────────────────
+  // Available everywhere, not just the connection-error screen — useful for
+  // diagnosing any fetch/network issue without needing a debug rebuild.
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === 'F12') {
+        invoke('open_devtools').catch(() => {});
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // ── Clear React Query cache when user logs out ──────────────────────────────
   // Without this, stale query data from the previous session (transactions,

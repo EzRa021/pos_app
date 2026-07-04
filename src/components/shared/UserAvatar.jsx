@@ -49,8 +49,23 @@ export default function UserAvatar({
           src={user.avatar}
           alt={[user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || "User"}
           className="w-full h-full object-cover"
+          loading="lazy"
           draggable={false}
+          onError={(e) => {
+            // Hide the broken img and show the initials fallback behind it
+            e.currentTarget.style.display = "none";
+          }}
         />
+        {/* Initials shown behind the img; visible if the img errors */}
+        <div
+          className={cn(
+            "absolute inset-0 flex items-center justify-center font-bold select-none",
+            textCls, rc.avatar,
+          )}
+          aria-hidden="true"
+        >
+          {initials}
+        </div>
       </div>
     );
   }

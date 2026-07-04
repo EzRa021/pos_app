@@ -44,6 +44,17 @@ export default function ClientSetup({ onConnected, onBack }) {
     setError("");
     const host    = form.host.trim();
     const apiPort = parseInt(form.apiPort, 10) || 4000;
+
+    if (/^(localhost|127\.0\.0\.1|::1)$/i.test(host)) {
+      setError(
+        "\"localhost\" refers to this machine, not a remote server. " +
+        "Client Mode is for connecting to a different terminal running Server Mode. " +
+        "If this machine should host the database itself, go back and choose Server Mode instead."
+      );
+      setStatus("error");
+      return;
+    }
+
     try {
       const res = await fetch(`http://${host}:${apiPort}/health`, {
         signal: AbortSignal.timeout(6000),
