@@ -33,6 +33,7 @@ import { OnboardingFlow }          from './features/onboarding/OnboardingFlow';
 import { useAuthStore }  from './stores/auth.store';
 import { apiClient, setApiBaseUrl } from './lib/apiClient';
 import { TitleBar }                from './components/layout/TitleBar';
+import { UpdateBanner }            from './components/layout/UpdateBanner';
 import { Button }                  from './components/ui/button';
 import './App.css';
 
@@ -54,7 +55,7 @@ function ScreenShell({ children, className }) {
       <div className="w-full max-w-sm">
         {children}
         <p className="text-center text-[11px] text-muted-foreground mt-5">
-          Quantum POS © {new Date().getFullYear()}
+          Zera © {new Date().getFullYear()}
         </p>
       </div>
     </div>
@@ -69,7 +70,7 @@ function Brand({ iconClassName = "bg-primary/15 border-primary/20", iconContent,
         {iconContent ?? <span className="text-2xl font-bold text-primary">Q</span>}
       </div>
       <div className="text-center">
-        <h1 className="text-lg font-bold text-foreground tracking-tight">Quantum POS</h1>
+        <h1 className="text-lg font-bold text-foreground tracking-tight">Zera</h1>
         {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
       </div>
     </div>
@@ -406,6 +407,8 @@ export default function App() {
         {user && isPosLocked && (
           <PinLockScreen onUnlock={unlockPos} userName={userName} />
         )}
+        {/* Auto-update: silent check + non-blocking "ready to restart" toast */}
+        <UpdateBanner />
       </div>
     </RealtimeProvider>
   );

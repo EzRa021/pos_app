@@ -78,8 +78,8 @@ export function ShiftSummaryCards({ summary, activeShift, isLoading }) {
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       <KpiCard
         icon={TrendingUp}
-        iconColor="text-success"
-        iconBg="bg-success/10 border-success/20"
+        iconColor="text-primary"
+        iconBg="bg-primary/10 border-primary/20"
         label="Total Sales"
         value={formatCurrency(totalSales)}
         subValue={totalRefunds > 0 ? `Net: ${formatCurrency(netSales)}` : undefined}
@@ -87,8 +87,8 @@ export function ShiftSummaryCards({ summary, activeShift, isLoading }) {
       />
       <KpiCard
         icon={TrendingDown}
-        iconColor="text-destructive"
-        iconBg="bg-destructive/10 border-destructive/20"
+        iconColor="text-primary"
+        iconBg="bg-primary/10 border-primary/20"
         label="Refunds"
         value={formatCurrency(totalRefunds)}
         subValue={totalRefunds > 0 ? "returned" : "none this shift"}
@@ -96,8 +96,8 @@ export function ShiftSummaryCards({ summary, activeShift, isLoading }) {
       />
       <KpiCard
         icon={Banknote}
-        iconColor="text-warning"
-        iconBg="bg-warning/10 border-warning/20"
+        iconColor="text-primary"
+        iconBg="bg-primary/10 border-primary/20"
         label="Expected Cash"
         value={formatCurrency(expectedBalance)}
         subValue="in drawer"

@@ -1,4 +1,4 @@
-# Quantum POS — CLAUDE.md
+# Zera — CLAUDE.md
 
 ## Project
 Desktop POS app. **Tauri v2** (Rust backend) + **React 19** (frontend).  

@@ -20,7 +20,7 @@ import { useUiStore }        from "@/stores/ui.store";
 import { cn }                from "@/lib/utils";
 import { SyncStatusBadge }  from "@/components/shared/SyncStatusBadge";
 
-const QUANTUM_LOGO = "/quantum-logo.svg";
+const ZERA_LOGO = "/zera-logo.svg";
 
 // ── Live clock ────────────────────────────────────────────────────────────────
 function Clock() {
@@ -159,11 +159,11 @@ export function TitleBar() {
         className="flex items-center gap-2 px-3 min-w-0 flex-1"
         data-tauri-drag-region
       >
-        {/* Q logo chip — always shows quantum app logo */}
+        {/* Q logo chip — always shows zera app logo */}
         <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary shadow-sm shadow-primary/20 overflow-hidden">
           <img
-            src={QUANTUM_LOGO}
-            alt="Quantum POS"
+            src={ZERA_LOGO}
+            alt="Zera"
             className="h-full w-full object-cover"
             onError={(e) => {
               e.currentTarget.style.display = 'none';
@@ -175,7 +175,7 @@ export function TitleBar() {
 
         {/* App name */}
         <span className="text-[12px] font-semibold text-foreground/90 leading-none tracking-tight truncate">
-          Quantum POS
+          Zera
         </span>
 
         {/* Search trigger badge */}

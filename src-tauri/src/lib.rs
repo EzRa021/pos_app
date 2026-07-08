@@ -1,5 +1,5 @@
 // ============================================================================
-// LIB.RS — Quantum POS Tauri Application Entry Point
+// LIB.RS — Zera Tauri Application Entry Point
 // ============================================================================
 // Auto-migration flow:
 //   1. App starts → reads saved DB config from tauri-plugin-store.
@@ -72,7 +72,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "pos_app_lib=info,tauri=warn".into()),
+                .unwrap_or_else(|_| "zera_lib=info,tauri=warn".into()),
         )
         .init();
 
@@ -80,7 +80,7 @@ pub fn run() {
     let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(b"quantum-pos-default-secret-change-in-production");
+        h.update(b"zera-default-secret-change-in-production");
         format!("{:x}", h.finalize())
     });
 
@@ -91,6 +91,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // ── Setup: state, auto-connect, HTTP server ───────────────────────────
         .setup(|app| {
             let app_state = AppState::new(jwt_secret);
@@ -272,7 +274,7 @@ pub fn run() {
             }
 
             app.manage(app_state);
-            tracing::info!("Quantum POS started.");
+            tracing::info!("Zera started.");
             Ok(())
         })
         // ── Command registry ──────────────────────────────────────────────────
@@ -280,6 +282,8 @@ pub fn run() {
             get_api_port,
             open_devtools,
             commands::app::db_connect,
+            commands::app::db_create_database,
+            commands::app::db_database_exists,
             commands::app::db_disconnect,
             commands::app::db_status,
             commands::app::app_version,
@@ -602,5 +606,5 @@ pub fn run() {
             commands::cloud_sync::get_failed_sync_rows,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Quantum POS");
+        .expect("error while running Zera");
 }

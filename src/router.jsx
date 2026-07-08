@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
+import { createBrowserRouter, Navigate, Outlet, useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { AppShell }    from "@/components/layout/AppShell";
 import LoginPage       from "@/pages/LoginPage";
@@ -79,13 +79,14 @@ function ProtectedRoute() {
   const isBranchInitialized = useBranchStore(s => s.isBranchInitialized);
   const needsPicker         = useBranchStore(s => s.needsPicker);
   const needsStoreCreation  = useBranchStore(s => s.needsStoreCreation);
+  const location             = useLocation();
 
   if (!isInitialized)       return <RouterSplash />;
   if (!user)                return <Navigate to="/login" replace />;
   if (!isBranchInitialized) return <RouterSplash />;
   if (needsPicker)          return <StorePicker />;
 
-  if (needsStoreCreation && window.location.pathname !== '/store/new') {
+  if (needsStoreCreation && location.pathname !== '/store/new') {
     return <Navigate to="/store/new" replace />;
   }
 

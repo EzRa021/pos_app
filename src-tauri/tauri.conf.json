@@ -1,18 +1,26 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "pos-app",
+  "productName": "Zera",
   "version": "0.1.0",
-  "identifier": "com.quantumpos.desktop",
+  "identifier": "com.zera.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDOTJCOTJEM0M2NDlFNDkKUldSSm5tUThMYm1TWFA2Q2g0QStiS2EyeEN2USs1L0VnemdUT21WbWk1dmRKT1dzYUpaWTFRaWUK",
+      "endpoints": [
+        "https://github.com/EzRa021/zera-releases/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "app": {
     "windows": [
       {
-        "title": "Quantum POS",
+        "title": "Zera",
         "width": 1280,
         "height": 800,
         "minWidth": 960,
@@ -25,7 +33,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri: https://tauri.localhost; connect-src 'self' tauri: https://tauri.localhost ipc: http://ipc.localhost http://localhost:* http://127.0.0.1:* http://192.168.*:* http://10.*:*; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://localhost:* http://127.0.0.1:*; script-src 'self'"
+      "csp": "default-src 'self' tauri: https://tauri.localhost; connect-src 'self' tauri: https://tauri.localhost ipc: http://ipc.localhost http://localhost:* http://127.0.0.1:* http://*:*; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://localhost:* http://127.0.0.1:* http://*:*; script-src 'self'",
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
@@ -37,6 +46,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": [
+      "../scripts/provision-db.ps1"
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    },
+    "createUpdaterArtifacts": true
   }
 }

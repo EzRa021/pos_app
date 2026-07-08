@@ -261,8 +261,8 @@ pub async fn create_purchase_order(
     }
 
     let meta_rows = sqlx::query!(
-        r#"SELECT i.id,
-                  i.item_name,
+        r#"SELECT i.id        AS "id!: uuid::Uuid",
+                  i.item_name  AS "item_name!: String",
                   ist.measurement_type,
                   ist.unit_type
            FROM   items i
@@ -282,7 +282,7 @@ pub async fn create_purchase_order(
 
         let qty = crate::utils::qty::validate_qty_opt(
             to_dec(item.quantity),
-            meta.measurement_type.as_deref(),
+            Some(meta.measurement_type.as_str()),
             &meta.item_name,
         )?;
         let cost     = to_dec(item.unit_cost);
@@ -382,9 +382,9 @@ pub async fn receive_purchase_order(
         }
     }
 
-    if order.status != "approved" && order.status != "pending" && order.status != "partially_received" {
+    if order.status != "approved" && order.status != "partially_received" {
         return Err(AppError::Validation(
-            format!("Cannot receive a {} purchase order. Order must be pending or approved.", order.status)
+            format!("Cannot receive a {} purchase order. Order must be approved first.", order.status)
         ));
     }
 

@@ -1,5 +1,5 @@
 {
-  "name": "pos-app",
+  "name": "Zera",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -30,6 +30,8 @@
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-updater": "^2",
+    "@tauri-apps/plugin-process": "^2",
     "axios": "^1.13.6",
     "big.js": "^7.0.1",
     "class-variance-authority": "^0.7.1",

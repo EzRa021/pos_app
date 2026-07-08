@@ -200,6 +200,7 @@ export const useBranchStore = create((set, get) => ({
     set((state) => ({
       activeStore: store,
       needsPicker: false,
+      needsStoreCreation: false,
       stores: state.stores.some((s) => s.id === store.id)
         ? state.stores
         : [...state.stores, store],

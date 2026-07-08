@@ -26,7 +26,8 @@ const STATUS_MAP = {
   partial_refund: { variant: "warning",     dot: "bg-warning"     },
 
   // ── Shift ──────────────────────────────────────────────────────────────────
-  open:        { variant: "success",     dot: "bg-success"     },
+  open:        { variant: "hot",         dot: "bg-primary"     },
+  suspended:   { variant: "secondary",   dot: "bg-muted-foreground" },
   closed:      { variant: "secondary",   dot: "bg-muted-foreground" },
 
   // ── Purchase order ─────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ const STATUS_MAP = {
   paid:        { variant: "success",     dot: "bg-success"     },
 
   // ── Generic ────────────────────────────────────────────────────────────────
-  active:      { variant: "success",     dot: "bg-success"     },
+  active:      { variant: "hot",         dot: "bg-primary"     },
   inactive:    { variant: "secondary",   dot: "bg-muted-foreground" },
   in_progress: { variant: "hot",         dot: "bg-primary"     },
 };

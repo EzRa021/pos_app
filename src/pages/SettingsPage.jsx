@@ -5,7 +5,7 @@ import { useState } from "react";
 import {
   Receipt, Tag, Shield, ChevronRight,
   SlidersHorizontal, Star, Download, Barcode, FileSpreadsheet,
-  Building2, Printer, Palette, Store, Cloud, CreditCard, Layers, Hash, Bell, Package, Clock, Zap,
+  Building2, Printer, Palette, Store, Cloud, CreditCard, Layers, Hash, Bell, Package, Clock, Zap, Network, Rocket,
 } from "lucide-react";
 
 import { PageHeader }                    from "@/components/shared/PageHeader";
@@ -21,6 +21,7 @@ import { BusinessProfilePanel }          from "@/features/settings/BusinessProfi
 import { PrinterSettingsPanel }          from "@/features/settings/PrinterSettingsPanel";
 import { StoresManagementPanel }         from "@/features/settings/StoresManagementPanel";
 import { CloudSyncPanel }               from "@/features/settings/CloudSyncPanel";
+import { ConnectionSettingsPanel }      from "@/features/settings/ConnectionSettingsPanel";
 import { TaxSettingsPanel }            from "@/features/settings/TaxSettingsPanel";
 import { PaymentMethodsPanel }         from "@/features/settings/PaymentMethodsPanel";
 import { ExpenseCategoriesPanel }      from "@/features/settings/ExpenseCategoriesPanel";
@@ -29,6 +30,7 @@ import { NotificationPrefsPanel }      from "@/features/settings/NotificationPre
 import { LowStockDefaultsPanel }       from "@/features/settings/LowStockDefaultsPanel";
 import { OpeningHoursPanel }           from "@/features/settings/OpeningHoursPanel";
 import { PosShortcutsPanel }           from "@/features/settings/PosShortcutsPanel";
+import { UpdatesPanel }                from "@/features/settings/UpdatesPanel";
 import { useBranchStore }        from "@/stores/branch.store";
 import { cn }                    from "@/lib/utils";
 
@@ -118,6 +120,13 @@ const SETTINGS_TABS = [
     available:   true,
   },
   {
+    id:          "connection",
+    label:       "Server & Connection",
+    icon:        Network,
+    description: "View server details and change terminal mode",
+    available:   true,
+  },
+  {
     id:          "tax",
     label:       "Tax",
     icon:        Tag,
@@ -171,6 +180,13 @@ const SETTINGS_TABS = [
     label:       "POS Shortcuts",
     icon:        Zap,
     description: "Pin up to 12 items as quick-access POS buttons",
+    available:   true,
+  },
+  {
+    id:          "updates",
+    label:       "Updates",
+    icon:        Rocket,
+    description: "Check for and install app updates",
     available:   true,
   },
 ];
@@ -250,6 +266,7 @@ export default function SettingsPage() {
       case "printer":        return <PrinterSettingsPanel />;
       case "stores":         return <StoresManagementPanel />;
       case "cloud-sync":    return <CloudSyncPanel />;
+      case "connection":    return <ConnectionSettingsPanel />;
       case "tax":                return <TaxSettingsPanel />;
       case "payment-methods":    return <PaymentMethodsPanel />;
       case "expense-categories":  return <ExpenseCategoriesPanel />;
@@ -258,6 +275,7 @@ export default function SettingsPage() {
       case "low-stock-defaults":  return <LowStockDefaultsPanel />;
       case "opening-hours":       return <OpeningHoursPanel />;
       case "pos-shortcuts":       return <PosShortcutsPanel />;
+      case "updates":             return <UpdatesPanel />;
       default: {
         const tab  = SETTINGS_TABS.find((t) => t.id === activeTab);
         const Icon = tab?.icon;

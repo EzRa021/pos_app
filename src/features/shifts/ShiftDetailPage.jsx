@@ -107,11 +107,11 @@ function KpiCard({ icon: Icon, iconColor, iconBg, label, value, sub }) {
 
 // ── Payment method config ──────────────────────────────────────────────────────
 const PAYMENT_CFG = {
-  cash:         { label: "Cash",          Icon: Banknote,      color: "text-success",         bar: "bg-success"              },
+  cash:         { label: "Cash",          Icon: Banknote,      color: "text-primary",         bar: "bg-primary"              },
   card:         { label: "Card",          Icon: CreditCard,    color: "text-primary",         bar: "bg-primary"              },
-  transfer:     { label: "Bank Transfer", Icon: ArrowDownLeft, color: "text-warning",          bar: "bg-warning"              },
-  mobile_money: { label: "Mobile Money",  Icon: Smartphone,    color: "text-purple-400",      bar: "bg-purple-400"           },
-  credit:       { label: "Credit (BNPL)", Icon: Receipt,       color: "text-violet-400",      bar: "bg-violet-400"           },
+  transfer:     { label: "Bank Transfer", Icon: ArrowDownLeft, color: "text-primary",         bar: "bg-primary"              },
+  mobile_money: { label: "Mobile Money",  Icon: Smartphone,    color: "text-primary",         bar: "bg-primary"              },
+  credit:       { label: "Credit (BNPL)", Icon: Receipt,       color: "text-primary",         bar: "bg-primary"              },
   other:        { label: "Other",         Icon: Banknote,      color: "text-muted-foreground", bar: "bg-muted-foreground/50" },
 };
 
@@ -219,10 +219,10 @@ function CashReconciliation({ shift, summary, isLoading }) {
     <div>
       <LedgerRow label="Opening Float"          value={formatCurrency(openingFloat)} />
       {totalCashSales > 0 && (
-        <LedgerRow label="+ Cash Sales"         value={`+${formatCurrency(totalCashSales)}`} valueClass="text-success" />
+        <LedgerRow label="+ Cash Sales"         value={`+${formatCurrency(totalCashSales)}`} valueClass="text-primary" />
       )}
       {totalCashIn > 0 && (
-        <LedgerRow label="+ Deposits"           value={`+${formatCurrency(totalCashIn)}`}    valueClass="text-success" />
+        <LedgerRow label="+ Deposits"           value={`+${formatCurrency(totalCashIn)}`}    valueClass="text-primary" />
       )}
       {totalCashOut > 0 && (
         <LedgerRow label="− Withdrawals / Payouts" value={`−${formatCurrency(totalCashOut)}`} valueClass="text-destructive" />
@@ -243,7 +243,7 @@ function CashReconciliation({ shift, summary, isLoading }) {
           <LedgerRow
             label={difference >= 0 ? "Over by" : "Short by"}
             value={`${difference >= 0 ? "+" : ""}${formatCurrency(difference)}`}
-            valueClass={difference >= 0 ? "text-success" : "text-destructive"}
+            valueClass={difference >= 0 ? "text-primary" : "text-destructive"}
           />
         </>
       )}
@@ -261,9 +261,9 @@ function CashReconciliation({ shift, summary, isLoading }) {
 
 // ── Cash Movements timeline ────────────────────────────────────────────────────
 const MOVEMENT_CFG = {
-  [CASH_MOVEMENT_TYPES.DEPOSIT]:    { label: "Deposit",    dot: "bg-success",     amt: "text-success",     badge: "bg-success/10 text-success border-success/20",             prefix: "+" },
-  [CASH_MOVEMENT_TYPES.WITHDRAWAL]: { label: "Withdrawal", dot: "bg-destructive", amt: "text-destructive", badge: "bg-destructive/10 text-destructive border-destructive/20", prefix: "−" },
-  [CASH_MOVEMENT_TYPES.PAYOUT]:     { label: "Payout",     dot: "bg-warning",     amt: "text-warning",     badge: "bg-warning/10 text-warning border-warning/20",             prefix: "−" },
+  [CASH_MOVEMENT_TYPES.DEPOSIT]:    { label: "Deposit",    dot: "bg-primary",     amt: "text-primary",     badge: "bg-primary/10 text-primary border-primary/20",             prefix: "+" },
+  [CASH_MOVEMENT_TYPES.WITHDRAWAL]: { label: "Withdrawal", dot: "bg-muted-foreground", amt: "text-muted-foreground", badge: "bg-muted border-border", prefix: "−" },
+  [CASH_MOVEMENT_TYPES.PAYOUT]:     { label: "Payout",     dot: "bg-muted-foreground", amt: "text-muted-foreground", badge: "bg-muted border-border", prefix: "−" },
   [CASH_MOVEMENT_TYPES.ADJUSTMENT]: { label: "Adjustment", dot: "bg-primary",     amt: "text-primary",     badge: "bg-primary/10 text-primary border-primary/20",             prefix: ""  },
 };
 
@@ -549,8 +549,8 @@ export function ShiftDetailPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <KpiCard
               icon={TrendingUp}
-              iconColor="text-success"
-              iconBg="bg-success/10 border-success/20"
+              iconColor="text-primary"
+              iconBg="bg-primary/10 border-primary/20"
               label="Total Sales"
               value={formatCurrency(totalSales)}
               sub={totalReturn > 0 ? `Net: ${formatCurrency(totalSales - totalReturn)}` : "gross revenue"}
@@ -569,8 +569,8 @@ export function ShiftDetailPage() {
             />
             <KpiCard
               icon={TrendingDown}
-              iconColor="text-destructive"
-              iconBg="bg-destructive/10 border-destructive/20"
+              iconColor="text-primary"
+              iconBg="bg-primary/10 border-primary/20"
               label="Total Returns"
               value={formatCurrency(totalReturn)}
               sub={
@@ -582,8 +582,8 @@ export function ShiftDetailPage() {
             {isClosed && difference != null ? (
               <KpiCard
                 icon={difference >= 0 ? CheckCircle2 : AlertTriangle}
-                iconColor={difference >= 0 ? "text-success" : "text-destructive"}
-                iconBg={difference >= 0 ? "bg-success/10 border-success/20" : "bg-destructive/10 border-destructive/20"}
+                iconColor={difference >= 0 ? "text-primary" : "text-destructive"}
+                iconBg={difference >= 0 ? "bg-primary/10 border-primary/20" : "bg-destructive/10 border-destructive/20"}
                 label={difference >= 0 ? "Cash Over" : "Cash Short"}
                 value={`${difference >= 0 ? "+" : ""}${formatCurrency(difference)}`}
                 sub="vs expected"
@@ -604,24 +604,24 @@ export function ShiftDetailPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <KpiCard
               icon={Package}
-              iconColor="text-orange-400"
-              iconBg="bg-orange-400/10 border-orange-400/20"
+              iconColor="text-primary"
+              iconBg="bg-primary/10 border-primary/20"
               label="Items Sold"
               value={statsLoading ? "…" : String(detailStats?.total_items_sold ?? 0)}
               sub="units across all sales"
             />
             <KpiCard
               icon={Users}
-              iconColor="text-sky-400"
-              iconBg="bg-sky-400/10 border-sky-400/20"
+              iconColor="text-primary"
+              iconBg="bg-primary/10 border-primary/20"
               label="Customers"
               value={statsLoading ? "…" : String(detailStats?.unique_customers ?? 0)}
               sub="unique buyers this shift"
             />
             <KpiCard
               icon={Receipt}
-              iconColor="text-violet-400"
-              iconBg="bg-violet-400/10 border-violet-400/20"
+              iconColor="text-primary"
+              iconBg="bg-primary/10 border-primary/20"
               label="Credit Sales"
               value={
                 statsLoading
@@ -634,8 +634,8 @@ export function ShiftDetailPage() {
             />
             <KpiCard
               icon={Star}
-              iconColor="text-amber-400"
-              iconBg="bg-amber-400/10 border-amber-400/20"
+              iconColor="text-primary"
+              iconBg="bg-primary/10 border-primary/20"
               label="Top Item"
               value={
                 statsLoading
@@ -946,7 +946,7 @@ function TopItemsSection({ items, isLoading }) {
                   <tr key={item.item_id ?? item.item_name} className="border-b border-border/30 last:border-0 hover:bg-muted/10 transition-colors">
                     <td className="py-2.5 pr-3">
                       {isTop ? (
-                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/15 text-[10px] font-bold text-amber-400">1</span>
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-[10px] font-bold text-primary">1</span>
                       ) : (
                         <span className="text-[10px] text-muted-foreground/40 tabular-nums">{idx + 1}</span>
                       )}
@@ -965,13 +965,13 @@ function TopItemsSection({ items, isLoading }) {
                       {/* qty bar */}
                       <div className="mt-1 h-1 w-full rounded-full bg-muted overflow-hidden">
                         <div
-                          className={cn("h-full rounded-full", isTop ? "bg-amber-400" : "bg-primary/50")}
+                          className={cn("h-full rounded-full", isTop ? "bg-primary" : "bg-primary/50")}
                           style={{ width: `${Math.max(qtyShare, 2)}%` }}
                         />
                       </div>
                     </td>
                     <td className="py-2.5 pr-3 text-right">
-                      <span className={cn("font-mono tabular-nums font-semibold", isTop ? "text-amber-400" : "text-foreground")}>
+                      <span className={cn("font-mono tabular-nums font-semibold", isTop ? "text-primary" : "text-foreground")}>
                         ×{qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2)}
                       </span>
                     </td>
@@ -1040,7 +1040,7 @@ function CustomersSection({ customers, isLoading }) {
                     "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
                     c.isWalkin
                       ? "bg-muted text-muted-foreground border border-border"
-                      : "bg-sky-400/15 text-sky-400 border border-sky-400/20",
+                      : "bg-primary/15 text-primary border border-primary/20",
                   )}>
                     {c.isWalkin ? "W" : c.name.charAt(0).toUpperCase()}
                   </div>
@@ -1067,7 +1067,7 @@ function CustomersSection({ customers, isLoading }) {
                 {/* Spend bar */}
                 <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
                   <div
-                    className={cn("h-full rounded-full", c.isWalkin ? "bg-muted-foreground/40" : "bg-sky-400")}
+                    className={cn("h-full rounded-full", c.isWalkin ? "bg-muted-foreground/40" : "bg-primary")}
                     style={{ width: `${Math.max(share, 2)}%` }}
                   />
                 </div>
@@ -1111,7 +1111,7 @@ function CreditSalesSection({ creditTxs, isLoading, navigate }) {
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <UserCircle className="h-3 w-3 text-violet-400 shrink-0" />
+                  <UserCircle className="h-3 w-3 text-primary shrink-0" />
                   <p className="text-[12px] font-medium text-foreground truncate">
                     {tx.customer_name ?? (
                       <span className="italic text-muted-foreground">Walk-in</span>
@@ -1123,7 +1123,7 @@ function CreditSalesSection({ creditTxs, isLoading, navigate }) {
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <p className="text-[12px] font-bold tabular-nums font-mono text-violet-400">
+                <p className="text-[12px] font-bold tabular-nums font-mono text-primary">
                   {formatCurrency(parseFloat(tx.total_amount ?? 0))}
                 </p>
                 <ArrowRight className="h-3 w-3 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
@@ -1135,7 +1135,7 @@ function CreditSalesSection({ creditTxs, isLoading, navigate }) {
           {creditTxs.length > 1 && (
             <div className="flex items-center justify-between pt-2.5 mt-0.5 border-t border-border/50">
               <span className="text-[11px] font-semibold text-foreground">Total Outstanding</span>
-              <span className="text-[13px] font-bold tabular-nums font-mono text-violet-400">
+              <span className="text-[13px] font-bold tabular-nums font-mono text-primary">
                 {formatCurrency(totalCredit)}
               </span>
             </div>

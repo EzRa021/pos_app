@@ -92,7 +92,7 @@ function ActiveShiftCard({ shift, onClick, currentUserId, onCancel, isCancelling
       {/* Status stripe */}
       <div className={cn(
         "h-[3px] w-full",
-        shift.status === "suspended" ? "bg-warning" : "bg-success",
+        shift.status === "suspended" ? "bg-muted-foreground/30" : "bg-primary",
       )} />
 
       {/* Clickable main area */}
@@ -127,7 +127,7 @@ function ActiveShiftCard({ shift, onClick, currentUserId, onCancel, isCancelling
         <div className="grid grid-cols-3 gap-2">
           <div className="rounded-lg bg-muted/40 px-2.5 py-2 text-center">
             <p className="text-[10px] text-muted-foreground mb-0.5">Sales</p>
-            <p className="text-xs font-mono font-bold text-success tabular-nums">{formatCurrency(totalSales)}</p>
+            <p className="text-xs font-mono font-bold text-primary tabular-nums">{formatCurrency(totalSales)}</p>
           </div>
           <div className="rounded-lg bg-muted/40 px-2.5 py-2 text-center">
             <p className="text-[10px] text-muted-foreground mb-0.5">Txns</p>
@@ -236,16 +236,16 @@ function GlobalShiftsView({ storeId, currentUserId }) {
           },
           {
             icon: TrendingUp,
-            iconColor: "text-success",
-            iconBg:    "bg-success/10 border-success/20",
+            iconColor: "text-primary",
+            iconBg:    "bg-primary/10 border-primary/20",
             label:     "Store Sales Today",
             value:     formatCurrency(storeTotalSales),
             sub:       "across all shifts",
           },
           {
             icon: ShoppingCart,
-            iconColor: "text-warning",
-            iconBg:    "bg-warning/10 border-warning/20",
+            iconColor: "text-primary",
+            iconBg:    "bg-primary/10 border-primary/20",
             label:     "Total Transactions",
             value:     String(storeTotalTxns),
             sub:       "completed this session",
@@ -276,7 +276,7 @@ function GlobalShiftsView({ storeId, currentUserId }) {
       <div className="rounded-xl border border-border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border bg-muted/20">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-2 w-2 rounded-full bg-success animate-pulse" />
+            <div className="flex h-2 w-2 rounded-full bg-primary animate-pulse" />
             <h2 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
               Active Shifts
             </h2>
@@ -357,10 +357,10 @@ function NoShiftState({ onOpen }) {
         </p>
       </div>
       <Button
-        variant="success"
+        variant="default"
         size="xl"
         onClick={onOpen}
-        className="shadow-lg shadow-success/20 px-10"
+        className="shadow-lg shadow-primary/20 px-10"
       >
         <Timer className="h-5 w-5" />
         Open Shift
@@ -380,18 +380,18 @@ function ActiveShiftPanel({
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className={cn("h-[3px] w-full", isSuspended ? "bg-warning" : "bg-success")} />
+      <div className={cn("h-[3px] w-full", isSuspended ? "bg-muted-foreground/30" : "bg-primary")} />
       <div className="p-5">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
             <div className="flex items-center gap-2 mb-2.5">
               <div className={cn(
                 "flex h-2 w-2 rounded-full",
-                isSuspended ? "bg-warning" : "bg-success pulse-dot",
+                isSuspended ? "bg-muted-foreground" : "bg-primary pulse-dot",
               )} />
               <span className={cn(
                 "text-xs font-bold uppercase tracking-wider",
-                isSuspended ? "text-warning" : "text-success",
+                isSuspended ? "text-muted-foreground" : "text-primary",
               )}>
                 {isSuspended ? "Shift Suspended" : "Shift Active"}
               </span>
@@ -421,7 +421,7 @@ function ActiveShiftPanel({
               <Button
                 variant="outline"
                 size="sm"
-                className="border-success/40 text-success hover:bg-success/10"
+                className="border-primary/40 text-primary hover:bg-primary/10"
                 onClick={onResume}
                 disabled={isResuming}
               >
@@ -432,7 +432,7 @@ function ActiveShiftPanel({
               <Button
                 variant="outline"
                 size="sm"
-                className="border-warning/40 text-warning hover:bg-warning/10"
+                className="border-primary/40 text-primary hover:bg-primary/10"
                 onClick={onSuspend}
                 disabled={isSuspending}
               >
@@ -454,9 +454,9 @@ function ActiveShiftPanel({
         </div>
 
         {isSuspended && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5">
-            <PauseCircle className="h-3.5 w-3.5 text-warning shrink-0" />
-            <p className="text-[11px] text-warning leading-relaxed">
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/8 px-3 py-2.5">
+            <PauseCircle className="h-3.5 w-3.5 text-primary shrink-0" />
+            <p className="text-[11px] text-primary leading-relaxed">
               Shift is suspended — sales are paused. Resume to accept payments or close the shift.
             </p>
           </div>
@@ -537,7 +537,7 @@ export default function ShiftsPage() {
         }
         action={
           !isShiftOpen && !shiftLoading ? (
-            <Button variant="success" size="sm" onClick={() => setOpenShiftOpen(true)}>
+            <Button variant="default" size="sm" onClick={() => setOpenShiftOpen(true)}>
               <Timer className="h-3.5 w-3.5" />
               Open Shift
             </Button>

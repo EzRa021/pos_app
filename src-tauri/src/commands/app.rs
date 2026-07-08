@@ -8,7 +8,7 @@ use tauri::State;
 use serde::Serialize;
 use tauri_plugin_store::StoreExt;
 use crate::{
-    database::pool::{create_pool, ping},
+    database::pool::{create_pool, ping, create_database, database_exists},
     error::AppResult,
     state::{AppState, DbConfig},
 };
@@ -73,6 +73,41 @@ pub async fn db_connect(
 pub struct DbConnectResult {
     pub success: bool,
     pub message: String,
+}
+
+// ── DB Create Database ────────────────────────────────────────────
+
+/// Called from the frontend when db_connect fails with DATABASE_MISSING.
+/// Creates the database on the target Postgres server (via the `postgres`
+/// maintenance DB, same host/port/credentials), then connects normally —
+/// which runs all migrations and persists the config exactly like a
+/// successful db_connect would. No database name is ever hardcoded here;
+/// whatever the user typed into the setup form is what gets created.
+#[tauri::command]
+pub async fn db_create_database(
+    app:    tauri::AppHandle,
+    state:  State<'_, AppState>,
+    config: DbConfig,
+) -> AppResult<DbConnectResult> {
+    tracing::info!(
+        "db_create_database called for '{}' on {}:{}",
+        config.database, config.host, config.port
+    );
+
+    create_database(&config).await?;
+
+    // Reuse the exact same connect+migrate+persist path as a normal connect.
+    db_connect(app, state, config).await
+}
+
+// ── DB Database Exists ──────────────────────────────────────────
+
+/// Lets the frontend check for a database's existence up front (e.g. while
+/// the user is still typing in the manual form) without attempting a full
+/// connect + migration run.
+#[tauri::command]
+pub async fn db_database_exists(config: DbConfig) -> AppResult<bool> {
+    database_exists(&config).await
 }
 
 // ── DB Disconnect ─────────────────────────────────────────────────────────────

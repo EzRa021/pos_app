@@ -4,9 +4,18 @@
 //
 // Flow:
 //  1. On mount → silently auto-try DEFAULT credentials (detecting…)
-//     • SUCCESS → show "Server Online" card (IP for clients) → auto-advance 3 s
-//     • FAIL    → show manual DB form (no error shown for auto-detect failure)
+//     • SUCCESS → show "Server Online" card (IP for clients)
+//     • FAILURE → show manual DB form (no error shown for auto-detect failure)
 //  2. Manual form submit → same SUCCESS/FAIL path, but errors ARE shown
+//
+// The database itself ("myposdb") is a FIXED name, provisioned once ahead of
+// time — either by scripts/provision-db.ps1 (runs automatically on install
+// via the NSIS hook) or manually by whoever set up PostgreSQL. This screen
+// never creates a database or grants permissions itself; if the connection
+// fails, it shows the exact fix (which is almost always "run the setup
+// script" or "ask whoever installed Postgres to create myposdb") rather than
+// trying to do it in-app. Simpler and far fewer states for a non-technical
+// user to get stuck in.
 //
 // After onConnected() fires, App.jsx takes over: it runs the onboarding
 // check and session restore in parallel, then navigates automatically to
@@ -20,15 +29,17 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
   ArrowLeft, Server, CheckCircle2, Copy, Check,
-  Database, Loader2, Eye, EyeOff, AlertCircle, SkipForward
+  Database, Loader2, Eye, EyeOff, AlertCircle, SkipForward,
 } from "lucide-react";
 
+// Fixed database name — "myposdb" is created ahead of time by
+// scripts/provision-db.ps1 (or manually), never by this screen.
 const DEFAULT = {
   host:     "localhost",
   port:     "5432",
   username: "quantum_user",
   password: "quantum_password",
-  database: "pos_app",
+  database: "myposdb",
 };
 
 function Field({ label, required, children }) {
@@ -44,21 +55,77 @@ function Field({ label, required, children }) {
 
 export default function ServerSetup({ onConnected, onBack }) {
   const [form,     setForm]    = useState(DEFAULT);
-  // detecting → auto-trying defaults on mount
-  // idle      → show manual form (auto-detect failed)
+  // detecting  → auto-trying defaults on mount
+  // idle       → show manual form (auto-detect failed)
   // connecting → manual form submitted, waiting
-  // success   → connected, showing server info card
-  // error     → manual connect failed
+  // success    → connected, showing server info card
+  // error      → connect failed (shown with the exact fix)
   const [status,   setStatus]  = useState("detecting");
   const [error,    setError]   = useState("");
   const [localIp,  setLocalIp] = useState("");
   const [apiPort,  setApiPort] = useState(4000);
   const [showPass, setShowPass] = useState(false);
   const [copied,   setCopied]  = useState(false);
-  const advanceTimer = useRef(null);
   const connectedPayload = useRef(null);
+  const lastConfig = useRef(null);
 
   function set(field, value) { setForm(f => ({ ...f, [field]: value })); }
+
+  // ── Verify HTTP + assemble the final payload once db_connect succeeds ────
+  async function finalizeSuccess(config) {
+    await new Promise(r => setTimeout(r, 200));
+    const [ip, port] = await Promise.all([
+      invoke("get_local_ip"),
+      invoke("get_api_port"),
+    ]);
+
+    // ── Verify the HTTP layer is ACTUALLY reachable ─────────────────────
+    // get_local_ip/get_api_port are Tauri IPC calls — they only prove the
+    // Rust process is alive, not that the WebView's real network stack can
+    // reach the Axum server. Firewalls, antivirus, or proxy env vars can
+    // block that even when IPC succeeds, so confirm with a real fetch
+    // before declaring success (up to 10s, since the server may still be
+    // finishing its bind/serve startup).
+    let httpReachable = false;
+    let lastHealthErr = null;
+    for (let attempt = 0; attempt < 20 && !httpReachable; attempt++) {
+      try {
+        const res = await fetch(`http://localhost:${port}/health`, {
+          signal: AbortSignal.timeout(1500),
+        });
+        if (res.ok) httpReachable = true;
+      } catch (e) {
+        lastHealthErr = e;
+      }
+      if (!httpReachable) await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (!httpReachable) {
+      console.error("[ServerSetup] HTTP health check failed after DB connect:", lastHealthErr);
+      throw new Error(
+        "Database connected, but this machine cannot reach its own API server " +
+        `at localhost:${port} over HTTP. This is usually Windows Firewall, ` +
+        "antivirus, or a proxy blocking local network traffic — check for a " +
+        "firewall permission prompt for this app, or a system HTTP_PROXY setting."
+      );
+    }
+
+    setLocalIp(ip);
+    setApiPort(port);
+
+    const payload = {
+      mode:     "server",
+      host:     config.host,
+      port:     config.port,
+      username: config.username,
+      password: config.password,
+      database: config.database,
+      localIp:  ip,
+      apiPort:  port,
+    };
+    connectedPayload.current = payload;
+    setStatus("success");
+  }
 
   // ── Attempt a DB connection with the given config ─────────────────────────
   async function attemptConnect(config, silent = false) {
@@ -66,69 +133,28 @@ export default function ServerSetup({ onConnected, onBack }) {
       setStatus("connecting");
       setError("");
     }
+    lastConfig.current = config;
     try {
       await invoke("db_connect", { config });
-      await new Promise(r => setTimeout(r, 200));
-      const [ip, port] = await Promise.all([
-        invoke("get_local_ip"),
-        invoke("get_api_port"),
-      ]);
-
-      // ── Verify the HTTP layer is ACTUALLY reachable ─────────────────────
-      // get_local_ip/get_api_port are Tauri IPC calls — they only prove the
-      // Rust process is alive, not that the WebView's real network stack can
-      // reach the Axum server. Firewalls, antivirus, or proxy env vars can
-      // block that even when IPC succeeds, so confirm with a real fetch
-      // before declaring success (up to 10s, since the server may still be
-      // finishing its bind/serve startup).
-      let httpReachable = false;
-      let lastHealthErr = null;
-      for (let attempt = 0; attempt < 20 && !httpReachable; attempt++) {
-        try {
-          const res = await fetch(`http://localhost:${port}/health`, {
-            signal: AbortSignal.timeout(1500),
-          });
-          if (res.ok) httpReachable = true;
-        } catch (e) {
-          lastHealthErr = e;
-        }
-        if (!httpReachable) await new Promise(r => setTimeout(r, 500));
-      }
-
-      if (!httpReachable) {
-        console.error("[ServerSetup] HTTP health check failed after DB connect:", lastHealthErr);
-        throw new Error(
-          "Database connected, but this machine cannot reach its own API server " +
-          `at localhost:${port} over HTTP. This is usually Windows Firewall, ` +
-          "antivirus, or a proxy blocking local network traffic — check for a " +
-          "firewall permission prompt for this app, or a system HTTP_PROXY setting."
-        );
-      }
-
-      setLocalIp(ip);
-      setApiPort(port);
-
-      const payload = {
-        mode:     "server",
-        host:     config.host,
-        port:     config.port,
-        username: config.username,
-        password: config.password,
-        database: config.database,
-        localIp:  ip,
-        apiPort:  port,
-      };
-      connectedPayload.current = payload;
-      setStatus("success");
-
-      // Auto-advance after 3 s — user can still click "Continue now" immediately
-      advanceTimer.current = setTimeout(() => onConnected(payload), 3000);
+      await finalizeSuccess(config);
     } catch (err) {
+      const rawMsg = typeof err === "string" ? err : (err?.message ?? "Connection failed");
+
+      // Database doesn't exist yet — this should only happen if provisioning
+      // (scripts/provision-db.ps1) hasn't run yet, or ran against a different
+      // Postgres instance than the one at config.host:config.port. Give the
+      // exact, non-technical fix instead of a raw error.
+      const msg = rawMsg.includes("DATABASE_MISSING:")
+        ? `The database "${config.database}" doesn't exist on this PostgreSQL server yet. ` +
+          `Run the Quantum POS setup script (scripts/provision-db.ps1) once, or ` +
+          `ask whoever installed PostgreSQL to create it, then try again.`
+        : rawMsg;
+
       if (silent) {
         // Auto-detect failed silently → show the manual form
         setStatus("idle");
       } else {
-        setError(typeof err === "string" ? err : (err?.message ?? "Connection failed"));
+        setError(msg);
         setStatus("error");
       }
     }
@@ -149,7 +175,6 @@ export default function ServerSetup({ onConnected, onBack }) {
             const payload = { mode: "server", ...DEFAULT, localIp: ip, apiPort: port };
             connectedPayload.current = payload;
             setStatus("success");
-            advanceTimer.current = setTimeout(() => onConnected(payload), 3000);
           });
         } else {
           // Try connecting with defaults silently
@@ -166,12 +191,9 @@ export default function ServerSetup({ onConnected, onBack }) {
         // db_status itself failed — fall back to manual form
         setStatus("idle");
       });
-
-    return () => { if (advanceTimer.current) clearTimeout(advanceTimer.current); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleContinueNow() {
-    if (advanceTimer.current) clearTimeout(advanceTimer.current);
     if (connectedPayload.current) onConnected(connectedPayload.current);
   }
 
@@ -277,17 +299,11 @@ export default function ServerSetup({ onConnected, onBack }) {
           </div>
         </div>
 
-        {/* Auto-advance feedback + manual skip */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground flex-1">
-            <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-            Continuing in a moment…
-          </div>
-          <Button size="sm" variant="outline" onClick={handleContinueNow} className="gap-1.5 shrink-0">
-            <SkipForward className="h-3.5 w-3.5" />
-            Continue now
-          </Button>
-        </div>
+        {/* Explicit continue — no auto-advance, so there's time to copy the address */}
+        <Button size="lg" onClick={handleContinueNow} className="w-full h-11 gap-1.5">
+          Continue
+          <SkipForward className="h-3.5 w-3.5" />
+        </Button>
       </div>
     );
   }
@@ -353,8 +369,11 @@ export default function ServerSetup({ onConnected, onBack }) {
         </div>
 
         <Field label="Database Name" required>
-          <Input value={form.database} onChange={e => set("database", e.target.value)} placeholder="pos_app" required />
+          <Input value={form.database} onChange={e => set("database", e.target.value)} placeholder="myposdb" required />
         </Field>
+        <p className="text-[11px] text-muted-foreground -mt-2.5">
+          Must already exist on the server (created by the Quantum POS setup script).
+        </p>
 
         <Field label="Username" required>
           <Input value={form.username} onChange={e => set("username", e.target.value)} placeholder="quantum_user" required />

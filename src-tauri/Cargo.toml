@@ -1,12 +1,12 @@
 [package]
-name = "pos-app"
+name = "zera"
 version = "0.1.0"
-description = "Quantum POS — Point of Sale System"
-authors = ["Quantum POS"]
+description = "Zera — Point of Sale System"
+authors = ["Zera"]
 edition = "2021"
 
 [lib]
-name = "pos_app_lib"
+name = "zera_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -20,6 +20,8 @@ tauri-plugin-store        = "2"
 tauri-plugin-fs           = "2"
 tauri-plugin-dialog       = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-updater      = "2"
+tauri-plugin-process      = "2"
 
 # ── Async Runtime ─────────────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }

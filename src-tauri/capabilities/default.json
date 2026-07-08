@@ -52,6 +52,9 @@
     "fs:scope-desktop-recursive",
     "fs:scope-applocaldata-recursive",
 
+    "updater:default",
+    "process:default",
+
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-message",

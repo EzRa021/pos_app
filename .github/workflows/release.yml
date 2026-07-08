@@ -1,0 +1,61 @@
+name: Release
+
+# ============================================================================
+# Triggers on any pushed tag like v1.0.0 — bump "version" in
+# src-tauri/tauri.conf.json AND package.json to match before tagging, e.g.:
+#   git tag v1.0.1
+#   git push origin v1.0.1
+#
+# THIS REPO STAYS PRIVATE. The build runs here (source never leaves), but the
+# finished, signed installer + latest.json get published to a SEPARATE public
+# repo (REPLACE_WITH_YOUR_USERNAME/zera-releases) via a scoped token. That
+# public repo's Releases page is what customers actually see and download
+# from — it contains zero source code, just binaries.
+#
+# "targets": "all" in tauri.conf.json's bundle config means this produces
+# BOTH an .exe (NSIS) and a .msi installer per release automatically — both
+# get uploaded, so the public Releases page naturally offers both types for
+# people to pick between.
+# ============================================================================
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-action@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      # ── Build, sign, and publish — but to the PUBLIC releases repo ────────
+      # tauri-action normally publishes to whichever repo the workflow is
+      # running in. We override GITHUB_REPOSITORY + GITHUB_TOKEN for just
+      # this step so it authenticates against and creates the release in
+      # the separate public repo instead of this private one.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN:      ${{ secrets.RELEASES_REPO_TOKEN }}
+          GITHUB_REPOSITORY: EzRa021/zera-releases
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName:     ${{ github.ref_name }}
+          releaseName: "Zera ${{ github.ref_name }}"
+          releaseBody: "See commit history for what changed in this version."
+          releaseDraft: false
+          prerelease:   false

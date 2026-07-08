@@ -75,7 +75,7 @@ function useShiftColumns(navigate) {
         <span className="text-xs text-muted-foreground tabular-nums">
           {["open", "active", "suspended"].includes(row.status)
             ? <span className="flex items-center gap-1">
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
                 Active
               </span>
             : formatDuration(row.opened_at, row.closed_at)}
@@ -94,7 +94,7 @@ function useShiftColumns(navigate) {
       align:  "right",
       render: (row) =>
         row.total_sales != null ? (
-          <CurrencyDisplay value={row.total_sales} size="sm" color="success" />
+          <CurrencyDisplay value={row.total_sales} size="sm" color="primary" />
         ) : (
           <span className="text-xs text-muted-foreground">—</span>
         ),
@@ -105,7 +105,7 @@ function useShiftColumns(navigate) {
       align:  "right",
       render: (row) =>
         row.total_returns != null && parseFloat(row.total_returns) > 0 ? (
-          <CurrencyDisplay value={row.total_returns} size="sm" color="destructive" />
+          <CurrencyDisplay value={row.total_returns} size="sm" color="default" />
         ) : (
           <span className="text-xs text-muted-foreground">—</span>
         ),

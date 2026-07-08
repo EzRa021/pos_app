@@ -16,6 +16,28 @@ pub enum AppError {
     #[error("Database not connected. Please configure the database first.")]
     NotConnected,
 
+    /// The target database does not exist on the Postgres server (but the
+    /// server itself was reachable with the given credentials). Carries the
+    /// database name so the frontend can offer to create it.
+    /// Serializes as "DATABASE_MISSING:<name>" so the frontend can detect it
+    /// with a simple string match without needing structured invoke errors.
+    #[error("DATABASE_MISSING:{0}")]
+    DatabaseMissing(String),
+
+    /// The connected role lacks CREATEDB — it can log in but can't create
+    /// new databases. Carries the username so the frontend can show the
+    /// exact command to run as a Postgres superuser.
+    /// Serializes as "DATABASE_CREATE_PERMISSION_DENIED:<username>".
+    #[error("DATABASE_CREATE_PERMISSION_DENIED:{0}")]
+    DatabaseCreatePermissionDenied(String),
+
+    /// The connected role can log in and the database exists, but it lacks
+    /// CREATE on the target schema (Postgres 15+ default: only the schema
+    /// owner can create objects in `public` unless explicitly granted).
+    /// Serializes as "SCHEMA_PERMISSION_DENIED:<username>".
+    #[error("SCHEMA_PERMISSION_DENIED:{0}")]
+    SchemaPermissionDenied(String),
+
     // ── Auth ───────────────────────────────────────────────────────────────
     #[error("Unauthorized: {0}")]
     Unauthorized(String),

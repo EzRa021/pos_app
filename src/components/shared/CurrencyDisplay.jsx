@@ -33,6 +33,7 @@ const COLOR_CLASSES = {
   destructive: "text-destructive",
   muted:       "text-muted-foreground",
   warning:     "text-warning",
+  primary:     "text-primary",
 };
 
 export function CurrencyDisplay({

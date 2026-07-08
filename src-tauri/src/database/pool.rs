@@ -62,15 +62,21 @@ pub async fn create_pool(cfg: &DbConfig) -> AppResult<PgPool> {
         .max_lifetime(std::time::Duration::from_secs(1800))
         .connect(&url)
         .await
-        .map_err(|e| AppError::Internal(format!("Failed to connect to database: {e}")))?;
+        .map_err(|e| {
+            if is_missing_database_error(&e) {
+                AppError::DatabaseMissing(cfg.database.clone())
+            } else {
+                AppError::Internal(format!("Failed to connect to database: {e}"))
+            }
+        })?;
 
     tracing::info!("PostgreSQL connection established — running pending migrations…");
 
     #[cfg(debug_assertions)]
-    run_migrations(&pool, "./migrations").await?;
+    run_migrations(&pool, "./migrations", &cfg.username).await?;
 
     #[cfg(not(debug_assertions))]
-    run_migrations_embedded(&pool).await?;
+    run_migrations_embedded(&pool, &cfg.username).await?;
 
     tracing::info!("All migrations up to date.");
 
@@ -105,7 +111,7 @@ pub async fn create_cloud_pool(url: &str) -> AppResult<PgPool> {
 pub async fn create_cloud_pool_with_migrations(url: &str) -> AppResult<PgPool> {
     let pool = create_cloud_pool(url).await?;
     tracing::info!("Running schema migrations on Supabase cloud database…");
-    run_migrations_embedded(&pool).await?;
+    run_migrations_embedded(&pool, "supabase").await?;
     tracing::info!("Supabase schema is up to date.");
     Ok(pool)
 }
@@ -115,10 +121,133 @@ pub async fn ping(pool: &PgPool) -> bool {
     sqlx::query("SELECT 1").execute(pool).await.is_ok()
 }
 
+// ── Database creation (self-service, from the Setup screen) ──────────────────
+
+/// True if a sqlx connect/query error is Postgres error 3D000
+/// ("invalid_catalog_name" — i.e. the target database does not exist).
+/// This is how we distinguish "server unreachable / bad credentials" from
+/// "server is fine, the database just hasn't been created yet".
+pub fn is_missing_database_error(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(db_err) => db_err.code().as_deref() == Some("3D000"),
+        _ => false,
+    }
+}
+
+/// True if a sqlx query error is Postgres error 42501
+/// ("insufficient_privilege" — the role can log in but lacks CREATEDB, or
+/// otherwise isn't allowed to run this statement).
+fn is_permission_denied_error(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(db_err) => db_err.code().as_deref() == Some("42501"),
+        _ => false,
+    }
+}
+
+/// Validate a database name is safe to interpolate directly into a
+/// `CREATE DATABASE "<name>"` statement (Postgres does not support bind
+/// parameters for identifiers in DDL). Restricting to letters/digits/
+/// underscore, starting with a letter or underscore, makes injection
+/// impossible regardless of what the user typed in the setup form.
+fn validate_db_name(name: &str) -> AppResult<()> {
+    if name.is_empty() || name.len() > 63 {
+        return Err(AppError::Validation(
+            "Database name must be 1-63 characters.".into(),
+        ));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(AppError::Validation(
+            "Database name must start with a letter or underscore.".into(),
+        ));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(AppError::Validation(
+            "Database name may only contain letters, numbers, and underscores.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Connect to the `postgres` maintenance database on the same server/creds
+/// and check whether `cfg.database` exists yet.
+pub async fn database_exists(cfg: &DbConfig) -> AppResult<bool> {
+    validate_db_name(&cfg.database)?;
+
+    let maintenance = DbConfig { database: "postgres".to_string(), ..cfg.clone() };
+    let url = build_connection_string(&maintenance);
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(&url)
+        .await
+        .map_err(|e| AppError::Internal(format!("Cannot reach PostgreSQL server: {e}")))?;
+
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)"
+    )
+    .bind(&cfg.database)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| AppError::Internal(format!("Cannot check database existence: {e}")))?;
+
+    pool.close().await;
+    Ok(exists)
+}
+
+/// Create `cfg.database` on the Postgres server if it doesn't already exist.
+/// Connects to the `postgres` maintenance database using the same host/port/
+/// credentials, so this works against any reachable Postgres server — local
+/// or remote — with no hardcoded database name anywhere in the flow.
+///
+/// Idempotent: if the database already exists (e.g. a second click, or a
+/// race with another terminal setting up at the same time), this is a no-op.
+pub async fn create_database(cfg: &DbConfig) -> AppResult<()> {
+    validate_db_name(&cfg.database)?;
+
+    if database_exists(cfg).await? {
+        tracing::info!("Database '{}' already exists — skipping creation.", cfg.database);
+        return Ok(());
+    }
+
+    let maintenance = DbConfig { database: "postgres".to_string(), ..cfg.clone() };
+    let url = build_connection_string(&maintenance);
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(&url)
+        .await
+        .map_err(|e| AppError::Internal(format!("Cannot reach PostgreSQL server: {e}")))?;
+
+    // CREATE DATABASE cannot be parameterized ($1) — Postgres only allows
+    // bind params for values, not identifiers. Safe here because
+    // validate_db_name() above restricts the name to [A-Za-z_][A-Za-z0-9_]*,
+    // and we additionally double-escape any stray quote as defense in depth.
+    let escaped = cfg.database.replace('"', "\"\"");
+    let stmt = format!("CREATE DATABASE \"{escaped}\"");
+    sqlx::query(&stmt)
+        .execute(&pool)
+        .await
+        .map_err(|e| {
+            if is_permission_denied_error(&e) {
+                AppError::DatabaseCreatePermissionDenied(cfg.username.clone())
+            } else {
+                AppError::Internal(format!("Failed to create database '{}': {e}", cfg.database))
+            }
+        })?;
+
+    pool.close().await;
+    tracing::info!("Database '{}' created successfully.", cfg.database);
+    Ok(())
+}
+
 // ── Migration Runner ──────────────────────────────────────────────────────────
 
 /// Run migrations from the filesystem (used by local PostgreSQL on dev/setup).
-async fn run_migrations(pool: &PgPool, migrations_dir: &str) -> AppResult<()> {
+async fn run_migrations(pool: &PgPool, migrations_dir: &str, username: &str) -> AppResult<()> {
     // 1. Ensure tracking table exists with content_hash column
     ensure_migrations_table(pool).await?;
 
@@ -161,7 +290,7 @@ async fn run_migrations(pool: &PgPool, migrations_dir: &str) -> AppResult<()> {
             }
         }
 
-        apply_migration(pool, version, &filename, &content, &hash).await?;
+        apply_migration(pool, version, &filename, &content, &hash, username).await?;
 
         tracing::info!("Migration {version:04} applied successfully.");
     }
@@ -175,7 +304,7 @@ async fn run_migrations(pool: &PgPool, migrations_dir: &str) -> AppResult<()> {
 /// filesystem, so no external folder is required at runtime.
 ///
 /// All pending migrations are applied in a SINGLE TRANSACTION for speed.
-async fn run_migrations_embedded(pool: &PgPool) -> AppResult<()> {
+async fn run_migrations_embedded(pool: &PgPool, username: &str) -> AppResult<()> {
     // 1. Ensure tracking table exists
     ensure_migrations_table(pool).await?;
 
@@ -256,9 +385,15 @@ async fn run_migrations_embedded(pool: &PgPool) -> AppResult<()> {
                 sqlx::query(&stmt)
                     .execute(&mut *tx)
                     .await
-                    .map_err(|e| AppError::Internal(
-                        format!("Cloud migration {filename} failed.\nStatement:\n{stmt}\n\nError: {e}")
-                    ))?;
+                    .map_err(|e| {
+                        if is_permission_denied_error(&e) {
+                            AppError::SchemaPermissionDenied(username.to_string())
+                        } else {
+                            AppError::Internal(
+                                format!("Cloud migration {filename} failed.\nStatement:\n{stmt}\n\nError: {e}")
+                            )
+                        }
+                    })?;
             }
             sqlx::query(
                 "INSERT INTO _app_migrations (version, name, content_hash)
@@ -396,6 +531,7 @@ async fn apply_migration(
     filename: &str,
     content:  &str,
     hash:     &str,
+    username: &str,
 ) -> AppResult<()> {
     let mut tx = pool.begin().await
         .map_err(|e| AppError::Internal(
@@ -408,9 +544,15 @@ async fn apply_migration(
         sqlx::query(&stmt)
             .execute(&mut *tx)
             .await
-            .map_err(|e| AppError::Internal(
-                format!("Migration {filename} failed.\nStatement:\n{stmt}\n\nError: {e}")
-            ))?;
+            .map_err(|e| {
+                if is_permission_denied_error(&e) {
+                    AppError::SchemaPermissionDenied(username.to_string())
+                } else {
+                    AppError::Internal(
+                        format!("Migration {filename} failed.\nStatement:\n{stmt}\n\nError: {e}")
+                    )
+                }
+            })?;
     }
 
     // Upsert the tracking record with the new hash

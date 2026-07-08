@@ -479,7 +479,7 @@ export function PurchaseOrderDetailPanel() {
   const isReceived   = status === "received" || status === "fully_received";
   const isPartial    = status === "partially_received";
   const isClosed     = isReceived || status === "cancelled" || status === "rejected";
-  const canReceiveNow = canReceive && (isPending || isApproved || isPartial) && !isReceived;
+  const canReceiveNow = canReceive && (isApproved || isPartial) && !isReceived;
 
   const totalOrdered  = items.reduce((s, i) => s + parseFloat(i.quantity_ordered),       0);
   const totalReceived = items.reduce((s, i) => s + parseFloat(i.quantity_received ?? 0), 0);
