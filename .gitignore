@@ -13,6 +13,12 @@ dist-ssr
 *.local
 CLAUDE.md
 
+# Environment files — never commit real credentials
+.env
+.env.*
+src-tauri/.env
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

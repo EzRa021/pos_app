@@ -179,12 +179,20 @@ function BrandPanel({ mounted }) {
           )}
           style={{ transitionDelay: "100ms" }}
         >
-          <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-primary shadow-xl shadow-primary/40">
-            <span className="select-none text-[15px] font-black leading-none text-white">Q</span>
-            <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-white/20 to-transparent" />
+          <div className="relative flex h-10 w-10 items-center justify-center overflow-hidden">
+            <img
+              src="/zera-logo.svg"
+              alt="Zera"
+              className="h-full w-full object-cover"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+                e.currentTarget.parentElement.innerHTML =
+                  '<span class="select-none text-[15px] font-black leading-none text-white">Z</span>';
+              }}
+            />
           </div>
           <div>
-            <p className="text-[14px] font-bold text-foreground leading-none tracking-tight">Quantum POS</p>
+            <p className="text-[14px] font-bold text-foreground leading-none tracking-tight">Zera</p>
             <p className="text-[10px] text-muted-foreground/50 mt-0.5">Point of Sale System</p>
           </div>
         </div>

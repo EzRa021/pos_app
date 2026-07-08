@@ -8,23 +8,27 @@
 // React Query deduplicates requests with the same query key.
 // ============================================================================
 
-import { useBusinessInfo } from '@/hooks/useBusinessInfo';
-import { cn }              from '@/lib/utils';
-
+import { useBusinessInfo } from "@/hooks/useBusinessInfo";
+import { cn } from "@/lib/utils";
 function Badge({ color, label }) {
   const ring = {
-    green: 'bg-green-950  text-green-400  border border-green-800',
-    gray:  'bg-zinc-800   text-zinc-400   border border-zinc-700',
+    green: "bg-primary/10 text-primary border border-primary/25",
+    gray: "bg-zinc-800   text-zinc-400   border border-zinc-700",
   }[color];
 
   const dot = {
-    green: 'bg-green-400 animate-pulse',
-    gray:  'bg-zinc-500',
+    green: "bg-primary animate-pulse",
+    gray: "bg-zinc-500",
   }[color];
 
   return (
-    <div className={cn('hidden sm:flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full', ring)}>
-      <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', dot)} />
+    <div
+      className={cn(
+        "hidden sm:flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full",
+        ring,
+      )}
+    >
+      <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dot)} />
       <span className="truncate max-w-[120px]">{label}</span>
     </div>
   );

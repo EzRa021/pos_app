@@ -82,12 +82,12 @@ export function CloudSyncBadge({ className }) {
     <div
       className={cn(
         "flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
-        "bg-success/10 text-success border border-success/25",
+        "bg-primary/10 text-primary border border-primary/25",
         className,
       )}
       title="All data synced to cloud"
     >
-      <span className="h-2 w-2 rounded-full bg-success shrink-0" />
+      <span className="h-2 w-2 rounded-full bg-primary shrink-0" />
       <Cloud className="h-3 w-3 shrink-0" />
       <span className="hidden sm:inline">Synced</span>
     </div>

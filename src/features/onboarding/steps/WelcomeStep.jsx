@@ -10,11 +10,20 @@ export function WelcomeStep({ onNew, onRestore }) {
     <div className="flex flex-col gap-6">
       {/* Brand */}
       <div className="flex flex-col items-center gap-3">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary shadow-md shadow-primary/30">
-          <span className="text-2xl font-black text-white">Q</span>
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary shadow-md shadow-primary/30 overflow-hidden">
+          <img
+            src="/zera-logo.svg"
+            alt="Zera"
+            className="h-full w-full object-cover"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+              e.currentTarget.parentElement.innerHTML =
+                '<span class="text-2xl font-black text-white select-none">Z</span>';
+            }}
+          />
         </div>
         <div className="text-center">
-          <h1 className="text-lg font-bold text-foreground tracking-tight">Welcome to Quantum POS</h1>
+          <h1 className="text-lg font-bold text-foreground tracking-tight">Welcome to Zera</h1>
           <p className="text-xs text-muted-foreground mt-1">Let's get your business set up</p>
         </div>
       </div>
@@ -60,7 +69,7 @@ export function WelcomeStep({ onNew, onRestore }) {
       </div>
 
       <p className="text-center text-[11px] text-muted-foreground">
-        Quantum POS © {new Date().getFullYear()}
+        Zera © {new Date().getFullYear()}
       </p>
     </div>
   );

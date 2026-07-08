@@ -82,11 +82,11 @@ export function CompleteStep({ businessName, businessId, isNewBusiness, onEnter 
       {/* CTA */}
       <Button onClick={onEnter} className="w-full h-10 mt-1">
         <ArrowRight className="h-4 w-4" />
-        Enter Quantum POS
+        Enter Zera
       </Button>
 
       <p className="text-[11px] text-muted-foreground">
-        Quantum POS © {new Date().getFullYear()}
+        Zera © {new Date().getFullYear()}
       </p>
     </div>
   );

@@ -128,12 +128,21 @@ export default function LoginPage() {
         {/* Logo + wordmark */}
         <div className="relative flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl
-                          border border-primary/30 bg-primary/[0.08] shadow-sm">
-            <span className="text-[18px] font-black text-primary leading-none">Q</span>
+                          border border-primary/30 bg-primary/[0.08] shadow-sm overflow-hidden">
+            <img
+              src="/zera-logo.svg"
+              alt="Zera"
+              className="h-full w-full object-cover"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.parentElement.innerHTML =
+                  '<span class="text-[18px] font-black text-primary leading-none select-none">Z</span>';
+              }}
+            />
           </div>
           <div>
             <p className="text-[15px] font-black text-foreground tracking-tight leading-none">
-              Quantum POS
+              Zera
             </p>
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mt-1">
               Management System
@@ -185,7 +194,7 @@ export default function LoginPage() {
         {/* Footer */}
         <div className="relative flex items-center justify-between">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40">
-            © {new Date().getFullYear()} Quantum POS
+            © {new Date().getFullYear()} Zera
           </p>
           <ModeBadge label={modeLabel} />
         </div>
@@ -199,12 +208,21 @@ export default function LoginPage() {
           <div className="flex items-center justify-between mb-1 lg:hidden">
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl
-                              border border-primary/25 bg-primary/[0.06]">
-                <span className="text-[15px] font-black text-primary leading-none">Q</span>
+                              border border-primary/25 bg-primary/[0.06] overflow-hidden">
+                <img
+                  src="/zera-logo.svg"
+                  alt="Zera"
+                  className="h-full w-full object-cover"
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                    e.currentTarget.parentElement.innerHTML =
+                      '<span class="text-[15px] font-black text-primary leading-none select-none">Z</span>';
+                  }}
+                />
               </div>
               <div>
                 <p className="text-[13px] font-bold text-foreground tracking-tight leading-none">
-                  Quantum POS
+                  Zera
                 </p>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mt-0.5">
                   {modeLabel}
@@ -315,7 +333,7 @@ export default function LoginPage() {
           {/* Bottom copyright — mobile */}
           <p className="text-center text-[10px] font-semibold uppercase tracking-wider
                         text-muted-foreground/40 lg:hidden pt-1">
-            © {new Date().getFullYear()} Quantum POS
+            © {new Date().getFullYear()} Zera
           </p>
         </div>
       </div>

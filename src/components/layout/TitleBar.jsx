@@ -14,11 +14,11 @@
 // ============================================================================
 
 import { useState, useEffect, useCallback } from "react";
-import { getCurrentWindow }                 from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, X, Maximize2, Minimize2, Search } from "lucide-react";
-import { useUiStore }        from "@/stores/ui.store";
-import { cn }                from "@/lib/utils";
-import { SyncStatusBadge }  from "@/components/shared/SyncStatusBadge";
+import { useUiStore } from "@/stores/ui.store";
+import { cn } from "@/lib/utils";
+import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 
 const ZERA_LOGO = "/zera-logo.svg";
 
@@ -36,8 +36,8 @@ function Clock() {
   const ss = time.getSeconds().toString().padStart(2, "0");
   const dateStr = time.toLocaleDateString("en-NG", {
     weekday: "short",
-    month:   "short",
-    day:     "numeric",
+    month: "short",
+    day: "numeric",
   });
 
   return (
@@ -47,8 +47,12 @@ function Clock() {
       </span>
       <div className="h-3 w-px bg-border/60" />
       <span className="font-mono text-[13px] font-semibold text-foreground/80 tabular-nums tracking-widest">
-        {hh}<span className="opacity-50 animate-pulse">:</span>{mm}
-        <span className="text-[11px] text-muted-foreground font-normal ml-0.5">{ss}</span>
+        {hh}
+        <span className="opacity-50 animate-pulse">:</span>
+        {mm}
+        <span className="text-[11px] text-muted-foreground font-normal ml-0.5">
+          {ss}
+        </span>
       </span>
     </div>
   );
@@ -79,8 +83,9 @@ function WinBtn({ onClick, label, className, children }) {
 // Hidden in icon-only / narrow layouts via `hidden sm:flex`.
 function SearchTrigger() {
   const setOpen = useUiStore((s) => s.setCommandPaletteOpen);
-  const isMac   = typeof navigator !== "undefined"
-    && navigator.platform.toUpperCase().includes("MAC");
+  const isMac =
+    typeof navigator !== "undefined" &&
+    navigator.platform.toUpperCase().includes("MAC");
 
   return (
     <button
@@ -118,7 +123,9 @@ export function TitleBar() {
     try {
       const win = getCurrentWindow();
       setIsMaximized(await win.isMaximized());
-    } catch { /* ignore — window not ready yet */ }
+    } catch {
+      /* ignore — window not ready yet */
+    }
   }, []);
 
   useEffect(() => {
@@ -153,22 +160,21 @@ export function TitleBar() {
       )}
       data-tauri-drag-region
     >
-
       {/* ── LEFT: Brand ─────────────────────────────────────────────────── */}
       <div
         className="flex items-center gap-2 px-3 min-w-0 flex-1"
         data-tauri-drag-region
       >
-        {/* Q logo chip — always shows zera app logo */}
-        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary shadow-sm shadow-primary/20 overflow-hidden">
+        {/* Z logo chip — always shows zera app logo */}
+        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md shadow-sm shadow-primary/20 overflow-hidden">
           <img
             src={ZERA_LOGO}
             alt="Zera"
             className="h-full w-full object-cover"
             onError={(e) => {
-              e.currentTarget.style.display = 'none';
+              e.currentTarget.style.display = "none";
               e.currentTarget.parentElement.innerHTML =
-                '<span class="text-[10px] font-black leading-none text-white select-none">Q</span>';
+                '<span class="text-[10px] font-black leading-none text-white select-none">Z</span>';
             }}
           />
         </div>
@@ -194,7 +200,10 @@ export function TitleBar() {
       {/* ── RIGHT: spacer + Window controls ─────────────────────────────── */}
       <div className="flex items-center flex-1 justify-end">
         {/* Decorative dot row — subtle, professional accent */}
-        <div className="hidden md:flex items-center gap-1.5 mr-3" data-tauri-drag-region>
+        <div
+          className="hidden md:flex items-center gap-1.5 mr-3"
+          data-tauri-drag-region
+        >
           <div className="h-1.5 w-1.5 rounded-full bg-border/80" />
           <div className="h-1.5 w-1.5 rounded-full bg-border/50" />
           <div className="h-1.5 w-1.5 rounded-full bg-border/30" />
@@ -218,10 +227,11 @@ export function TitleBar() {
           label={isMaximized ? "Restore" : "Maximize"}
           className="hover:bg-muted/80"
         >
-          {isMaximized
-            ? <Minimize2 className="h-3 w-3" />
-            : <Maximize2 className="h-3 w-3" />
-          }
+          {isMaximized ? (
+            <Minimize2 className="h-3 w-3" />
+          ) : (
+            <Maximize2 className="h-3 w-3" />
+          )}
         </WinBtn>
 
         {/* Close — red on hover */}

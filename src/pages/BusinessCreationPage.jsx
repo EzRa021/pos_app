@@ -260,11 +260,20 @@ export default function BusinessCreationPage({ onSuccess, onBack }) {
 
             {/* Logo */}
             <div className="flex items-center gap-2 shrink-0">
-              <div className="relative flex h-6 w-6 items-center justify-center rounded-md bg-amber-500 shadow-sm shadow-amber-500/40">
-                <span className="text-[11px] font-black leading-none text-white">Q</span>
+              <div className="relative flex h-6 w-6 items-center justify-center rounded-md bg-amber-500 shadow-sm shadow-amber-500/40 overflow-hidden">
+                <img
+                  src="/zera-logo.svg"
+                  alt="Zera"
+                  className="h-full w-full object-cover"
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                    e.currentTarget.parentElement.innerHTML =
+                      '<span class="text-[11px] font-black leading-none text-white select-none">Z</span>';
+                  }}
+                />
                 <div className="absolute inset-0 rounded-md bg-gradient-to-br from-white/20 to-transparent" />
               </div>
-              <span className="text-[13px] font-bold text-foreground leading-none">Quantum POS</span>
+              <span className="text-[13px] font-bold text-foreground leading-none">Zera</span>
             </div>
 
             <div className="flex-1" />

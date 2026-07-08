@@ -38,16 +38,16 @@ const STORE_FILE: &str = "settings.json";
 const DB_CFG_KEY: &str = "db_config";
 const SUPABASE_CFG_KEY: &str = "supabase_config";
 
-/// Supabase credentials embedded in the binary. These are used automatically
-/// at startup — no user configuration required.
-pub(crate) const EMBEDDED_SUPABASE_DB_URL: Option<&str> = Some(
-    "postgresql://postgres.qxhuqypidkvjihfyoeka:PO6pQcxXWAdUivIq@aws-1-eu-central-2.pooler.supabase.com:5432/postgres"
-);
-pub(crate) const EMBEDDED_SUPABASE_URL: Option<&str> =
-    Some("https://qxhuqypidkvjihfyoeka.supabase.co");
-pub(crate) const EMBEDDED_SUPABASE_ANON_KEY: Option<&str> = Some(
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF4aHVxeXBpZGt2amloZnlvZWthIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxNTEyMTMsImV4cCI6MjA5MDcyNzIxM30.-5gDdc7D8PEneuVA_rHuW04MhY9uEflViHLZZs0JML8"
-);
+/// Supabase credentials embedded in the binary at COMPILE TIME via env vars
+/// (never hardcoded in source, never committed to git). These are used
+/// automatically at startup — no user configuration required.
+///
+/// Set locally via `src-tauri/.env` (already gitignored) for `pnpm tauri dev`,
+/// and via GitHub Actions repository secrets for release builds:
+///   SUPABASE_DB_URL, SUPABASE_URL, SUPABASE_ANON_KEY
+pub(crate) const EMBEDDED_SUPABASE_DB_URL: Option<&str> = option_env!("SUPABASE_DB_URL");
+pub(crate) const EMBEDDED_SUPABASE_URL: Option<&str> = option_env!("SUPABASE_URL");
+pub(crate) const EMBEDDED_SUPABASE_ANON_KEY: Option<&str> = option_env!("SUPABASE_ANON_KEY");
 
 // ── get_api_port ──────────────────────────────────────────────────────────────
 #[tauri::command]

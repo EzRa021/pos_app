@@ -6,16 +6,15 @@ name: Release
 #   git tag v1.0.1
 #   git push origin v1.0.1
 #
-# THIS REPO STAYS PRIVATE. The build runs here (source never leaves), but the
-# finished, signed installer + latest.json get published to a SEPARATE public
-# repo (REPLACE_WITH_YOUR_USERNAME/zera-releases) via a scoped token. That
-# public repo's Releases page is what customers actually see and download
-# from — it contains zero source code, just binaries.
+# This repo is PUBLIC, so GitHub Actions runs on GitHub's own cloud runners
+# for free with no billing/spending-limit concerns, and releases publish
+# directly to this same repo's Releases page — no separate releases repo or
+# extra token needed.
 #
 # "targets": "all" in tauri.conf.json's bundle config means this produces
 # BOTH an .exe (NSIS) and a .msi installer per release automatically — both
-# get uploaded, so the public Releases page naturally offers both types for
-# people to pick between.
+# get uploaded, so the Releases page naturally offers both types for people
+# to pick between.
 # ============================================================================
 
 on:
@@ -42,17 +41,14 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
-      # ── Build, sign, and publish — but to the PUBLIC releases repo ────────
-      # tauri-action normally publishes to whichever repo the workflow is
-      # running in. We override GITHUB_REPOSITORY + GITHUB_TOKEN for just
-      # this step so it authenticates against and creates the release in
-      # the separate public repo instead of this private one.
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN:      ${{ secrets.RELEASES_REPO_TOKEN }}
-          GITHUB_REPOSITORY: EzRa021/zera-releases
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SUPABASE_DB_URL:   ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         with:
           tagName:     ${{ github.ref_name }}
           releaseName: "Zera ${{ github.ref_name }}"

@@ -13,7 +13,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDOTJCOTJEM0M2NDlFNDkKUldSSm5tUThMYm1TWFA2Q2g0QStiS2EyeEN2USs1L0VnemdUT21WbWk1dmRKT1dzYUpaWTFRaWUK",
       "endpoints": [
-        "https://github.com/EzRa021/zera-releases/releases/latest/download/latest.json"
+        "https://github.com/EzRa021/Zera/releases/latest/download/latest.json"
       ]
     }
   },
