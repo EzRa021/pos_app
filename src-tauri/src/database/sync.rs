@@ -42,7 +42,8 @@ const SYNC_TABLES: &[&str] = &[
     "suppliers",
     // ── catalog ───────────────────────────────────────────────────────────────
     "items",
-    "item_stock",
+    "item_stock",       // seed-only: pulled with ON CONFLICT DO NOTHING
+    "stock_movements",  // delta log — the authoritative sync channel for stock
     // ── operations ────────────────────────────────────────────────────────────
     "customers",
     "shifts",
@@ -73,53 +74,94 @@ fn biz_id_filter_col(table: &str) -> &'static str {
     }
 }
 
-/// Returns the SQL timestamp expression to use for cursor-based pull filtering,
-/// based on which column(s) each table actually has on Supabase (pre-migration 0074).
-/// After 0074 runs on Supabase, COALESCE(updated_at, created_at) works for all tables.
-fn table_ts_expr(table: &str) -> &'static str {
+/// Pull-cursor column. Migration 0098 adds `cloud_synced_at` to every synced
+/// table, stamped to NOW() by a trigger on each insert/update — so on the
+/// CLOUD database it always reflects the cloud's own clock at the moment the
+/// row arrived there. Cursoring on it (instead of device-local created_at /
+/// updated_at) means a row created offline and pushed hours later is still
+/// seen by every other device: its cloud stamp is "now", ahead of all cursors.
+const PULL_TS_COL: &str = "cloud_synced_at";
+
+// ============================================================================
+// CONFLICT STRATEGY — one per data category, not blanket last-write-wins
+// ============================================================================
+
+/// How a replicated row is applied to the target database.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SyncStrategy {
+    /// Created once, never contested-edited: INSERT … ON CONFLICT DO NOTHING.
+    /// Delivery is guaranteed by PK/UUID dedupe + the retry/tier system.
+    AppendOnly,
+    /// Genuinely mutable reference data: guarded last-write-wins on
+    /// (sync_version, updated_at, origin_device_id). Rejected writes are
+    /// logged to sync_conflicts — never silent.
+    Lww,
+    /// Rows with a status state machine: a higher-ranked status always wins
+    /// regardless of timestamp (a closed shift is never reopened by a stale
+    /// pull). Same-rank edits fall back to the LWW guard.
+    StateMachine,
+    /// item_stock: seed-only. The row is inserted when absent and NEVER
+    /// overwritten — quantities are maintained exclusively by applying
+    /// stock_movements deltas.
+    StockSeed,
+    /// stock_movements: append-only PLUS applying the delta/set to the
+    /// target side's item_stock the first time the movement is seen.
+    StockMovement,
+}
+
+fn sync_strategy(table: &str) -> SyncStrategy {
     match table {
-        // Only has updated_at (no created_at before migration 0074)
-        "item_stock" => "t.updated_at",
-        // Only has created_at (no updated_at before migration 0074)
-        "transactions"     |
-        "payments"         |
-        "returns"          |
-        "purchase_orders"  |
-        "cash_movements"   |
-        "reorder_alerts"   |
-        "notifications"    |
-        "expenses"         => "t.created_at",
-        // Has neither before migration 0074 — fall back to created_at (added by 0074)
-        "transaction_items"    |
-        "return_items"         |
-        "purchase_order_items" |
-        "shifts"               => "t.created_at",
-        // Reference tables: all have both columns already
-        _ => "COALESCE(t.updated_at, t.created_at)",
+        "businesses" | "stores" | "users" | "departments" | "categories"
+        | "suppliers" | "items" | "customers" => SyncStrategy::Lww,
+        "shifts" | "transactions" | "credit_sales" | "purchase_orders"
+        | "returns" | "reorder_alerts" | "expenses" => SyncStrategy::StateMachine,
+        "item_stock"      => SyncStrategy::StockSeed,
+        "stock_movements" => SyncStrategy::StockMovement,
+        // transaction_items, payments, return_items, purchase_order_items,
+        // cash_movements, notifications, …
+        _ => SyncStrategy::AppendOnly,
     }
 }
 
-/// Returns the actual JSON column name to read when tracking the pull cursor.
-/// This mirrors table_ts_expr but returns the plain column name so we can
-/// extract the timestamp value from row_to_json output to advance the cursor
-/// to the exact max row timestamp — not Utc::now() which would race ahead.
-fn ts_col_for_pull(table: &str) -> &'static str {
-    match table {
-        "item_stock" => "updated_at",
-        "transactions"         |
-        "payments"             |
-        "returns"              |
-        "purchase_orders"      |
-        "cash_movements"       |
-        "reorder_alerts"       |
-        "notifications"        |
-        "expenses"             |
-        "transaction_items"    |
-        "return_items"         |
-        "purchase_order_items" |
-        "shifts"               => "created_at",
-        _ => "updated_at",
-    }
+/// SQL CASE expression ranking a table's status values. Higher rank = more
+/// final. An incoming row may only overwrite when its status rank is >= the
+/// current row's rank — so terminal states (closed, voided, paid, …) are
+/// never regressed by a stale write from another device. Unknown statuses
+/// rank 0 and therefore resolve via the LWW fallback.
+fn status_rank_case(table: &str, row_expr: &str) -> Option<String> {
+    let ranks: &[(&str, i32)] = match table {
+        "shifts"          => &[("open", 0), ("active", 0), ("suspended", 1), ("closed", 2)],
+        "transactions"    => &[("completed", 0), ("partially_refunded", 1),
+                               ("refunded", 2), ("voided", 2), ("cancelled", 2)],
+        "credit_sales"    => &[("open", 0), ("partial", 1), ("paid", 2), ("cancelled", 2)],
+        "purchase_orders" => &[("draft", 0), ("pending", 0), ("approved", 1),
+                               ("partial", 2), ("partially_received", 2),
+                               ("received", 3), ("fully_received", 3), ("cancelled", 3)],
+        "returns"         => &[("completed", 0), ("voided", 1), ("cancelled", 1)],
+        "reorder_alerts"  => &[("pending", 0), ("acknowledged", 1), ("ordered", 2),
+                               ("resolved", 2), ("dismissed", 2)],
+        "expenses"        => &[("pending", 0), ("approved", 1), ("rejected", 1)],
+        _ => return None,
+    };
+    let whens: String = ranks
+        .iter()
+        .map(|(s, r)| format!(" WHEN '{s}' THEN {r}"))
+        .collect();
+    Some(format!("(CASE {row_expr}.status{whens} ELSE 0 END)"))
+}
+
+/// LWW guard: the incoming (EXCLUDED) row wins only if it is strictly ahead —
+/// by sync_version first, then updated_at, then origin_device_id as a stable
+/// tie-breaker so two devices resolve the same conflict identically.
+fn lww_guard_sql(table: &str) -> String {
+    let cur_ts = format!("COALESCE({table}.updated_at, {table}.created_at)");
+    let inc_ts = "COALESCE(EXCLUDED.updated_at, EXCLUDED.created_at)";
+    format!(
+        "({table}.sync_version < COALESCE(EXCLUDED.sync_version, 0) \
+          OR ({table}.sync_version = COALESCE(EXCLUDED.sync_version, 0) AND {cur_ts} < {inc_ts}) \
+          OR ({table}.sync_version = COALESCE(EXCLUDED.sync_version, 0) AND {cur_ts} = {inc_ts} \
+              AND COALESCE({table}.origin_device_id::text, '') < COALESCE(EXCLUDED.origin_device_id::text, '')))"
+    )
 }
 
 /// Load the current business_id from app_config. Returns None when onboarding
@@ -605,6 +647,7 @@ pub async fn run_sync_loop(state: AppState) {
                    WHEN 'items'                THEN 3
                    WHEN 'customers'            THEN 3
                    WHEN 'item_stock'           THEN 4
+                   WHEN 'stock_movements'      THEN 5
                    WHEN 'shifts'               THEN 5
                    WHEN 'transactions'         THEN 6
                    WHEN 'purchase_orders'      THEN 6
@@ -688,7 +731,7 @@ pub async fn run_sync_loop(state: AppState) {
                 continue;
             }
 
-            let result = replay_row(&cloud_pool, &table, &operation, &row_id_str, &data).await;
+            let result = replay_row(&cloud_pool, &local_pool, &table, &operation, &row_id_str, &data).await;
 
             match result {
                 Ok(()) => {
@@ -756,6 +799,7 @@ fn table_tier(table: &str) -> u8 {
         "departments" | "categories" | "suppliers"      => 2,
         "items" | "customers"                          => 3,
         "item_stock"                                    => 4, // depends on items — must be a higher tier
+        "stock_movements"                               => 5, // must replay AFTER item_stock seeds
         "shifts"                                        => 5,
         "transactions" | "purchase_orders"
             | "credit_sales" | "expenses"               => 6,
@@ -778,6 +822,380 @@ fn pk_col(table: &str) -> &'static str {
     }
 }
 
+// ============================================================================
+// STRATEGY-AWARE ROW APPLY  (shared by push replay and pull apply)
+// ============================================================================
+
+type SyncError = Box<dyn std::error::Error + Send + Sync>;
+
+#[derive(Debug, PartialEq, Eq)]
+enum ApplyOutcome {
+    /// Row was inserted or the target row was overwritten.
+    Applied,
+    /// Idempotent no-op: duplicate delivery, self-echo, or the target row won
+    /// the conflict (already logged). Terminal success for the queue either way.
+    Skipped,
+}
+
+/// Record a fact in the audit log for external mutation sites (POS sale,
+/// PO receive, stock count, …): every item_stock mutation must also append a
+/// stock_movements row IN THE SAME DB TRANSACTION, then queue it for push
+/// after commit with the returned (row_id, row_json).
+///
+/// Exactly one of `qty_delta` / `qty_set` must be Some: a signed delta for
+/// incremental changes, an absolute quantity for physical counts/imports.
+pub async fn log_stock_movement<'e, E>(
+    exec:      E,
+    item_id:   Uuid,
+    store_id:  i32,
+    qty_delta: Option<rust_decimal::Decimal>,
+    qty_set:   Option<rust_decimal::Decimal>,
+    reason:    &str,
+) -> Result<(String, Value), sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    use sqlx::Row as _;
+    let movement = if qty_set.is_some() { "set" } else { "delta" };
+    let row = sqlx::query(
+        r#"INSERT INTO stock_movements
+               (item_id, store_id, business_id, movement, qty_delta, qty_set, reason, device_id)
+           VALUES ($1, $2,
+                   (SELECT value::uuid FROM app_config WHERE key = 'business_id'),
+                   $3, $4, $5, $6,
+                   (SELECT value::uuid FROM app_config WHERE key = 'device_id'))
+           RETURNING id::text AS id, row_to_json(stock_movements)::jsonb AS row_json"#,
+    )
+    .bind(item_id)
+    .bind(store_id)
+    .bind(movement)
+    .bind(qty_delta)
+    .bind(qty_set)
+    .bind(reason)
+    .fetch_one(exec)
+    .await?;
+
+    Ok((row.get::<String, _>("id"), row.get::<Value, _>("row_json")))
+}
+
+/// Fetch the target's current version of a row as JSON (used for conflict
+/// logging after a guarded UPSERT was rejected). Single-`id`-pk tables only.
+async fn fetch_current_row(pool: &PgPool, table: &str, row_id: &str) -> Option<Value> {
+    let stmt = format!("SELECT row_to_json(t.*)::jsonb FROM {table} t WHERE t.id::text = $1");
+    sqlx::query_scalar::<_, Value>(&stmt)
+        .bind(row_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+fn json_str(v: &Value, key: &str) -> Option<String> {
+    match v.get(key) {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn json_ts(v: &Value, key: &str) -> Option<chrono::DateTime<Utc>> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Utc))
+}
+
+/// Write one row to the local `sync_conflicts` audit table. Non-fatal.
+async fn log_sync_conflict(
+    log_pool:  &PgPool,
+    table:     &str,
+    row_id:    &str,
+    direction: &str, // 'push' | 'pull'
+    incoming:  &Value,
+    current:   &Value,
+) {
+    let result = sqlx::query(
+        r#"INSERT INTO sync_conflicts
+               (table_name, row_id, direction,
+                incoming_version, current_version,
+                incoming_updated_at, current_updated_at,
+                incoming_device, current_device, incoming_row)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid, $9::uuid, $10)"#,
+    )
+    .bind(table)
+    .bind(row_id)
+    .bind(direction)
+    .bind(incoming.get("sync_version").and_then(|v| v.as_i64()))
+    .bind(current.get("sync_version").and_then(|v| v.as_i64()))
+    .bind(json_ts(incoming, "updated_at"))
+    .bind(json_ts(current, "updated_at"))
+    .bind(json_str(incoming, "origin_device_id"))
+    .bind(json_str(current, "origin_device_id"))
+    .bind(incoming)
+    .execute(log_pool)
+    .await;
+
+    match result {
+        Ok(_) => tracing::info!(
+            "Sync conflict on {table} row {row_id} ({direction}): incoming write lost, kept current row."
+        ),
+        Err(e) => tracing::warn!("sync_conflicts insert failed (non-fatal): {e}"),
+    }
+}
+
+/// Apply a replicated row to `target` using the table's conflict strategy.
+/// `conflict_log` is always the LOCAL pool — rejected writes are audited on
+/// the device that observed the conflict.
+async fn apply_synced_row(
+    target:       &PgPool,
+    conflict_log: &PgPool,
+    table:        &str,
+    row:          &Value,
+    direction:    &str, // 'push' (target = cloud) | 'pull' (target = local)
+) -> Result<ApplyOutcome, SyncError> {
+    let obj = match row.as_object() {
+        Some(o) if !o.is_empty() => o,
+        _ => return Ok(ApplyOutcome::Skipped),
+    };
+
+    let strategy = sync_strategy(table);
+
+    // stock_movements: append + apply the delta to item_stock on first sight.
+    if strategy == SyncStrategy::StockMovement {
+        return apply_stock_movement(target, row, direction == "push").await;
+    }
+
+    let pk = pk_col(table);
+
+    // item_stock: seed-only. Insert when absent, never overwrite — quantities
+    // are owned by the stock_movements delta stream. cloud_seeded_at records
+    // the snapshot's own updated_at so later movement applies can tell which
+    // movements the seed already includes.
+    if strategy == SyncStrategy::StockSeed {
+        let mut seeded = row.clone();
+        if let Some(m) = seeded.as_object_mut() {
+            let ts = m.get("updated_at").cloned().unwrap_or(Value::Null);
+            m.insert("cloud_seeded_at".into(), ts);
+        }
+        let stmt = format!(
+            "INSERT INTO {table} \
+             SELECT * FROM jsonb_populate_record(null::{table}, $1::jsonb) \
+             ON CONFLICT ({pk}) DO NOTHING"
+        );
+        let n = sqlx::query(&stmt).bind(&seeded).execute(target).await?.rows_affected();
+        return Ok(if n == 1 { ApplyOutcome::Applied } else { ApplyOutcome::Skipped });
+    }
+
+    let cols: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+    let updates: Vec<String> = cols
+        .iter()
+        .filter(|&&c| c != pk)
+        .map(|c| format!("{c} = EXCLUDED.{c}"))
+        .collect();
+
+    match strategy {
+        SyncStrategy::AppendOnly => {
+            let stmt = format!(
+                "INSERT INTO {table} \
+                 SELECT * FROM jsonb_populate_record(null::{table}, $1::jsonb) \
+                 ON CONFLICT ({pk}) DO NOTHING"
+            );
+            let n = sqlx::query(&stmt).bind(row).execute(target).await?.rows_affected();
+            Ok(if n == 1 { ApplyOutcome::Applied } else { ApplyOutcome::Skipped })
+        }
+        SyncStrategy::Lww | SyncStrategy::StateMachine => {
+            // Guard: LWW alone for reference data; status-rank first (a more
+            // final status always wins, regardless of timestamps), LWW as the
+            // same-rank fallback, for state-machine tables.
+            let lww = lww_guard_sql(table);
+            let guard = match status_rank_case(table, table) {
+                Some(cur_rank) => {
+                    let inc_rank = status_rank_case(table, "EXCLUDED").unwrap();
+                    format!("{inc_rank} > {cur_rank} OR ({inc_rank} = {cur_rank} AND {lww})")
+                }
+                None => lww,
+            };
+            let stmt = format!(
+                "INSERT INTO {table} \
+                 SELECT * FROM jsonb_populate_record(null::{table}, $1::jsonb) \
+                 ON CONFLICT ({pk}) DO UPDATE SET {upd} \
+                 WHERE {guard}",
+                upd = updates.join(", "),
+            );
+
+            // Transaction so the zera.sync_apply GUC (set_config … is_local =
+            // true) suppresses the version-bump trigger for exactly this write.
+            let mut tx = target.begin().await?;
+            sqlx::query("SELECT set_config('zera.sync_apply', 'on', true)")
+                .execute(&mut *tx)
+                .await?;
+            let n = sqlx::query(&stmt).bind(row).execute(&mut *tx).await?.rows_affected();
+            tx.commit().await?;
+
+            if n == 1 {
+                return Ok(ApplyOutcome::Applied);
+            }
+
+            // Guard rejected the write: either a self-echo (identical row —
+            // e.g. re-pulling a row this device just pushed) or a genuine
+            // conflict the current row won. Only the latter is logged.
+            let row_id = json_str(row, "id").unwrap_or_default();
+            if let Some(current) = fetch_current_row(target, table, &row_id).await {
+                let same_version = current.get("sync_version") == row.get("sync_version");
+                let same_device  = current.get("origin_device_id") == row.get("origin_device_id");
+                if !(same_version && same_device) {
+                    log_sync_conflict(conflict_log, table, &row_id, direction, row, &current).await;
+                }
+            }
+            Ok(ApplyOutcome::Skipped)
+        }
+        // Handled above; unreachable here.
+        SyncStrategy::StockSeed | SyncStrategy::StockMovement => Ok(ApplyOutcome::Skipped),
+    }
+}
+
+/// Apply one stock_movements row to `target`: insert it (UUID dedupe), and —
+/// only when the insert was new — fold its delta/set into item_stock.
+///
+/// Idempotency: applying twice is safe because the second insert hits
+/// ON CONFLICT DO NOTHING and the fold is skipped. Movements this device
+/// originated are skipped the same way (already inserted locally at write
+/// time), so a device never double-counts its own history when pulling.
+///
+/// Seed skew guard: a seeded item_stock snapshot already includes every
+/// movement applied before the snapshot was taken. `cloud_seeded_at` (set at
+/// seed time to the snapshot's updated_at) is compared against the movement's
+/// COALESCE(applied_at, created_at); movements at or before it are recorded
+/// for dedupe but NOT re-folded.
+async fn apply_stock_movement(
+    target:   &PgPool,
+    row:      &Value,
+    is_push:  bool, // pushing to cloud → stamp applied_at with the cloud clock
+) -> Result<ApplyOutcome, SyncError> {
+    let mut tx = target.begin().await?;
+
+    let inserted = sqlx::query(
+        "INSERT INTO stock_movements \
+         SELECT * FROM jsonb_populate_record(null::stock_movements, $1::jsonb) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(row)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    if inserted == 0 {
+        tx.commit().await?;
+        return Ok(ApplyOutcome::Skipped);
+    }
+
+    let movement_id = json_str(row, "id").ok_or("stock_movement missing id")?;
+    let item_id: Uuid = json_str(row, "item_id")
+        .and_then(|s| s.parse().ok())
+        .ok_or("stock_movement missing item_id")?;
+    let store_id: i64 = json_str(row, "store_id")
+        .and_then(|s| s.parse().ok())
+        .ok_or("stock_movement missing store_id")?;
+    let store_id = store_id as i32;
+    let movement = json_str(row, "movement").unwrap_or_default();
+    let created_at = json_ts(row, "created_at").ok_or("stock_movement missing created_at")?;
+    let comparator = json_ts(row, "applied_at").unwrap_or(created_at);
+
+    // Numeric quantities travel as JSON numbers; POS quantities are far below
+    // f64's 15-digit precision so this round-trip is exact in practice.
+    let qty = |key: &str| -> Option<rust_decimal::Decimal> {
+        row.get(key)
+            .and_then(|v| v.as_f64())
+            .and_then(|f| rust_decimal::Decimal::try_from(f).ok())
+    };
+
+    use sqlx::Row as _;
+    let existing = sqlx::query(
+        "SELECT cloud_seeded_at, last_count_date FROM item_stock \
+         WHERE item_id = $1 AND store_id = $2 FOR UPDATE",
+    )
+    .bind(item_id)
+    .bind(store_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let mut folded = false;
+    match existing {
+        None => {
+            // No baseline yet (item is new everywhere): the movement itself
+            // becomes the row. Delta counts up from 0; set is absolute.
+            let q = if movement == "set" { qty("qty_set") } else { qty("qty_delta") }
+                .ok_or("stock_movement missing quantity")?;
+            sqlx::query(
+                "INSERT INTO item_stock (item_id, store_id, quantity, available_quantity, updated_at) \
+                 VALUES ($1, $2, $3, $3, NOW()) \
+                 ON CONFLICT (item_id, store_id) DO NOTHING",
+            )
+            .bind(item_id)
+            .bind(store_id)
+            .bind(q)
+            .execute(&mut *tx)
+            .await?;
+            folded = true;
+        }
+        Some(r) => {
+            let seeded_at: Option<chrono::DateTime<Utc>> = r.try_get("cloud_seeded_at").ok().flatten();
+            let last_count: Option<chrono::DateTime<Utc>> = r.try_get("last_count_date").ok().flatten();
+            let past_seed = seeded_at.map_or(true, |s| comparator > s);
+
+            if past_seed && movement == "delta" {
+                let d = qty("qty_delta").ok_or("stock_movement missing qty_delta")?;
+                sqlx::query(
+                    "UPDATE item_stock \
+                     SET quantity           = quantity + $1, \
+                         available_quantity = available_quantity + $1, \
+                         updated_at         = NOW() \
+                     WHERE item_id = $2 AND store_id = $3",
+                )
+                .bind(d)
+                .bind(item_id)
+                .bind(store_id)
+                .execute(&mut *tx)
+                .await?;
+                folded = true;
+            } else if past_seed && movement == "set" {
+                // A physical count is ground truth at count time — apply only
+                // if no newer count already landed.
+                if last_count.map_or(true, |l| created_at > l) {
+                    let q = qty("qty_set").ok_or("stock_movement missing qty_set")?;
+                    sqlx::query(
+                        "UPDATE item_stock \
+                         SET quantity           = $1, \
+                             available_quantity = GREATEST(0, $1 - COALESCE(reserved_quantity, 0)), \
+                             last_count_date    = $2, \
+                             updated_at         = NOW() \
+                         WHERE item_id = $3 AND store_id = $4",
+                    )
+                    .bind(q)
+                    .bind(created_at)
+                    .bind(item_id)
+                    .bind(store_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    folded = true;
+                }
+            }
+        }
+    }
+
+    if is_push {
+        // Cloud-clock apply stamp: lets pulling devices tell whether a seeded
+        // snapshot already contains this movement (see module comment).
+        sqlx::query("UPDATE stock_movements SET applied_at = NOW() WHERE id = $1::uuid")
+            .bind(&movement_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    Ok(if folded { ApplyOutcome::Applied } else { ApplyOutcome::Skipped })
+}
+
 /// Spawn the background pull loop. Should be called once at app startup,
 /// alongside `run_sync_loop`. Polls Supabase every POLL_SECS for rows that
 /// are newer than the stored cursor and UPSERTs them into local PostgreSQL.
@@ -790,8 +1208,28 @@ fn pk_col(table: &str) -> &'static str {
 /// every row is seen at least once.
 pub async fn run_pull_loop(state: AppState) {
     tracing::info!("Cloud pull worker started — polling every {POLL_SECS}s");
+    // LISTEN/NOTIFY wake-up: migration 0098 installs pg_notify('zera_sync')
+    // triggers on every synced cloud table, so a write from any device wakes
+    // this loop immediately instead of waiting out the poll interval. The
+    // timed poll below stays as the reliability fallback — a missed
+    // notification only ever costs latency, never data.
+    let mut listener: Option<sqlx::postgres::PgListener> = None;
+
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await;
+        match listener.as_mut() {
+            Some(l) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)) => {}
+                    msg = l.recv() => {
+                        if let Err(e) = msg {
+                            tracing::debug!("Sync listener dropped ({e}) — falling back to polling.");
+                            listener = None;
+                        }
+                    }
+                }
+            }
+            None => tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await,
+        }
 
         let local_pool = match state.pool().await {
             Ok(p)  => p,
@@ -823,6 +1261,20 @@ pub async fn run_pull_loop(state: AppState) {
 
         if !super::pool::ping(&cloud_pool).await {
             continue;
+        }
+
+        // (Re)attach the realtime listener once a healthy cloud pool exists.
+        if listener.is_none() {
+            match sqlx::postgres::PgListener::connect_with(&cloud_pool).await {
+                Ok(mut l) => match l.listen("zera_sync").await {
+                    Ok(()) => {
+                        tracing::info!("Sync: realtime LISTEN attached — pulls now wake on cloud writes.");
+                        listener = Some(l);
+                    }
+                    Err(e) => tracing::debug!("LISTEN zera_sync failed ({e}) — polling only."),
+                },
+                Err(e) => tracing::debug!("PgListener connect failed ({e}) — polling only."),
+            }
         }
 
         if !is_cloud_sync_enabled(&local_pool).await {
@@ -861,17 +1313,21 @@ pub async fn run_pull_loop(state: AppState) {
         let mut max_pulled_ts: Option<chrono::DateTime<Utc>> = None;
 
         for table in SYNC_TABLES {
-            let ts_expr = table_ts_expr(table);
-
+            // Cursor filters on cloud_synced_at — stamped by the CLOUD's
+            // clock when the row arrived there (migration 0098). Device-local
+            // created_at/updated_at must not be used here: a row created
+            // offline and pushed later carries a timestamp older devices'
+            // cursors have already passed, and would be skipped forever.
+            //
             // businesses.id serves as the business filter for that table;
             // every other table uses the business_id column directly.
             let biz_col = biz_id_filter_col(table);
             let stmt = format!(
                 "SELECT row_to_json(t.*) \
                  FROM {table} t \
-                 WHERE {ts_expr} > $1::timestamptz \
+                 WHERE t.{PULL_TS_COL} > $1::timestamptz \
                    AND t.{biz_col} = $2::uuid \
-                 ORDER BY {ts_expr} ASC \
+                 ORDER BY t.{PULL_TS_COL} ASC \
                  LIMIT {PULL_BATCH}"
             );
 
@@ -892,10 +1348,6 @@ pub async fn run_pull_loop(state: AppState) {
             tracing::debug!("Pull: {} row(s) from {table}", cloud_rows.len());
             any_pulled = true;
 
-            // Column to read for timestamp tracking — mirrors table_ts_expr but
-            // gives the plain JSON key so we can extract it from row_to_json output.
-            let ts_col = ts_col_for_pull(table);
-
             for row_val in cloud_rows {
                 let obj = match row_val.as_object() {
                     Some(o) => o,
@@ -906,7 +1358,7 @@ pub async fn run_pull_loop(state: AppState) {
                 // ── Cursor tracking: record max timestamp of pulled rows ───────
                 // Postgres row_to_json emits timestamptz as ISO 8601 with offset
                 // (e.g. "2024-01-15T10:30:00.123456+00:00"), which is valid RFC3339.
-                if let Some(ts_str) = obj.get(ts_col).and_then(|v| v.as_str()) {
+                if let Some(ts_str) = obj.get(PULL_TS_COL).and_then(|v| v.as_str()) {
                     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(ts_str) {
                         let ts = parsed.with_timezone(&Utc);
                         max_pulled_ts = Some(match max_pulled_ts {
@@ -917,27 +1369,11 @@ pub async fn run_pull_loop(state: AppState) {
                     }
                 }
 
-                let cols: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-                let pk = pk_col(table);
-                let updates: Vec<String> = cols
-                    .iter()
-                    .filter(|&&c| c != pk)
-                    .map(|c| format!("{c} = EXCLUDED.{c}"))
-                    .collect();
-
-                let upsert = format!(
-                    "INSERT INTO {table} \
-                     SELECT * FROM jsonb_populate_record(null::{table}, $1::jsonb) \
-                     ON CONFLICT ({pk}) DO UPDATE SET {upd}",
-                    upd = updates.join(", "),
-                );
-
-                if let Err(e) = sqlx::query(&upsert)
-                    .bind(row_val.clone())
-                    .execute(&local_pool)
-                    .await
-                {
-                    tracing::warn!("Pull UPSERT failed for {table}: {e}");
+                // Strategy-aware apply — same engine as the push side:
+                // append-only dedupe, LWW/state-machine guards with conflict
+                // logging, item_stock seeding, stock movement folding.
+                if let Err(e) = apply_synced_row(&local_pool, &local_pool, table, &row_val, "pull").await {
+                    tracing::warn!("Pull apply failed for {table}: {e}");
                 }
             }
         }
@@ -963,22 +1399,28 @@ pub async fn run_pull_loop(state: AppState) {
     }
 }
 
-/// Replay a single queued row to the cloud database using a generic UPSERT.
-/// The row_data JSONB is expanded into named columns via a dynamic statement.
-/// For DELETE operations, we issue a DELETE by primary key.
+/// Replay a single queued row to the cloud database using the table's
+/// conflict strategy (see `sync_strategy`).
+///
+/// For LWW / state-machine tables the queued row_data snapshot is DISCARDED
+/// and the row is re-read fresh from the local DB at push time. Intermediate
+/// states don't matter for last-write-wins, and the fresh read guarantees the
+/// pushed JSON carries the current sync_version / origin_device_id without
+/// every queueing call site having to include them.
 async fn replay_row(
     cloud_pool: &PgPool,
+    local_pool: &PgPool,
     table_name: &str,
     operation:  &str,
     row_id:     &str,
     row_data:   &Value,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), SyncError> {
     // Allowlist of tables we replicate — protects against injection if row_data
     // is somehow tampered with. Only add tables that are safe to replicate.
     let allowed_tables = [
         "businesses",
         "stores", "users", "departments", "categories", "suppliers",
-        "items", "item_stock",
+        "items", "item_stock", "stock_movements",
         "customers", "shifts",
         "transactions", "transaction_items", "payments",
         "expenses", "credit_sales",
@@ -991,51 +1433,43 @@ async fn replay_row(
     }
 
     match operation {
+        // Hard deletes are never replicated: all deletes in this app are
+        // soft (is_active = false) synced as UPDATEs, which acts as the
+        // tombstone — an offline device can't resurrect the row because its
+        // stale is_active = true write loses the LWW version check. Any
+        // legacy 'DELETE' queue row is dropped here rather than letting it
+        // hard-delete a cloud row other devices may still reference.
         "DELETE" => {
-            let stmt = if row_id.parse::<i64>().is_ok() {
-                format!("DELETE FROM {table_name} WHERE id = $1::bigint")
-            } else {
-                format!("DELETE FROM {table_name} WHERE id = $1::uuid")
-            };
-            sqlx::query(&stmt)
-                .bind(row_id)
-                .execute(cloud_pool)
-                .await?;
+            tracing::warn!(
+                "Sync: ignoring queued hard-DELETE for {table_name} row {row_id} — \
+                 deletes must be soft (is_active = false) UPDATEs."
+            );
+            Ok(())
         }
         "INSERT" | "UPDATE" => {
-            let obj = match row_data.as_object() {
-                Some(o) => o,
-                None    => return Err("row_data is not a JSON object".into()),
+            let fresh;
+            let row = match sync_strategy(table_name) {
+                SyncStrategy::Lww | SyncStrategy::StateMachine => {
+                    let stmt = format!(
+                        "SELECT row_to_json(t.*)::jsonb FROM {table_name} t WHERE t.id::text = $1"
+                    );
+                    match sqlx::query_scalar::<_, Value>(&stmt)
+                        .bind(row_id)
+                        .fetch_optional(local_pool)
+                        .await?
+                    {
+                        Some(v) => { fresh = v; &fresh }
+                        // Row no longer exists locally (hard-deleted outside
+                        // the app?) — nothing meaningful to push.
+                        None => return Ok(()),
+                    }
+                }
+                _ => row_data,
             };
 
-            if obj.is_empty() {
-                return Ok(());
-            }
-
-            let cols: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-            let pk = pk_col(table_name);
-            let updates: Vec<String> = cols
-                .iter()
-                .filter(|&&c| c != pk)
-                .map(|c| format!("{c} = EXCLUDED.{c}"))
-                .collect();
-
-            let stmt = format!(
-                "INSERT INTO {table_name} \
-                 SELECT * FROM jsonb_populate_record(null::{table_name}, $1::jsonb) \
-                 ON CONFLICT ({pk}) DO UPDATE SET {}",
-                updates.join(", "),
-            );
-
-            sqlx::query(&stmt)
-                .bind(row_data.clone())
-                .execute(cloud_pool)
-                .await?;
+            apply_synced_row(cloud_pool, local_pool, table_name, row, "push").await?;
+            Ok(())
         }
-        _ => {
-            return Err(format!("Unknown operation: {operation}").into());
-        }
+        _ => Err(format!("Unknown operation: {operation}").into()),
     }
-
-    Ok(())
 }

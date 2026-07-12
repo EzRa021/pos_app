@@ -586,6 +586,14 @@ async fn create_item_from_row(
     )
     .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
+    let movement = if qty != Decimal::ZERO {
+        Some(crate::database::sync::log_stock_movement(
+            &mut *tx, item_id, store_id, Some(qty), None, "initial",
+        ).await.map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+
     sqlx::query!(
         r#"INSERT INTO item_history
                (item_id, store_id, event_type, event_description,
@@ -596,6 +604,12 @@ async fn create_item_from_row(
     .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())?;
+
+    if let Some((mv_id, mv_row)) = movement {
+        crate::database::sync::queue_row(
+            pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(store_id),
+        ).await;
+    }
     // Return the generated SKU so the caller can register it in sku_map
     Ok(sku)
 }
@@ -677,6 +691,7 @@ async fn update_item_from_row(
     .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
     // Stock: SET or ADJUST
+    let mut movement: Option<(String, serde_json::Value)> = None;
     if let Some(qty_val) = row.quantity {
         let new_qty = to_dec(qty_val);
         if new_qty < Decimal::ZERO {
@@ -693,6 +708,10 @@ async fn update_item_from_row(
             new_qty, item_id, store_id,
         )
         .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+
+        movement = Some(crate::database::sync::log_stock_movement(
+            &mut *tx, item_id, store_id, None, Some(new_qty), "import",
+        ).await.map_err(|e| e.to_string())?);
 
         sqlx::query!(
             r#"INSERT INTO item_history
@@ -730,6 +749,10 @@ async fn update_item_from_row(
         )
         .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
+        movement = Some(crate::database::sync::log_stock_movement(
+            &mut *tx, item_id, store_id, Some(adj), None, "import",
+        ).await.map_err(|e| e.to_string())?);
+
         sqlx::query!(
             r#"INSERT INTO item_history
                    (item_id, store_id, event_type, event_description, quantity_change, performed_by)
@@ -748,6 +771,12 @@ async fn update_item_from_row(
     .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())?;
+
+    if let Some((mv_id, mv_row)) = movement {
+        crate::database::sync::queue_row(
+            pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(store_id),
+        ).await;
+    }
     Ok(())
 }
 
@@ -777,6 +806,12 @@ async fn apply_stock_count_row(
     )
     .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
+    // A stock count is absolute truth at count time — sync as a 'set'
+    // movement (guarded remotely by last_count_date), not a delta.
+    let movement = crate::database::sync::log_stock_movement(
+        &mut *tx, item_id, store_id, None, Some(new_qty), "count",
+    ).await.map_err(|e| e.to_string())?;
+
     sqlx::query!(
         r#"INSERT INTO item_history
                (item_id, store_id, event_type, event_description, quantity_after, performed_by, notes)
@@ -786,6 +821,10 @@ async fn apply_stock_count_row(
     .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())?;
+
+    crate::database::sync::queue_row(
+        pool, "stock_movements", "INSERT", &movement.0, movement.1, Some(store_id),
+    ).await;
     Ok(())
 }
 

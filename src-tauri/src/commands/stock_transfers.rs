@@ -129,6 +129,7 @@ pub async fn send_transfer(
         )));
     }
 
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for item in &payload.items {
         let raw_qty_sent = Decimal::try_from(item.qty_sent).unwrap_or_default();
         // Validate qty according to item's measurement_type
@@ -168,6 +169,11 @@ pub async fn send_transfer(
         .execute(&mut *tx)
         .await?;
 
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut *tx, item.item_id, transfer.from_store_id,
+            Some(-qty_sent), None, "transfer_out",
+        ).await?);
+
         let unit_label = unit_type.as_deref().unwrap_or("unit(s)");
         let desc = format!(
             "Stock transferred to another branch — {} {}",
@@ -204,10 +210,23 @@ pub async fn send_transfer(
     .await?;
 
     tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(transfer.from_store_id),
+        ).await;
+    }
+
     fetch_transfer(&pool, id).await
 }
 
 // ── receive_transfer ──────────────────────────────────────────────────────────
+
+/// Roles allowed to accept/receive an incoming stock transfer on behalf of
+/// the destination store. Deliberately narrower than generic "inventory.adjust"
+/// — cashiers and stock keepers cannot accept incoming transfers.
+const TRANSFER_RECEIVE_ROLES: [&str; 5] =
+    ["super_admin", "admin", "gm", "manager", "inventory_manager"];
 
 #[tauri::command]
 pub async fn receive_transfer(
@@ -216,7 +235,7 @@ pub async fn receive_transfer(
     id:      i32,
     payload: ReceiveTransferDto,
 ) -> AppResult<StockTransfer> {
-    let claims = guard_permission(&state, &token, "inventory.adjust").await?;
+    let claims = super::auth::guard(&state, &token).await?;
     let pool   = state.pool().await?;
     let mut tx = pool.begin().await?;
 
@@ -227,12 +246,23 @@ pub async fn receive_transfer(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("Transfer {id} not found")))?;
 
+    // Only admin / gm / store manager / inventory manager may approve &
+    // accept an incoming transfer — and only for their own store, unless
+    // they hold a global role.
+    if !TRANSFER_RECEIVE_ROLES.contains(&claims.role_slug.as_str()) {
+        return Err(AppError::Forbidden);
+    }
+    if !claims.is_global && claims.store_id != Some(transfer.to_store_id) {
+        return Err(AppError::Forbidden);
+    }
+
     if transfer.status != "in_transit" {
         return Err(AppError::Validation(format!(
             "Transfer is '{}' — only in-transit transfers can be received", transfer.status
         )));
     }
 
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for item in &payload.items {
         let raw_qty_received = Decimal::try_from(item.qty_received).unwrap_or_default();
         struct RecvMeta { item_name: String, measurement_type: Option<String> }
@@ -264,6 +294,11 @@ pub async fn receive_transfer(
         )
         .execute(&mut *tx)
         .await?;
+
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut *tx, item.item_id, transfer.to_store_id,
+            Some(qty_received), None, "transfer_in",
+        ).await?);
 
         let qty_after: Decimal = sqlx::query_scalar!(
             "SELECT quantity FROM item_stock WHERE item_id=$1 AND store_id=$2",
@@ -309,6 +344,13 @@ pub async fn receive_transfer(
     .await?;
 
     tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(transfer.to_store_id),
+        ).await;
+    }
+
     fetch_transfer(&pool, id).await
 }
 
@@ -492,6 +534,88 @@ async fn fetch_transfer_items(pool: &sqlx::PgPool, transfer_id: i32) -> AppResul
     .map_err(AppError::from)
 }
 
+// ── resolve_dest_category_department ────────────────────────────────────────
+// Categories & departments are per-store (store_id NOT NULL, unique per store),
+// so when auto-cloning an item into a new destination store we can never reuse
+// the source store's category_id / department_id directly — that would point
+// the cloned item at another store's category. Instead, find a category /
+// department with the same name in the destination store, or create one.
+async fn resolve_dest_category_department(
+    tx:              &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    src_category_id: Option<i32>,
+    src_department_id: Option<i32>,
+    to_store_id:     i32,
+) -> AppResult<(i32, Option<i32>)> {
+    let src_category_id = src_category_id
+        .ok_or_else(|| AppError::Validation("Source item has no category".into()))?;
+    // Resolve department first (category may reference it).
+    let dest_department_id: Option<i32> = match src_department_id {
+        Some(dep_id) => {
+            let dept_name: Option<String> = sqlx::query_scalar!(
+                "SELECT department_name FROM departments WHERE id = $1",
+                dep_id,
+            )
+            .fetch_optional(&mut **tx)
+            .await?;
+
+            match dept_name {
+                None => None,
+                Some(name) => {
+                    let existing: Option<i32> = sqlx::query_scalar!(
+                        "SELECT id FROM departments WHERE store_id = $1 AND department_name = $2",
+                        to_store_id, name,
+                    )
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+                    match existing {
+                        Some(id) => Some(id),
+                        None => {
+                            let new_id: i32 = sqlx::query_scalar!(
+                                "INSERT INTO departments (store_id, department_name) VALUES ($1,$2) RETURNING id",
+                                to_store_id, name,
+                            )
+                            .fetch_one(&mut **tx)
+                            .await?;
+                            Some(new_id)
+                        }
+                    }
+                }
+            }
+        }
+        None => None,
+    };
+
+    // Resolve category by name in the destination store.
+    let category_name: String = sqlx::query_scalar!(
+        "SELECT category_name FROM categories WHERE id = $1",
+        src_category_id,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+
+    let existing_cat: Option<i32> = sqlx::query_scalar!(
+        "SELECT id FROM categories WHERE store_id = $1 AND category_name = $2",
+        to_store_id, category_name,
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let dest_category_id = match existing_cat {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar!(
+                "INSERT INTO categories (store_id, department_id, category_name) VALUES ($1,$2,$3) RETURNING id",
+                to_store_id, dest_department_id, category_name,
+            )
+            .fetch_one(&mut **tx)
+            .await?
+        }
+    };
+
+    Ok((dest_category_id, dest_department_id))
+}
+
 // ── execute_transfer ──────────────────────────────────────────────────────────
 // Single-step atomic transfer: creates, dispatches, and receives in one DB
 // transaction. Source stock is decremented and destination stock is
@@ -549,6 +673,7 @@ pub(crate) async fn execute_transfer_inner(
     .await?;
 
     // Process each item mapping ───────────────────────────────────────────────
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for leg in &payload.items {
         let raw_qty = Decimal::try_from(leg.qty).unwrap_or_default();
 
@@ -603,6 +728,11 @@ pub(crate) async fn execute_transfer_inner(
         )
         .execute(&mut *tx)
         .await?;
+
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut *tx, leg.source_item_id, payload.from_store_id,
+            Some(-qty), None, "transfer_out",
+        ).await?);
 
         let unit_label = src.unit_type.as_deref().unwrap_or("unit(s)");
 
@@ -696,6 +826,12 @@ pub(crate) async fn execute_transfer_inner(
                 .fetch_one(&mut *tx)
                 .await?;
 
+                // Resolve (or auto-create) the matching category / department in the
+                // destination store — categories & departments are per-store, so we
+                // can never reuse the source store's category_id/department_id directly.
+                let (dest_category_id, dest_department_id) =
+                    resolve_dest_category_department(&mut tx, cs.category_id, cs.department_id, payload.to_store_id).await?;
+
                 // Generate a new UUID and clone the item row
                 let new_item_id = Uuid::new_v4();
 
@@ -742,8 +878,8 @@ pub(crate) async fn execute_transfer_inner(
                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
                     new_item_id,
                     payload.to_store_id,
-                    cs.category_id,
-                    cs.department_id,
+                    dest_category_id,
+                    dest_department_id,
                     final_sku,
                     cs.barcode,
                     cs.item_name,
@@ -759,14 +895,15 @@ pub(crate) async fn execute_transfer_inner(
                 // Insert item_settings
                 sqlx::query!(
                     r#"INSERT INTO item_settings
-                           (item_id, is_active, sellable, available_for_pos,
+                           (item_id, store_id, is_active, sellable, available_for_pos,
                             track_stock, taxable, allow_discount, max_discount_percent,
                             measurement_type, unit_type, unit_value,
                             requires_weight, allow_negative_stock,
                             min_stock_level, max_stock_level,
                             min_increment, default_qty)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)"#,
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)"#,
                     new_item_id,
+                    payload.to_store_id,
                     cs.is_active.unwrap_or(true),
                     cs.sellable.unwrap_or(true),
                     cs.available_for_pos.unwrap_or(true),
@@ -814,6 +951,11 @@ pub(crate) async fn execute_transfer_inner(
         .execute(&mut *tx)
         .await?;
 
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut *tx, dest_item_id, payload.to_store_id,
+            Some(qty), None, "transfer_in",
+        ).await?);
+
         let dst_qty_after: Decimal = sqlx::query_scalar!(
             "SELECT quantity FROM item_stock WHERE item_id=$1 AND store_id=$2",
             dest_item_id, payload.to_store_id,
@@ -860,6 +1002,15 @@ pub(crate) async fn execute_transfer_inner(
     }
 
     tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        // Store scope varies per movement (source vs destination) — the
+        // movement row itself carries the store_id, so pass None here.
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, None,
+        ).await;
+    }
+
     fetch_transfer(&pool, transfer_id).await
 }
 
@@ -988,6 +1139,7 @@ pub(crate) async fn approve_transfer_inner(
 
     let mut tx = pool.begin().await?;
 
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for pi in &pending_items {
         let qty = pi.qty_requested;
 
@@ -1038,6 +1190,11 @@ pub(crate) async fn approve_transfer_inner(
             "UPDATE item_stock SET quantity=$1, available_quantity=$1, updated_at=NOW() WHERE item_id=$2 AND store_id=$3",
             src_qty_after, pi.item_id, transfer.from_store_id,
         ).execute(&mut *tx).await?;
+
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut *tx, pi.item_id, transfer.from_store_id,
+            Some(-qty), None, "transfer_out",
+        ).await?);
 
         let unit_label = src.unit_type.as_deref()
             .or(pi.unit_type.as_deref())
@@ -1116,6 +1273,9 @@ pub(crate) async fn approve_transfer_inner(
                     pi.item_id,
                 ).fetch_one(&mut *tx).await?;
 
+                let (dest_category_id, dest_department_id) =
+                    resolve_dest_category_department(&mut tx, cs.category_id, cs.department_id, transfer.to_store_id).await?;
+
                 let new_item_id = Uuid::new_v4();
                 let dst_slug: String = sqlx::query_scalar!(
                     "SELECT store_code FROM stores WHERE id = $1", transfer.to_store_id,
@@ -1142,20 +1302,21 @@ pub(crate) async fn approve_transfer_inner(
                             cost_price, selling_price, discount_price, discount_price_enabled)
                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
                     new_item_id, transfer.to_store_id,
-                    cs.category_id, cs.department_id, final_sku, cs.barcode,
+                    dest_category_id, dest_department_id, final_sku, cs.barcode,
                     cs.item_name, cs.description, cs.cost_price, cs.selling_price,
                     cs.discount_price, cs.discount_price_enabled,
                 ).execute(&mut *tx).await?;
 
                 sqlx::query!(
                     r#"INSERT INTO item_settings
-                           (item_id, is_active, sellable, available_for_pos,
+                           (item_id, store_id, is_active, sellable, available_for_pos,
                             track_stock, taxable, allow_discount, max_discount_percent,
                             measurement_type, unit_type, unit_value,
                             requires_weight, allow_negative_stock,
                             min_stock_level, max_stock_level, min_increment, default_qty)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)"#,
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)"#,
                     new_item_id,
+                    transfer.to_store_id,
                     cs.is_active.unwrap_or(true), cs.sellable.unwrap_or(true),
                     cs.available_for_pos.unwrap_or(true), cs.track_stock.unwrap_or(true),
                     cs.taxable.unwrap_or(false), cs.allow_discount.unwrap_or(false),
@@ -1192,6 +1353,11 @@ pub(crate) async fn approve_transfer_inner(
             dest_item_id, transfer.to_store_id, qty,
         ).execute(&mut *tx).await?;
 
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut *tx, dest_item_id, transfer.to_store_id,
+            Some(qty), None, "transfer_in",
+        ).await?);
+
         let dst_qty_after: Decimal = sqlx::query_scalar!(
             "SELECT quantity FROM item_stock WHERE item_id=$1 AND store_id=$2",
             dest_item_id, transfer.to_store_id,
@@ -1225,5 +1391,13 @@ pub(crate) async fn approve_transfer_inner(
     ).execute(&mut *tx).await?;
 
     tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        // Movements span both stores; the row itself carries store_id.
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, None,
+        ).await;
+    }
+
     fetch_transfer(&pool, id).await
 }

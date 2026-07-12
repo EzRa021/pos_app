@@ -578,6 +578,11 @@ pub async fn restore_business_from_cloud(
             "tax_categories",
             "items",
             "item_stock",
+            // Restored WITH item_stock so the pull worker's ON CONFLICT
+            // dedupe recognises already-included movements — otherwise the
+            // first pull would re-apply history on top of the snapshot and
+            // double-count stock.
+            "stock_movements",
             "customers",
             "suppliers",
         ];

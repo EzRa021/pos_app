@@ -390,6 +390,7 @@ pub async fn receive_purchase_order(
 
     let mut db_tx = pool.begin().await?;
 
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for receive in &payload.items {
         let qty_raw = to_dec(receive.quantity_received);
 
@@ -474,6 +475,10 @@ pub async fn receive_purchase_order(
             ));
         }
 
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut *db_tx, item_id, order.store_id, Some(qty_recv), None, "po_receive",
+        ).await?);
+
         // Record history with event-style columns and unit label
         let unit_label = line
             .unit_type
@@ -551,11 +556,11 @@ pub async fn receive_purchase_order(
                                 "quantity_received": item.quantity_received }),
             Some(order.store_id),
         ).await;
+    }
+    // Received stock syncs as +delta movements, not item_stock snapshots.
+    for (mv_id, mv_row) in stock_movements_q {
         crate::database::sync::queue_row(
-            &pool, "item_stock", "UPDATE",
-            &format!("{}:{}", item.item_id, order.store_id),
-            serde_json::json!({ "item_id": item.item_id, "store_id": order.store_id }),
-            Some(order.store_id),
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(order.store_id),
         ).await;
     }
 

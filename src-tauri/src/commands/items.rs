@@ -451,15 +451,18 @@ pub(crate) async fn adjust_stock_inner(
     .execute(&mut *tx)
     .await?;
 
+    // Stock changes sync as signed deltas (stock_movements), never absolute
+    // quantities — concurrent offline adjustments on other devices must not
+    // be overwritten.
+    let movement = crate::database::sync::log_stock_movement(
+        &mut *tx, payload.item_id, payload.store_id, Some(adj), None, "adjustment",
+    ).await?;
+
     tx.commit().await?;
 
-    // Queue item_stock row to cloud sync
     crate::database::sync::queue_row(
-        &pool, "item_stock", "UPDATE",
-        &format!("{}:{}", payload.item_id, payload.store_id),
-        serde_json::json!({ "item_id": payload.item_id, "store_id": payload.store_id,
-                            "quantity": qty_after, "available_quantity": qty_after }),
-        Some(payload.store_id),
+        &pool, "stock_movements", "INSERT",
+        &movement.0, movement.1, Some(payload.store_id),
     ).await;
 
     write_audit_log(&pool, claims.user_id, Some(payload.store_id), "stock_adjust", "item",
@@ -730,9 +733,19 @@ pub async fn create_item(
     .execute(&mut *tx)
     .await?;
 
+    // Initial stock syncs as a +init_qty delta from zero — on the cloud the
+    // movement itself creates the item_stock row, no snapshot needed.
+    let movement = if init_qty != Decimal::ZERO {
+        Some(crate::database::sync::log_stock_movement(
+            &mut *tx, item_id, payload.store_id, Some(init_qty), None, "initial",
+        ).await?)
+    } else {
+        None
+    };
+
     tx.commit().await?;
 
-    // Queue items + item_stock rows to cloud sync
+    // Queue items + stock movement rows to cloud sync
     crate::database::sync::queue_row(
         &pool, "items", "INSERT", &item_id.to_string(),
         serde_json::json!({ "id": item_id, "store_id": payload.store_id,
@@ -740,13 +753,11 @@ pub async fn create_item(
                             "cost_price": cost, "selling_price": sell }),
         Some(payload.store_id),
     ).await;
-    crate::database::sync::queue_row(
-        &pool, "item_stock", "INSERT",
-        &format!("{}:{}", item_id, payload.store_id),
-        serde_json::json!({ "item_id": item_id, "store_id": payload.store_id,
-                            "quantity": init_qty, "available_quantity": init_qty }),
-        Some(payload.store_id),
-    ).await;
+    if let Some((mv_id, mv_row)) = movement {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(payload.store_id),
+        ).await;
+    }
 
     write_audit_log(&pool, claims.user_id, Some(payload.store_id), "create", "item",
         &format!("Created item '{}' (SKU: {})", payload.item_name, sku), "info").await;

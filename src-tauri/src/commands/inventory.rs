@@ -248,6 +248,12 @@ pub(crate) async fn restock_item_inner(
     .execute(&mut *tx)
     .await?;
 
+    // Restock is a +qty delta on top of whatever other devices did — sync the
+    // delta, not the computed absolute quantity.
+    let movement = crate::database::sync::log_stock_movement(
+        &mut *tx, payload.item_id, payload.store_id, Some(qty), None, "adjustment",
+    ).await?;
+
     let unit_label = meta
         .unit_type
         .as_deref()
@@ -267,6 +273,11 @@ pub(crate) async fn restock_item_inner(
     .await?;
 
     tx.commit().await?;
+
+    crate::database::sync::queue_row(
+        &pool, "stock_movements", "INSERT",
+        &movement.0, movement.1, Some(payload.store_id),
+    ).await;
 
     Ok(RestockResult {
         item_id:         payload.item_id,
@@ -359,6 +370,10 @@ pub(crate) async fn adjust_inventory_inner(
     .execute(&mut *tx)
     .await?;
 
+    let movement = crate::database::sync::log_stock_movement(
+        &mut *tx, payload.item_id, payload.store_id, Some(adj), None, "adjustment",
+    ).await?;
+
     let sign  = if adj >= Decimal::ZERO { "+" } else { "" };
     let unit_label = info
         .unit_type
@@ -387,6 +402,11 @@ pub(crate) async fn adjust_inventory_inner(
     .await?;
 
     tx.commit().await?;
+
+    crate::database::sync::queue_row(
+        &pool, "stock_movements", "INSERT",
+        &movement.0, movement.1, Some(payload.store_id),
+    ).await;
 
     Ok(AdjustInventoryResult {
         item_id:           payload.item_id,
@@ -710,9 +730,11 @@ pub(crate) async fn complete_count_session_inner(
 
     // Apply variances BEFORE marking completed — so if variance application fails,
     // the transaction rolls back and the session remains in_progress with a clear error.
-    if apply_variances {
-        apply_variances_tx(&mut tx, session_id, claims.user_id, store_id).await?;
-    }
+    let stock_movements_q = if apply_variances {
+        apply_variances_tx(&mut tx, session_id, claims.user_id, store_id).await?
+    } else {
+        Vec::new()
+    };
 
     // Mark session completed (only after variances are safely applied)
     sqlx::query!(
@@ -725,6 +747,12 @@ pub(crate) async fn complete_count_session_inner(
     .await?;
 
     tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(store_id),
+        ).await;
+    }
 
     get_variance_report_inner(state, token, session_id, store_id).await
 }
@@ -832,8 +860,15 @@ pub(crate) async fn apply_variances_standalone_inner(
         )));
     }
 
-    apply_variances_tx(&mut tx, session_id, claims.user_id, store_id).await?;
+    let stock_movements_q = apply_variances_tx(&mut tx, session_id, claims.user_id, store_id).await?;
     tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(store_id),
+        ).await;
+    }
+
     Ok(serde_json::json!({ "success": true, "message": "Variances applied to inventory successfully" }))
 }
 
@@ -997,12 +1032,16 @@ async fn fetch_count_item(pool: &sqlx::PgPool, id: i32) -> AppResult<StockCountI
 }
 
 /// Apply all unadjusted variances for a session within an existing transaction.
+/// Returns the stock movement rows logged for each adjusted item — the caller
+/// must queue them for cloud sync (`queue_row("stock_movements", …)`) AFTER
+/// the transaction commits.
 async fn apply_variances_tx(
     tx:         &mut sqlx::Transaction<'_, sqlx::Postgres>,
     session_id: i32,
     user_id:    i32,
     store_id:   i32,
-) -> AppResult<()> {
+) -> AppResult<Vec<(String, serde_json::Value)>> {
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     let count_items = sqlx::query!(
         r#"SELECT id, item_id, counted_quantity, variance_quantity, unit_type
            FROM stock_count_items
@@ -1042,6 +1081,12 @@ async fn apply_variances_tx(
         .execute(&mut **tx)
         .await?;
 
+        // A physical count is an absolute truth at count time — sync it as a
+        // 'set' movement (guarded remotely by last_count_date), not a delta.
+        stock_movements_q.push(crate::database::sync::log_stock_movement(
+            &mut **tx, ci.item_id, store_id, None, Some(qty_after), "count",
+        ).await?);
+
         let direction = if variance > Decimal::ZERO { "overage" } else { "shortage" };
         let unit_label = ci
             .unit_type
@@ -1075,7 +1120,7 @@ async fn apply_variances_tx(
         .await?;
     }
 
-    Ok(())
+    Ok(stock_movements_q)
 }
 
 /// Deduct stock from a sale. Called from within an existing transaction context.

@@ -530,6 +530,7 @@ pub async fn create_return(
     }
 
     // ── Pass 2: insert return items, conditionally restock ────────────────────
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for vi in &validated_items {
         // FAULT #3 fix: store actual restock result, not cashier intent.
         let actually_restocked = vi.restock && vi.condition == "good";
@@ -569,6 +570,10 @@ pub async fn create_return(
             )
             .execute(&mut *db_tx)
             .await?;
+
+            stock_movements_q.push(crate::database::sync::log_stock_movement(
+                &mut *db_tx, vi.item_id, orig.store_id, Some(vi.qty_ret), None, "return",
+            ).await?);
 
             let unit_label = vi.unit_type.as_deref().unwrap_or("unit(s)");
             let desc = format!(
@@ -660,6 +665,12 @@ pub async fn create_return(
     .ok();
 
     db_tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(orig.store_id),
+        ).await;
+    }
 
     let ret   = fetch_return(&pool, return_id).await?;
     let items = fetch_return_items(&pool, return_id).await?;
@@ -930,6 +941,7 @@ pub async fn void_return(
     .await?;
 
     // Reverse any restock operations
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for item in &items {
         if item.restocked && item.condition == "good" {
             // FAULT #4 fix: prevent negative stock on void unless allow_negative_stock is enabled.
@@ -988,6 +1000,11 @@ Adjust inventory manually before voiding.",
             )
             .execute(&mut *db_tx)
             .await?;
+
+            stock_movements_q.push(crate::database::sync::log_stock_movement(
+                &mut *db_tx, item.item_id, ret.store_id,
+                Some(-item.quantity_returned), None, "return_void",
+            ).await?);
 
             let qty_after = qty_before - item.quantity_returned;
 
@@ -1145,6 +1162,12 @@ Adjust inventory manually before voiding.",
     .ok();
 
     db_tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(ret.store_id),
+        ).await;
+    }
 
     // Queue void update for cloud sync (best-effort).
     crate::database::sync::queue_row(

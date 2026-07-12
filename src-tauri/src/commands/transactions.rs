@@ -429,6 +429,9 @@ pub async fn create_transaction(
     .await?;
 
     // ── STEP 11: Insert line items, deduct stock, log history ─────────────────
+    // Stock deductions sync as signed deltas via stock_movements — queued
+    // after commit alongside the transaction rows below.
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for line in &line_items {
         sqlx::query!(
             r#"INSERT INTO transaction_items
@@ -479,6 +482,10 @@ pub async fn create_transaction(
             )
             .execute(&mut *db_tx)
             .await?;
+
+            stock_movements_q.push(crate::database::sync::log_stock_movement(
+                &mut *db_tx, line.item_id, payload.store_id, Some(-line.quantity), None, "sale",
+            ).await?);
 
             let unit_label = line.unit_type.as_deref().unwrap_or("unit(s)");
             let desc = format!("POS Sale — {} {} of {}", line.quantity, unit_label, line.item_name);
@@ -687,6 +694,12 @@ pub async fn create_transaction(
 
     // ── Cloud sync ────────────────────────────────────────────────────────────
     {
+        for (mv_id, mv_row) in stock_movements_q {
+            crate::database::sync::queue_row(
+                &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(payload.store_id),
+            ).await;
+        }
+
         let sync_data = serde_json::json!({
             "id":             tx_id,
             "reference_no":   ref_no,
@@ -1192,8 +1205,9 @@ pub async fn void_transaction(
     .fetch_all(&mut *db_tx)
     .await?;
 
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for item in &items {
-        sqlx::query!(
+        let restored = sqlx::query!(
             r#"UPDATE item_stock
                SET quantity = quantity + $1, available_quantity = available_quantity + $1, updated_at = NOW()
                WHERE item_id = $2 AND store_id = $3
@@ -1201,7 +1215,16 @@ pub async fn void_transaction(
             item.quantity, item.item_id, tx.store_id,
         )
         .execute(&mut *db_tx)
-        .await?;
+        .await?
+        .rows_affected();
+
+        // Only log a movement when the guarded restock actually applied
+        // (track_stock items with an existing item_stock row).
+        if restored > 0 {
+            stock_movements_q.push(crate::database::sync::log_stock_movement(
+                &mut *db_tx, item.item_id, tx.store_id, Some(item.quantity), None, "void",
+            ).await?);
+        }
 
         // FAULT #1 fix: use canonical item_history schema (event_type, quantity columns)
         let desc = format!(
@@ -1366,6 +1389,12 @@ pub async fn void_transaction(
         Some(tx.store_id),
     )
     .await;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(tx.store_id),
+        ).await;
+    }
 
     super::notifications::push_notification(
         &pool,
@@ -1537,6 +1566,7 @@ pub async fn partial_refund(
     .fetch_one(&mut *db_tx)
     .await?;
 
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for line in &refund_lines {
         sqlx::query!(
             r#"INSERT INTO return_items
@@ -1560,6 +1590,10 @@ pub async fn partial_refund(
             )
             .execute(&mut *db_tx)
             .await?;
+
+            stock_movements_q.push(crate::database::sync::log_stock_movement(
+                &mut *db_tx, line.item_id, line.store_id, Some(line.quantity), None, "refund",
+            ).await?);
 
             // FAULT #1 fix: use canonical item_history schema
             let desc = format!(
@@ -1647,6 +1681,12 @@ pub async fn partial_refund(
     .ok();
 
     db_tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(tx.store_id),
+        ).await;
+    }
 
     // FAULT #11 fix: queue partial refund for cloud sync
     crate::database::sync::queue_row(
@@ -1743,6 +1783,7 @@ pub async fn full_refund(
 
     let mut db_tx = pool.begin().await?;
 
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
     for item in &tx_items {
         let track_stock = tracked_ids.contains(&item.item_id);
         if track_stock {
@@ -1754,6 +1795,10 @@ pub async fn full_refund(
             )
             .execute(&mut *db_tx)
             .await?;
+
+            stock_movements_q.push(crate::database::sync::log_stock_movement(
+                &mut *db_tx, item.item_id, tx.store_id, Some(item.quantity), None, "refund",
+            ).await?);
 
             // FAULT #1 fix: use canonical item_history schema
             let desc = format!(
@@ -1949,6 +1994,12 @@ pub async fn full_refund(
     .ok();
 
     db_tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(tx.store_id),
+        ).await;
+    }
 
     // FAULT #11 fix: queue full refund for cloud sync
     crate::database::sync::queue_row(

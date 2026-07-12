@@ -1,5 +1,7 @@
 # Zera — CLAUDE.md
 
+> **Procedures & deep reference:** `.claude/skills/zera/SKILL.md` (Claude Code skill — invoke `/zera` or auto-loaded when relevant)
+
 ## Project
 Desktop POS app. **Tauri v2** (Rust backend) + **React 19** (frontend).  
 Converting from: `quantum-pos-app` (Electron + Fastify).

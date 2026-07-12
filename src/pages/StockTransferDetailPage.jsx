@@ -172,12 +172,19 @@ function ReceiveDialog({ open, onOpenChange, transfer, onReceive }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function StockTransferDetailPage() {
-  const { id }   = useParams();
+  const { id: idParam } = useParams();
+  const id       = parseInt(idParam, 10);
   const navigate = useNavigate();
   const canAct   = usePermission("inventory.create");
   const isGlobal = useAuthStore((s) => s.user?.is_global ?? false);
+  const roleSlug = useAuthStore((s) => s.user?.role_slug);
+  const userStoreId = useAuthStore((s) => s.user?.store_id);
   const [sendOpen,    setSendOpen]    = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
+
+  // Only admin / gm / store manager / inventory manager at the destination
+  // store (or a global user) may approve & accept an incoming transfer.
+  const TRANSFER_RECEIVE_ROLES = ["super_admin", "admin", "gm", "manager", "inventory_manager"];
 
   const { transfer, isLoading, error, send, receive, cancel, approve } = useStockTransfer(id);
 
@@ -221,7 +228,7 @@ export default function StockTransferDetailPage() {
     <>
       <div className="flex flex-1 flex-col overflow-hidden">
         <PageHeader
-          title={`Transfer ${transfer.reference ?? id.slice(0, 8).toUpperCase()}`}
+          title={`Transfer ${transfer.transfer_number ?? `#${id}`}`}
           description={`${transfer.from_store_name} → ${transfer.to_store_name}`}
           backHref="/stock-transfers"
           badge={<StatusBadge status={transfer.status} size="md" />}
@@ -261,12 +268,21 @@ export default function StockTransferDetailPage() {
                   </Button>
                 </>
               )}
-              {isTransit && (
-                <Button size="sm" onClick={() => setReceiveOpen(true)}
-                  className="gap-1.5 bg-success hover:bg-success/90 text-white">
-                  <PackageCheck className="h-3.5 w-3.5" />Receive
-                </Button>
-              )}
+              {isTransit && (() => {
+                const canReceive =
+                  TRANSFER_RECEIVE_ROLES.includes(roleSlug) &&
+                  (isGlobal || userStoreId === transfer.to_store_id);
+                return canReceive ? (
+                  <Button size="sm" onClick={() => setReceiveOpen(true)}
+                    className="gap-1.5 bg-success hover:bg-success/90 text-white">
+                    <PackageCheck className="h-3.5 w-3.5" />Receive
+                  </Button>
+                ) : (
+                  <span className="text-xs text-muted-foreground italic px-2">
+                    Awaiting acceptance by destination store
+                  </span>
+                );
+              })()}
             </div>
           )}
         />

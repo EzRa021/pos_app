@@ -93,11 +93,22 @@ pub async fn bulk_stock_adjustment(
 
     let mut tx       = pool.begin().await?;
     let mut affected = 0u64;
+    let mut stock_movements_q: Vec<(String, serde_json::Value)> = Vec::new();
 
     for item in &payload.items {
         let item_id = uuid::Uuid::parse_str(&item.item_id)
             .map_err(|_| AppError::Validation(format!("Invalid item_id: {}", item.item_id)))?;
         let delta = Decimal::try_from(item.adjustment).unwrap_or_default();
+
+        // Lock the row and compute the EFFECTIVE delta after the GREATEST(…, 0)
+        // clamp — the synced movement must match what actually happened here,
+        // not the requested adjustment, or remote stock drifts.
+        let qty_before: Option<Decimal> = sqlx::query_scalar!(
+            "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2 FOR UPDATE",
+            item_id, payload.store_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
 
         sqlx::query!(
             r#"UPDATE item_stock
@@ -109,6 +120,15 @@ pub async fn bulk_stock_adjustment(
         )
         .execute(&mut *tx)
         .await?;
+
+        if let Some(before) = qty_before {
+            let effective = (before + delta).max(Decimal::ZERO) - before;
+            if effective != Decimal::ZERO {
+                stock_movements_q.push(crate::database::sync::log_stock_movement(
+                    &mut *tx, item_id, payload.store_id, Some(effective), None, "adjustment",
+                ).await?);
+            }
+        }
 
         sqlx::query!(
             r#"INSERT INTO item_history
@@ -125,6 +145,13 @@ pub async fn bulk_stock_adjustment(
     }
 
     tx.commit().await?;
+
+    for (mv_id, mv_row) in stock_movements_q {
+        crate::database::sync::queue_row(
+            &pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(payload.store_id),
+        ).await;
+    }
+
     Ok(BulkOperationResult { affected, message: format!("Stock adjusted for {affected} item(s)") })
 }
 
