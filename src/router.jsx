@@ -30,7 +30,8 @@ import InventoryItemPage  from "@/pages/InventoryItemPage";
 import StockCountsPage    from "@/pages/StockCountsPage";
 import StockCountSessionPage from "@/pages/StockCountSessionPage";
 import VarianceReportPage from "@/pages/VarianceReportPage";
-import SettingsPage       from "@/pages/SettingsPage";
+import SettingsLayout     from "@/features/settings/SettingsLayout";
+import SettingsSection    from "@/features/settings/SettingsSection";
 import StoreCreationPage  from "@/pages/StoreCreationPage";
 import EodPage                 from "@/pages/EodPage";
 import StockTransfersPage      from "@/pages/StockTransfersPage";
@@ -93,9 +94,7 @@ function ProtectedRoute() {
   return <Outlet />;
 }
 
-function RequireRole({ roles }) {
-  const roleSlug = useAuthStore(s => s.user?.role_slug);
-  if (roles.includes(roleSlug ?? "")) return <Outlet />;
+function AccessDenied({ children }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center py-20 px-4">
       <div className="flex h-20 w-20 items-center justify-center rounded-3xl border border-destructive/25 bg-destructive/10">
@@ -103,11 +102,34 @@ function RequireRole({ roles }) {
       </div>
       <div className="space-y-1.5 max-w-xs">
         <p className="text-lg font-bold text-foreground">Access denied</p>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          Your role (<span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded border border-border/60">{roleSlug ?? "unknown"}</span>) does not have permission to view this page.
-        </p>
+        <p className="text-sm text-muted-foreground leading-relaxed">{children}</p>
       </div>
     </div>
+  );
+}
+
+function RequireRole({ roles }) {
+  const roleSlug = useAuthStore(s => s.user?.role_slug);
+  if (roles.includes(roleSlug ?? "")) return <Outlet />;
+  return (
+    <AccessDenied>
+      Your role (<span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded border border-border/60">{roleSlug ?? "unknown"}</span>) does not have permission to view this page.
+    </AccessDenied>
+  );
+}
+
+// Gate a route by a permission slug. Global roles (is_global) bypass the check,
+// mirroring the backend guard_permission() so the UI never offers a screen the
+// server would reject at the first mutating call.
+function RequirePermission({ permission }) {
+  const isGlobal = useAuthStore(s => s.user?.is_global ?? false);
+  const perms    = useAuthStore(s => s.user?.permissions);
+  const allowed  = isGlobal || (Array.isArray(perms) && perms.includes(permission));
+  if (allowed) return <Outlet />;
+  return (
+    <AccessDenied>
+      You don&apos;t have permission to use this feature. Ask an administrator if you need access.
+    </AccessDenied>
   );
 }
 
@@ -141,7 +163,12 @@ const router = createBrowserRouter([
           { path: "dashboard", element: <AnalyticsDashboardPage /> },
 
           // ── POS ──────────────────────────────────────────────────────────
-          { path: "pos",               element: <PosPage /> },
+          {
+            element: <RequirePermission permission="pos.sale" />,
+            children: [
+              { path: "pos",           element: <PosPage /> },
+            ],
+          },
           { path: "transactions",      element: <TransactionsPage /> },
           { path: "transactions/:id",  element: <TransactionDetailPage /> },
           { path: "returns",           element: <ReturnsPage /> },
@@ -181,13 +208,23 @@ const router = createBrowserRouter([
           // ── Finance ───────────────────────────────────────────────────────
           { path: "expenses",         element: <ExpensesPage /> },
           { path: "eod",              element: <EodPage /> },
-          { path: "price-management", element: <PriceManagementPage /> },
+          {
+            element: <RequirePermission permission="items.read" />,
+            children: [
+              { path: "price-management", element: <PriceManagementPage /> },
+            ],
+          },
 
           // ── Analytics (AnalyticsLayout gives inner sub-nav + date filter) ──
+          // Gated by analytics.read — cashiers/stock_keepers lack it and are shown
+          // Access Denied rather than a wall of failing panels. (The /dashboard
+          // landing is intentionally NOT gated — it is role-adaptive.)
           {
             path: "analytics",
-            element: <AnalyticsLayout />,
-            children: [
+            element: <RequirePermission permission="analytics.read" />,
+            children: [{
+              element: <AnalyticsLayout />,
+              children: [
               { index: true,               element: <Navigate to="/analytics/overview" replace /> },
               { path: "overview",          element: <OverviewPage /> },
               { path: "sales",             element: <SalesPage /> },
@@ -202,7 +239,8 @@ const router = createBrowserRouter([
               { path: "cashiers",          element: <Navigate to="/analytics/staff"    replace /> },
               { path: "dashboard",         element: <Navigate to="/analytics/overview" replace /> },
               { path: "*",                 element: <Navigate to="/analytics/overview" replace /> },
-            ],
+              ],
+            }],
           },
 
           // ── Operations ────────────────────────────────────────────────────
@@ -217,12 +255,19 @@ const router = createBrowserRouter([
             ],
           },
 
-          // ── Settings ──────────────────────────────────────────────────────
+          // ── Settings (SettingsLayout gives grouped sub-nav + search) ───────
+          // Sections are URL-addressable so support can direct a user straight
+          // to /settings/printer, and back/forward behave normally.
           {
             element: <RequireRole roles={["super_admin", "admin", "gm", "manager"]} />,
-            children: [
-              { path: "settings", element: <SettingsPage /> },
-            ],
+            children: [{
+              path: "settings",
+              element: <SettingsLayout />,
+              children: [
+                { index: true,        element: <Navigate to="/settings/business" replace /> },
+                { path: ":section",   element: <SettingsSection /> },
+              ],
+            }],
           },
 
           // ── 404 ───────────────────────────────────────────────────────────

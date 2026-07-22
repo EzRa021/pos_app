@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { getRoleConfig } from "./roleConfig";
+import { useAuthStore } from "@/stores/auth.store";
 
 const EMPTY = {
   username:   "",
@@ -84,6 +85,20 @@ export function UserFormDialog({ open, onOpenChange, user, roles = [], stores = 
     if (!isEdit || form.password) payload.password = form.password;
     onSubmit(payload);
   };
+
+  // ── Restrict assignable roles by hierarchy ──────────────────────────────────
+  // A user can only assign roles strictly below their own rank (lower
+  // hierarchy_level = more powerful). This mirrors the backend's
+  // ensure_role_assignable guard so the dropdown never offers a role the
+  // server will reject. The user's currently-assigned role is always kept in
+  // the list when editing so the selected value still renders.
+  const currentRoleId = useAuthStore((s) => s.user?.role_id);
+  const callerLevel   = roles.find((r) => r.id === currentRoleId)?.hierarchy_level;
+  const assignableRoles = roles.filter((r) => {
+    if (isEdit && String(r.id) === String(user?.role_id)) return true; // keep current
+    if (callerLevel == null || r.hierarchy_level == null) return true; // fallback: no data
+    return r.hierarchy_level > callerLevel;
+  });
 
   const selectedRole = roles.find((r) => String(r.id) === form.role_id);
   const roleConfig   = selectedRole ? getRoleConfig(selectedRole.role_slug) : null;
@@ -198,7 +213,7 @@ export function UserFormDialog({ open, onOpenChange, user, roles = [], stores = 
                   )}
                 </SelectTrigger>
                 <SelectContent>
-                  {roles.map((r) => {
+                  {assignableRoles.map((r) => {
                     const rc = getRoleConfig(r.role_slug);
                     return (
                       <SelectItem key={r.id} value={String(r.id)}>

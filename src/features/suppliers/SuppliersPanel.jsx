@@ -5,7 +5,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Truck, Edit3, Power, PowerOff, Trash2, Plus, Search, X,
-  Phone, Mail, Building2, AlertTriangle, DollarSign,
+  Phone, Mail, Building2, AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -16,11 +16,11 @@ import { EmptyState }     from "@/components/shared/EmptyState";
 import { Button }         from "@/components/ui/button";
 import { Input }          from "@/components/ui/input";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { cn }             from "@/lib/utils";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency } from "@/lib/format";
 import { usePermission }       from "@/hooks/usePermission";
 import { usePaginationParams } from "@/hooks/usePaginationParams";
 
@@ -290,8 +290,8 @@ function ToggleDialog({ open, onOpenChange, supplier, onConfirm }) {
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Keep</Button>
           <Button size="sm" className={cn(
-            "flex-1 text-white",
-            isActivating ? "bg-success hover:bg-success/90" : "bg-warning/90 hover:bg-warning",
+            "flex-1",
+            isActivating ? "bg-success hover:bg-success/90 text-success-foreground" : "bg-warning/90 hover:bg-warning text-warning-foreground",
           )} onClick={handleConfirm} disabled={busy}>
             {isActivating ? "Activate" : "Deactivate"}
           </Button>
@@ -396,7 +396,7 @@ export function SuppliersPanel() {
 
   const isActive = statusTab === "active" ? true : statusTab === "inactive" ? false : undefined;
 
-  const { items, total, totalPages, isLoading, create, update, activate, deactivate, remove } =
+  const { items, total, isLoading, create, update, activate, deactivate, remove } =
     useSuppliers({ search: debouncedSearch || undefined, isActive, page });
 
   // Counts for the status tab badges — derived from server totals or current page

@@ -182,7 +182,7 @@ export function BulkDiscountDialog({ open, onOpenChange }) {
           <Button
             size="sm" onClick={handleSave}
             disabled={applyDiscount.isPending || !canSubmit}
-            className={cn("gap-1.5", clearMode ? "" : "bg-success hover:bg-success/90 text-white")}
+            className={cn("gap-1.5", clearMode ? "" : "bg-success hover:bg-success/90 text-success-foreground")}
           >
             {applyDiscount.isPending
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Applying…</>

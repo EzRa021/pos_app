@@ -15,7 +15,7 @@ export default function SetupWizard({ onComplete }) {
   useEffect(() => {
     const html = document.documentElement;
     html.classList.add("dark");
-    html.style.background = "#09090b";
+    html.style.background = "var(--background)";
   }, []);
 
   function handleModeSelect(mode) { setStep(mode); }
@@ -63,7 +63,7 @@ export default function SetupWizard({ onComplete }) {
         </div>
 
         <p className="text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40 mt-5">
-          © {new Date().getFullYear()} Quantum POS
+          © {new Date().getFullYear()} Zera
         </p>
       </div>
     </div>

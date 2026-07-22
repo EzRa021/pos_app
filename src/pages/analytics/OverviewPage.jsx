@@ -29,8 +29,8 @@ export default function OverviewPage() {
 
   const { data: health,   isLoading: lh } = useBusinessHealthSummary();
   const { data: summary,  isLoading: ls } = useSalesSummary(params);
-  const { data: revenue,  isLoading: lr } = useRevenueByPeriod({ ...params, period });
-  const { data: payments, isLoading: lp } = usePaymentMethodSummary(params);
+  const { data: revenue,  isLoading: lr, error: er } = useRevenueByPeriod({ ...params, period });
+  const { data: payments, isLoading: lp, error: ep } = usePaymentMethodSummary(params);
   const { data: comparison }              = useComparisonReport({ ...params, compare_with: "previous_month" });
 
   const f = (k) => parseFloat(health?.[k]  ?? 0);
@@ -114,7 +114,7 @@ export default function OverviewPage() {
 
       {/* Revenue chart + payment donut */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <ChartCard title="Revenue Trend" loading={lr} className="col-span-2"
+        <ChartCard title="Revenue Trend" loading={lr} error={er} className="col-span-2"
           action={<PeriodSelector value={period} onChange={setPeriod} />}>
           {revenueData.length === 0 ? <EmptyState icon={TrendingUp} title="No revenue data" compact /> : (
             <ResponsiveContainer width="100%" height={200}>
@@ -140,7 +140,7 @@ export default function OverviewPage() {
           )}
         </ChartCard>
 
-        <ChartCard title="Payment Mix" loading={lp}>
+        <ChartCard title="Payment Mix" loading={lp} error={ep}>
           {payData.length === 0 ? <EmptyState icon={Activity} title="No payments" compact /> : (
             <div className="flex flex-col gap-3">
               <ResponsiveContainer width="100%" height={120}>

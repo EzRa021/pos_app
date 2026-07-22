@@ -20,17 +20,9 @@ export const getItem = (id) => rpc("get_item", { id });
 export const getItemByBarcode = (barcode, storeId = null) =>
   rpc("get_item_by_barcode", { barcode, store_id: storeId });
 
-/** Lookup by SKU. Returns Item | null. */
-export const getItemBySku = (sku, storeId = null) =>
-  rpc("get_item_by_sku", { sku, store_id: storeId });
-
 /** Fast text search for POS autocomplete. Returns ItemSearchResult[]. */
 export const searchItems = (query, storeId = null, limit = 10) =>
   rpc("search_items", { query, store_id: storeId, limit });
-
-/** Count items matching filters. Returns i64. */
-export const countItems = (storeId = null, categoryId = null, isActive = null) =>
-  rpc("count_items", { store_id: storeId, category_id: categoryId, is_active: isActive });
 
 /** Paginated item_history for one item. Returns PagedResult<ItemHistory>.
  *  filters: { page?, limit?, date_from? (YYYY-MM-DD), date_to? (YYYY-MM-DD), event_type? } */
@@ -62,12 +54,3 @@ export const activateItem = (id) => rpc("activate_item", { id });
 
 /** Deactivate: sets is_active = FALSE (does NOT archive). */
 export const deactivateItem = (id) => rpc("deactivate_item", { id });
-
-/**
- * Adjust stock by a signed delta.
- * payload: { item_id, store_id, adjustment (signed float),
- *            adjustment_type? ("ADJUSTMENT"|"RESTOCK"|"DAMAGE"|"THEFT"|"LOSS"|"CORRECTION"),
- *            notes? }
- * Returns updated Item.
- */
-export const adjustStock = (payload) => rpc("adjust_stock", payload);

@@ -5,7 +5,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   LayoutGrid, Plus, Edit3, Trash2, Power, PowerOff,
-  AlertTriangle, ChevronDown, FolderOpen, Tag, Hash, Eye, EyeOff,
+  AlertTriangle, ChevronDown, FolderOpen, Tag, Hash, EyeOff,
 } from "lucide-react";
 
 import { DataTable }  from "@/components/shared/DataTable";
@@ -175,7 +175,7 @@ function Toggle({ checked, onChange, label }) {
         checked ? "bg-primary" : "bg-muted-foreground/30",
       )}>
         <div className={cn(
-          "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform",
+          "absolute top-0.5 h-3 w-3 rounded-full bg-background shadow transition-transform",
           checked ? "translate-x-3.5" : "translate-x-0.5",
         )} />
       </div>
@@ -187,11 +187,12 @@ function Toggle({ checked, onChange, label }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Category form dialog
 // ─────────────────────────────────────────────────────────────────────────────
-function CategoryFormDialog({ open, onOpenChange, mode, initial, mutation, departments }) {
+function CategoryFormDialog({ open, onOpenChange, mode, initial, mutation, departments, categories = [] }) {
   const [name,             setName]           = useState("");
   const [code,             setCode]           = useState("");
   const [description,      setDescription]    = useState("");
   const [deptId,           setDeptId]         = useState(null);
+  const [parentId,         setParentId]       = useState(null);
   const [displayOrder,     setDisplayOrder]   = useState(0);
   const [color,            setColor]          = useState("");
   const [visibleInPos,     setVisibleInPos]   = useState(true);
@@ -200,12 +201,27 @@ function CategoryFormDialog({ open, onOpenChange, mode, initial, mutation, depar
 
   const isEdit = mode === "edit";
 
+  // Valid parents: anything except this node, its own subtree (a cycle), and
+  // nodes already at the depth cap. `path` ("/3/7/") makes the subtree test a
+  // prefix check instead of a recursive walk.
+  const eligibleParents = useMemo(() => {
+    const selfPath = initial?.path;
+    return categories
+      .filter((c) => {
+        if (isEdit && c.id === initial?.id) return false;
+        if (isEdit && selfPath && c.path?.startsWith(selfPath)) return false;
+        return (c.depth ?? 0) < 5;
+      })
+      .sort((a, b) => (a.path ?? "").localeCompare(b.path ?? ""));
+  }, [categories, initial?.id, initial?.path, isEdit]);
+
   useEffect(() => {
     if (!open) return;
     setName(initial?.category_name    ?? "");
     setCode(initial?.category_code    ?? "");
     setDescription(initial?.description ?? "");
     setDeptId(initial?.department_id  ?? null);
+    setParentId(initial?.parent_category_id ?? null);
     setDisplayOrder(initial?.display_order ?? 0);
     setColor(initial?.color           ?? "");
     setVisibleInPos(initial?.is_visible_in_pos  ?? true);
@@ -222,6 +238,10 @@ function CategoryFormDialog({ open, onOpenChange, mode, initial, mutation, depar
       category_code:     code.trim()  || null,
       description:       description.trim() || null,
       department_id:     deptId,
+      parent_category_id: parentId,
+      // COALESCE on the backend can't null a column out, so moving a category
+      // back to the top level needs this explicit signal.
+      ...(isEdit && parentId === null ? { clear_parent: true } : {}),
       display_order:     Number(displayOrder) || 0,
       color:             color.trim() || null,
       is_visible_in_pos: visibleInPos,
@@ -354,6 +374,30 @@ function CategoryFormDialog({ open, onOpenChange, mode, initial, mutation, depar
                   label="Requires Weighing"
                 />
               </div>
+            </div>
+
+            {/* Parent category */}
+            <div>
+              <label className="block text-xs font-semibold text-foreground mb-1.5">
+                Parent Category <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <select
+                value={parentId ?? ""}
+                onChange={(e) => setParentId(e.target.value ? parseInt(e.target.value, 10) : null)}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">— None (top level) —</option>
+                {eligibleParents.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {"  ".repeat(c.depth ?? 0)}
+                    {(c.depth ?? 0) > 0 ? "└ " : ""}
+                    {c.category_name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-[11px] text-muted-foreground">
+                Nest under another category. Max 5 levels; a category can't be moved into its own subtree.
+              </p>
             </div>
 
             {/* Department grid */}
@@ -489,8 +533,8 @@ function ToggleStatusDialog({ open, onOpenChange, category, isActivating, mutati
             </Button>
             <Button
               className={cn(
-                "flex-1 text-white",
-                isActivating ? "bg-success hover:bg-success/90" : "bg-warning/90 hover:bg-warning",
+                "flex-1",
+                isActivating ? "bg-success hover:bg-success/90 text-success-foreground" : "bg-warning/90 hover:bg-warning text-warning-foreground",
               )}
               disabled={mutation.isPending}
               onClick={() => mutation.mutate(category.id, { onSuccess: () => onOpenChange(false) })}
@@ -605,6 +649,7 @@ export function CategoriesPanel() {
   const [toggleOpen,   setToggleOpen]   = useState(false);
   const [hardDelOpen,  setHardDelOpen]  = useState(false);
   const [selected,     setSelected]     = useState(null);
+  const [collapsed,    setCollapsed]    = useState(() => new Set());
 
   const openEdit       = useCallback((row) => { setSelected(row); setEditOpen(true);    }, []);
   const openToggle     = useCallback((row) => { setSelected(row); setToggleOpen(true);  }, []);
@@ -634,6 +679,47 @@ export function CategoriesPanel() {
     };
   }, [categories, statusTab, activeDeptId]);
 
+  // ── Tree ordering ─────────────────────────────────────────────────────────
+  // Flatten the filtered set into depth-first order so DataTable keeps working.
+  // A node whose parent was filtered out is promoted to a root, so search and
+  // the status/department filters still show every match.
+  const treeRows = useMemo(() => {
+    const present  = new Set(filtered.map((c) => c.id));
+    const byParent = new Map();
+
+    for (const c of filtered) {
+      const p = c.parent_category_id != null && present.has(c.parent_category_id)
+        ? c.parent_category_id
+        : null;
+      if (!byParent.has(p)) byParent.set(p, []);
+      byParent.get(p).push(c);
+    }
+    for (const list of byParent.values()) {
+      list.sort((a, b) =>
+        (a.display_order - b.display_order) ||
+        a.category_name.localeCompare(b.category_name));
+    }
+
+    const out = [];
+    const walk = (parent, level) => {
+      for (const c of byParent.get(parent) ?? []) {
+        const kids = byParent.get(c.id) ?? [];
+        out.push({ ...c, _level: level, _kids: kids.length });
+        if (kids.length && !collapsed.has(c.id)) walk(c.id, level + 1);
+      }
+    };
+    walk(null, 0);
+    return out;
+  }, [filtered, collapsed]);
+
+  const toggleCollapse = useCallback((id) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
   const deptMap = useMemo(
     () => Object.fromEntries(departments.map((d) => [d.id, d])),
     [departments],
@@ -644,9 +730,23 @@ export function CategoriesPanel() {
       {
         key:      "category_name",
         header:   "Category",
-        sortable: true,
+        // Not sortable: re-sorting would break the depth-first tree ordering.
         render:   (row) => (
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5" style={{ paddingLeft: `${(row._level ?? 0) * 18}px` }}>
+            {row._kids > 0 ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleCollapse(row.id); }}
+                title={collapsed.has(row.id) ? "Expand" : "Collapse"}
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              >
+                <ChevronDown className={cn(
+                  "h-3 w-3 transition-transform duration-150",
+                  collapsed.has(row.id) && "-rotate-90",
+                )} />
+              </button>
+            ) : (
+              <span className="h-4 w-4 shrink-0" />
+            )}
             <div
               className={cn(
                 "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-[11px] font-bold uppercase",
@@ -786,7 +886,7 @@ export function CategoriesPanel() {
         ),
       },
     ];
-  }, [canManage, deptMap, openEdit, openToggle, openHardDelete]);
+  }, [canManage, deptMap, openEdit, openToggle, openHardDelete, collapsed, toggleCollapse]);
 
   // ── Guards ──────────────────────────────────────────────────────────────
   if (!storeId) {
@@ -865,7 +965,7 @@ export function CategoriesPanel() {
           >
             <DataTable
               columns={columns}
-              data={filtered}
+              data={treeRows}
               isLoading={isLoading}
               rowKey="id"
               onRowClick={canManage ? openEdit : undefined}
@@ -933,6 +1033,7 @@ export function CategoriesPanel() {
         initial={null}
         mutation={create}
         departments={departments}
+        categories={categories}
       />
 
       {selected && (
@@ -943,6 +1044,7 @@ export function CategoriesPanel() {
           initial={selected}
           mutation={update}
           departments={departments}
+          categories={categories}
         />
       )}
 

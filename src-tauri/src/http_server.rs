@@ -47,7 +47,7 @@ use crate::{
         shift::{OpenShiftDto, CloseShiftDto, ShiftFilters, CreateCashMovementDto},
         department::{CreateDepartmentDto, UpdateDepartmentDto},
         category::{CreateCategoryDto, UpdateCategoryDto},
-        item::{ItemFilters, CreateItemDto, UpdateItemDto, AdjustStockDto},
+        item::{ItemFilters, CreateItemDto, UpdateItemDto},
         inventory::{InventoryFilters, MovementHistoryFilters, RestockDto, AdjustInventoryDto,
                      StartCountSessionDto, RecordCountDto, CountSessionFilters},
         transaction::{TransactionFilters, CreateTransactionDto, HoldTransactionDto,
@@ -73,10 +73,10 @@ use crate::{
     eod_report::EodHistoryFilters,
     store_settings::UpdateStoreSettingsDto,
     loyalty::{UpdateLoyaltySettingsDto, EarnPointsDto, RedeemPointsDto, AdjustPointsDto},
-    notification::{CreateNotificationDto, NotificationFilters},
+    notification::NotificationFilters,
     supplier_payment::{RecordSupplierPaymentDto, SupplierPaymentFilters},
     backup::{CreateBackupDto, RestoreBackupDto, AutoBackupScheduleDto},
-    bulk_operations::{BulkPriceUpdateDto, BulkStockAdjustmentDto, BulkToggleItemsDto, BulkApplyDiscountDto, BulkItemImportDto},
+    bulk_operations::{BulkPriceUpdateDto, BulkStockAdjustmentDto, BulkToggleItemsDto, BulkApplyDiscountDto, BulkPrintLabelsDto},
     price_scheduling::SchedulePriceChangeDto,
     customer_wallet::{DepositDto, AdjustWalletDto},
     label::{GenerateLabelsDto, PrintPriceTagsDto, SaveLabelTemplateDto},
@@ -287,7 +287,7 @@ async fn dispatch(
         "request_password_reset" => {
             let username = opt_str(&params, "username")
                 .ok_or_else(|| AppError::Validation("Missing 'username'".into()))?;
-            let result = auth::request_password_reset(as_state(state), username).await?;
+            let result = auth::request_password_reset_inner(state, require_token()?, username).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -464,12 +464,6 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "get_department" => {
-            let id = i32_param(&params, "id")?;
-            let result = departments::get_department_inner(state, require_token()?, id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "create_department" => {
             let payload: CreateDepartmentDto = parse(params)?;
             let result = departments::create_department_inner(state, require_token()?, payload).await?;
@@ -481,12 +475,6 @@ async fn dispatch(
             let payload: UpdateDepartmentDto = parse(params)?;
             let result = departments::update_department_inner(state, require_token()?, id, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "delete_department" => {
-            let id = i32_param(&params, "id")?;
-            departments::delete_department_inner(state, require_token()?, id).await?;
-            Ok(Value::Null)
         }
 
         "hard_delete_department" => {
@@ -511,26 +499,6 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "get_global_departments" => {
-            let is_active = opt_bool(&params, "is_active");
-            let result = departments::get_global_departments_inner(state, require_token()?, is_active).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_department_by_code" => {
-            let code = opt_str(&params, "code")
-                .ok_or_else(|| AppError::Validation("Missing 'code'".into()))?;
-            let result = departments::get_department_by_code_inner(state, require_token()?, code).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_department_categories" => {
-            let department_id = i32_param(&params, "department_id")?;
-            let is_active = opt_bool(&params, "is_active");
-            let result = departments::get_department_categories_inner(state, require_token()?, department_id, is_active).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "activate_department" => {
             let id = i32_param(&params, "id")?;
             let result = departments::activate_department_inner(state, require_token()?, id).await?;
@@ -540,13 +508,6 @@ async fn dispatch(
         "deactivate_department" => {
             let id = i32_param(&params, "id")?;
             let result = departments::deactivate_department_inner(state, require_token()?, id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "count_departments" => {
-            let store_id = opt_i32(&params, "store_id");
-            let is_active = opt_bool(&params, "is_active");
-            let result = departments::count_departments_inner(state, require_token()?, store_id, is_active).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -561,12 +522,6 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "get_category" => {
-            let id = i32_param(&params, "id")?;
-            let result = categories::get_category_inner(state, require_token()?, id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "create_category" => {
             let payload: CreateCategoryDto = parse(params)?;
             let result = categories::create_category_inner(state, require_token()?, payload).await?;
@@ -578,12 +533,6 @@ async fn dispatch(
             let payload: UpdateCategoryDto = parse(params)?;
             let result = categories::update_category_inner(state, require_token()?, id, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "delete_category" => {
-            let id = i32_param(&params, "id")?;
-            categories::delete_category_inner(state, require_token()?, id).await?;
-            Ok(Value::Null)
         }
 
         "hard_delete_category" => {
@@ -601,31 +550,9 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "get_category_by_code" => {
-            let code = opt_str(&params, "code")
-                .ok_or_else(|| AppError::Validation("Missing 'code'".into()))?;
-            let store_id = opt_i32(&params, "store_id");
-            let result = categories::get_category_by_code_inner(state, require_token()?, code, store_id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "get_pos_categories" => {
             let store_id = i32_param(&params, "store_id")?;
             let result = categories::get_pos_categories_inner(state, require_token()?, store_id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_subcategories" => {
-            let parent_id = i32_param(&params, "parent_id")?;
-            let is_active = opt_bool(&params, "is_active");
-            let result = categories::get_subcategories_inner(state, require_token()?, parent_id, is_active).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_category_items" => {
-            let category_id = i32_param(&params, "category_id")?;
-            let is_active = opt_bool(&params, "is_active");
-            let result = categories::get_category_items_inner(state, require_token()?, category_id, is_active).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -638,21 +565,6 @@ async fn dispatch(
         "deactivate_category" => {
             let id = i32_param(&params, "id")?;
             let result = categories::deactivate_category_inner(state, require_token()?, id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "assign_category_department" => {
-            let category_id = i32_param(&params, "category_id")?;
-            let department_id = opt_i32(&params, "department_id");
-            let result = categories::assign_category_department_inner(state, require_token()?, category_id, department_id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "count_categories" => {
-            let store_id = opt_i32(&params, "store_id");
-            let department_id = opt_i32(&params, "department_id");
-            let is_active = opt_bool(&params, "is_active");
-            let result = categories::count_categories_inner(state, require_token()?, store_id, department_id, is_active).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -680,14 +592,6 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "get_item_by_sku" => {
-            let sku = opt_str(&params, "sku")
-                .ok_or_else(|| AppError::Validation("Missing 'sku'".into()))?;
-            let store_id = opt_i32(&params, "store_id");
-            let result = items::get_item_by_sku(as_state(state), require_token()?, sku, store_id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "create_item" => {
             let payload: CreateItemDto = parse(params)?;
             let result = items::create_item(as_state(state), require_token()?, payload).await?;
@@ -705,12 +609,6 @@ async fn dispatch(
             let id: uuid::Uuid = parse(params.get("id").cloned().unwrap_or(Value::Null))?;
             items::delete_item(as_state(state), require_token()?, id).await?;
             Ok(Value::Null)
-        }
-
-        "adjust_stock" => {
-            let payload: AdjustStockDto = parse(params)?;
-            let result = items::adjust_stock(as_state(state), require_token()?, payload).await?;
-            Ok(serde_json::to_value(result).unwrap())
         }
 
         "get_item_history" => {
@@ -751,13 +649,6 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "count_items" => {
-            let store_id    = opt_i32(&params, "store_id");
-            let category_id = opt_i32(&params, "category_id");
-            let is_active   = opt_bool(&params, "is_active");
-            let result = items::count_items(as_state(state), require_token()?, store_id, category_id, is_active).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
 
         // ════════════════════════════════════════════════════════════════════
         // INVENTORY
@@ -879,7 +770,7 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "get_count_sessions" | "get_stock_counts" => {
+        "get_count_sessions" => {
             let filters = CountSessionFilters {
                 page:       opt_i64(&params, "page"),
                 limit:      opt_i64(&params, "limit"),
@@ -1494,28 +1385,9 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "get_top_items" => {
-            let filters: AnalyticsFilters = parse(params)?;
-            let result = analytics::get_top_items(as_state(state), require_token()?, filters).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_top_categories" => {
-            let filters: AnalyticsFilters = parse(params)?;
-            let result = analytics::get_top_categories(as_state(state), require_token()?, filters).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "get_payment_method_summary" => {
             let filters: AnalyticsFilters = parse(params)?;
             let result = analytics::get_payment_method_summary(as_state(state), require_token()?, filters).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_daily_summary" => {
-            let store_id = i32_param(&params, "store_id")?;
-            let date = opt_str(&params, "date");
-            let result = analytics::get_daily_summary(as_state(state), require_token()?, store_id, date).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1600,18 +1472,6 @@ async fn dispatch(
         "get_discount_analytics" => {
             let filters: AnalyticsFilters = parse(params)?;
             let result = analytics::get_discount_analytics(as_state(state), require_token()?, filters).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_payment_trends" => {
-            let filters: AnalyticsFilters = parse(params)?;
-            let result = analytics::get_payment_trends(as_state(state), require_token()?, filters).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "get_supplier_analytics" => {
-            let filters: AnalyticsFilters = parse(params)?;
-            let result = analytics::get_supplier_analytics(as_state(state), require_token()?, filters).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -1758,6 +1618,12 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
+        "get_price_change_stats" => {
+            let store_id = i32_param(&params, "store_id")?;
+            let result = price_management::get_price_change_stats(as_state(state), require_token()?, store_id).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
         "reject_price_change" => {
             let id = i32_param(&params, "id")?;
             let result = price_management::reject_price_change(as_state(state), require_token()?, id).await?;
@@ -1818,19 +1684,6 @@ async fn dispatch(
         "get_reorder_alerts" => {
             let filters: ReorderAlertFilters = parse(params)?;
             let result = reorder_alerts::get_reorder_alerts(as_state(state), require_token()?, filters).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "acknowledge_reorder_alert" => {
-            let id = i32_param(&params, "id")?;
-            let result = reorder_alerts::acknowledge_reorder_alert(as_state(state), require_token()?, id).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
-        "link_po_to_alert" => {
-            let id    = i32_param(&params, "id")?;
-            let po_id = i32_param(&params, "po_id")?;
-            let result = reorder_alerts::link_po_to_alert(as_state(state), require_token()?, id, po_id).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -2007,12 +1860,6 @@ async fn dispatch(
         // NOTIFICATIONS
         // ════════════════════════════════════════════════════════════════════
 
-        "create_notification" => {
-            let payload: CreateNotificationDto = parse(params)?;
-            let result = notifications::create_notification(as_state(state), require_token()?, payload).await?;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "get_notifications" => {
             let filters: NotificationFilters = parse(params)?;
             let result = notifications::get_notifications(as_state(state), require_token()?, filters).await?;
@@ -2135,9 +1982,9 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "bulk_item_import" => {
-            let payload: BulkItemImportDto = parse(params)?;
-            let result = bulk_operations::bulk_item_import(as_state(state), require_token()?, payload).await?;
+        "bulk_print_labels" => {
+            let payload: BulkPrintLabelsDto = parse(params)?;
+            let result = bulk_operations::bulk_print_labels(as_state(state), require_token()?, payload).await?;
             Ok(serde_json::to_value(result).unwrap())
         }
 
@@ -2427,18 +2274,6 @@ async fn dispatch(
             Ok(serde_json::to_value(result).unwrap())
         }
 
-        "link_existing_business" => {
-            let business_id = opt_str(&params, "business_id")
-                .ok_or_else(|| AppError::Validation("Missing 'business_id'".into()))?;
-            let pool = state.pool().await?;
-            let result = onboarding::link_existing_business(&pool, &business_id)
-                .await
-                .map_err(AppError::Internal)?;
-            // Cache business_id in AppState so all future handlers can use it
-            state.load_business_id(&pool).await;
-            Ok(serde_json::to_value(result).unwrap())
-        }
-
         "get_business_info" => {
             let pool = state.pool().await?;
             let result = onboarding::get_business_info(&pool)
@@ -2448,7 +2283,11 @@ async fn dispatch(
         }
 
         "update_business_info" => {
-            require_token()?; // requires login
+            // Login alone is not enough: this rewrites business-wide config
+            // (name, currency, timezone, address, logo). Requires the same
+            // right as managing stores, not merely a valid session.
+            let token = require_token()?;
+            crate::commands::auth::guard_permission(state, &token, "stores.manage").await?;
             let payload: onboarding::UpdateBusinessPayload = parse(params)?;
             let pool = state.pool().await?;
             let result = onboarding::update_business_info(&pool, payload)
@@ -2556,6 +2395,41 @@ async fn dispatch(
         "retry_failed_sync" => {
             let result = cloud_sync::retry_failed_sync(as_state(state), require_token()?).await?;
             Ok(result)
+        }
+
+        "get_failed_sync_rows" => {
+            let result = cloud_sync::get_failed_sync_rows(as_state(state), require_token()?).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_sync_conflicts" => {
+            let result = cloud_sync::get_sync_conflicts(as_state(state), require_token()?).await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_sync_log" => {
+            let str_param = |k: &str| {
+                params.get(k)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            let result = cloud_sync::get_sync_log(
+                as_state(state),
+                require_token()?,
+                str_param("direction"),
+                str_param("outcome"),
+                str_param("table_name"),
+                params.get("limit").and_then(|v| v.as_i64()),
+                params.get("offset").and_then(|v| v.as_i64()),
+            )
+            .await?;
+            Ok(serde_json::to_value(result).unwrap())
+        }
+
+        "get_sync_log_tables" => {
+            let result = cloud_sync::get_sync_log_tables(as_state(state), require_token()?).await?;
+            Ok(serde_json::to_value(result).unwrap())
         }
 
         // ════════════════════════════════════════════════════════════════════

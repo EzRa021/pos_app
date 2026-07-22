@@ -10,14 +10,6 @@ import { rpc } from "@/lib/apiClient";
 export const getBusinessHealthSummary = (storeId, params = {}) =>
   rpc("get_business_health_summary", { store_id: storeId, ...params });
 
-export const getTopItems = (storeId, params = {}) =>
-  rpc("get_top_items", { store_id: storeId, ...params });
-// params: { limit?, date_from?, date_to? }
-
-export const getTopCategories = (storeId, params = {}) =>
-  rpc("get_top_categories", { store_id: storeId, ...params });
-// params: { limit?, date_from?, date_to? }
-
 // ── Sales & Revenue ───────────────────────────────────────────────────────────
 
 // Returns: gross_sales, net_sales, total_tax, total_discounts, avg_order_value,
@@ -29,10 +21,6 @@ export const getSalesSummary = (storeId, params = {}) =>
 export const getRevenueByPeriod = (storeId, params = {}) =>
   rpc("get_revenue_by_period", { store_id: storeId, ...params });
 // params: { period: "day"|"week"|"month"|"year", date_from?, date_to? }
-
-// Returns full daily P&L snapshot for a single date
-export const getDailySummary = (storeId, date) =>
-  rpc("get_daily_summary", { store_id: storeId, date });
 
 // ── Product Analytics ─────────────────────────────────────────────────────────
 

@@ -53,7 +53,7 @@ pub(crate) async fn get_inventory_inner(
            LEFT JOIN departments d    ON d.id = i.department_id
            WHERE ist.archived_at IS NULL
              AND ($1::int  IS NULL OR i.store_id    = $1)
-             AND ($2::int  IS NULL OR i.category_id = $2)
+             AND ($2::int  IS NULL OR i.category_id = ANY(category_descendant_ids($2)))
              AND ($3::int  IS NULL OR i.department_id = $3)
              AND ($4::bool IS NULL OR (ist.track_stock = TRUE AND istock.quantity <= ist.min_stock_level::numeric))
              AND ($5::text IS NULL OR i.item_name ILIKE $5 OR i.sku ILIKE $5 OR i.barcode ILIKE $5)"#,
@@ -89,7 +89,7 @@ pub(crate) async fn get_inventory_inner(
            LEFT JOIN departments d    ON d.id = i.department_id
            WHERE ist.archived_at IS NULL
              AND ($1::int  IS NULL OR i.store_id    = $1)
-             AND ($2::int  IS NULL OR i.category_id = $2)
+             AND ($2::int  IS NULL OR i.category_id = ANY(category_descendant_ids($2)))
              AND ($3::int  IS NULL OR i.department_id = $3)
              AND ($4::bool IS NULL OR (ist.track_stock = TRUE AND istock.quantity <= ist.min_stock_level::numeric))
              AND ($5::text IS NULL OR i.item_name ILIKE $5 OR i.sku ILIKE $5 OR i.barcode ILIKE $5)
@@ -187,6 +187,28 @@ pub(crate) async fn get_low_stock_inner(
     .map_err(AppError::from)
 }
 
+/// Block manual stock changes while a count session is active for the store.
+/// Allowing restocks/adjustments mid-count produces phantom variances in the
+/// variance report because expected quantities diverge from what was counted.
+pub(crate) async fn ensure_no_active_count(pool: &sqlx::PgPool, store_id: i32) -> AppResult<()> {
+    let active: Option<i32> = sqlx::query_scalar!(
+        "SELECT id FROM stock_count_sessions
+         WHERE store_id = $1 AND status IN ('pending', 'in_progress')
+         LIMIT 1",
+        store_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    if active.is_some() {
+        return Err(AppError::Conflict(
+            "A stock count is currently in progress for this store. \
+             Manual stock changes are blocked until the count is completed or cancelled \
+             to prevent variance report discrepancies.".into()
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn restock_item_inner(
     state:   &AppState,
     token:   String,
@@ -198,6 +220,7 @@ pub(crate) async fn restock_item_inner(
     if payload.quantity <= 0.0 {
         return Err(AppError::Validation("Quantity must be positive for a restock".into()));
     }
+    ensure_no_active_count(&pool, payload.store_id).await?;
 
     let qty = to_dec(payload.quantity)?;
     let mut tx = pool.begin().await?;
@@ -304,6 +327,7 @@ pub(crate) async fn adjust_inventory_inner(
             format!("Invalid reason. Must be one of: {}", valid_reasons.join(", "))
         ));
     }
+    ensure_no_active_count(&pool, payload.store_id).await?;
 
     let adj = to_dec(payload.adjustment_quantity)?;
     let mut tx = pool.begin().await?;
@@ -538,17 +562,13 @@ pub(crate) async fn start_count_session_inner(
         .execute(&mut *tx)
         .await?;
 
-    // Generate session number: COUNT-YYYY-NNNN
-    let next_num: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) + 1 FROM stock_count_sessions
-           WHERE store_id = $1 AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM CURRENT_DATE)"#,
-        store_id
-    )
-    .fetch_one(&mut *tx)
-    .await?
-    .unwrap_or(1);
+    // Generate session number: COUNT-YYYY-NNNN. session_number is GLOBALLY
+    // unique, so derive from the MAX existing tail (not COUNT(*), which
+    // collides after deletes/restores/pulls) and verify before use.
     let year = chrono::Utc::now().format("%Y");
-    let session_number = format!("COUNT-{year}-{next_num:04}");
+    let session_number = crate::utils::ref_no::next_tail_number_exec(
+        tx.as_mut(), "stock_count_sessions", "session_number", &format!("COUNT-{year}-"), 4,
+    ).await;
 
     // Total trackable active items in the store
     // NOTE: using item_settings.is_active (NOT items.is_active) — quantum-pos-app has a bug here
@@ -1573,22 +1593,3 @@ pub async fn get_inventory_for_count(
     get_inventory_for_count_inner(&state, token, store_id).await
 }
 
-// Legacy name kept for backwards compatibility
-#[tauri::command]
-pub async fn get_stock_counts(
-    state:    State<'_, AppState>,
-    token:    String,
-    store_id: Option<i32>,
-    page:     Option<i64>,
-    limit:    Option<i64>,
-) -> AppResult<PagedResult<StockCount>> {
-    get_count_sessions_inner(
-        &state,
-        token,
-        CountSessionFilters {
-            page, limit, store_id,
-            status: None, count_type: None, search: None,
-        },
-    )
-    .await
-}

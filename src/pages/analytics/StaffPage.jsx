@@ -1,5 +1,5 @@
 // pages/analytics/StaffPage.jsx
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import { Award, RotateCcw } from "lucide-react";
 import { DataTable }  from "@/components/shared/DataTable";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -7,7 +7,7 @@ import { cn }         from "@/lib/utils";
 import { formatCurrency, formatCurrencyCompact } from "@/lib/format";
 import { useCashierPerformance, useReturnAnalysis, usePeakHoursAnalysis } from "@/features/analytics/useAnalytics";
 import { useAnalyticsDate }  from "@/features/analytics/AnalyticsLayout";
-import { CardShell, ChartCard, SectionHeader } from "@/features/analytics/AnalyticsShared";
+import { ChartCard, SectionHeader } from "@/features/analytics/AnalyticsShared";
 
 export default function StaffPage() {
   const { params } = useAnalyticsDate();

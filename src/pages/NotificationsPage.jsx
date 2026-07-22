@@ -1,44 +1,20 @@
 // pages/NotificationsPage.jsx
 import { useState } from "react";
-import { Bell, CheckCheck, AlertTriangle, Info, Package, TrendingDown, X } from "lucide-react";
+import { Bell, CheckCheck, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader }  from "@/components/shared/PageHeader";
-import { DataTable }   from "@/components/shared/DataTable";
 import { EmptyState }  from "@/components/shared/EmptyState";
 import { Button }      from "@/components/ui/button";
 import { cn }          from "@/lib/utils";
 import { useNotifications } from "@/features/notifications/useNotifications";
+import { NOTIF_TYPE_FILTERS, notifIcon, notifStyle } from "@/features/notifications/notificationMeta";
 import { formatDateTime }   from "@/lib/format";
-
-const TYPE_FILTERS = [
-  { key: "",          label: "All"       },
-  { key: "low_stock", label: "Low Stock" },
-  { key: "reorder",   label: "Reorder"   },
-  { key: "warning",   label: "Warning"   },
-  { key: "info",      label: "Info"      },
-];
 
 const UNREAD_FILTERS = [
   { key: null,  label: "All"    },
   { key: true,  label: "Unread" },
   { key: false, label: "Read"   },
 ];
-
-const TYPE_ICONS = {
-  low_stock: TrendingDown,
-  reorder:   Package,
-  info:      Info,
-  warning:   AlertTriangle,
-  alert:     AlertTriangle,
-};
-
-const TYPE_STYLES = {
-  low_stock: "text-warning bg-warning/10 border-warning/20",
-  reorder:   "text-primary bg-primary/10 border-primary/20",
-  info:      "text-primary bg-primary/10 border-primary/20",
-  warning:   "text-warning bg-warning/10 border-warning/20",
-  alert:     "text-destructive bg-destructive/10 border-destructive/20",
-};
 
 function FilterTabs({ value, onChange, tabs }) {
   return (
@@ -62,7 +38,7 @@ export default function NotificationsPage() {
   const [typeFilter,   setTypeFilter]   = useState("");
   const [unreadFilter, setUnreadFilter] = useState(null);
 
-  const { notifications, isLoading, markRead, markAll } = useNotifications({
+  const { notifications, isLoading, error, markRead, markAll } = useNotifications({
     type:   typeFilter  || undefined,
     unread: unreadFilter ?? undefined,
     limit:  100,
@@ -92,12 +68,12 @@ export default function NotificationsPage() {
       />
 
       <div className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-4xl px-6 py-5 space-y-4">
+        <div className="mx-auto max-w-4xl px-6 py-5 space-y-5">
 
           {/* Filters */}
           <div className="flex items-center flex-wrap gap-3">
-            <FilterTabs value={typeFilter} onChange={setTypeFilter} tabs={TYPE_FILTERS} />
-            <FilterTabs value={String(unreadFilter)} onChange={(v) => setUnreadFilter(v === "null" ? null : v)} tabs={
+            <FilterTabs value={typeFilter} onChange={setTypeFilter} tabs={NOTIF_TYPE_FILTERS} />
+            <FilterTabs value={String(unreadFilter)} onChange={(v) => setUnreadFilter(v === "null" ? null : v === "true")} tabs={
               UNREAD_FILTERS.map((f) => ({ ...f, key: String(f.key) }))
             } />
           </div>
@@ -105,7 +81,27 @@ export default function NotificationsPage() {
           {/* List */}
           <div className="rounded-xl border border-border bg-card overflow-hidden">
             {isLoading ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">Loading…</div>
+              <div className="divide-y divide-border/40">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="flex items-start gap-4 px-5 py-4">
+                    <div className="h-8 w-8 shrink-0 rounded-lg bg-muted/40 animate-pulse" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3.5 w-1/3 rounded bg-muted/40 animate-pulse" />
+                      <div className="h-3 w-2/3 rounded bg-muted/30 animate-pulse" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : error ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-destructive/25 bg-destructive/10">
+                  <AlertTriangle className="h-6 w-6 text-destructive/70" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Couldn't load notifications</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{String(error?.message ?? error)}</p>
+                </div>
+              </div>
             ) : notifications.length === 0 ? (
               <EmptyState
                 icon={Bell}
@@ -115,8 +111,8 @@ export default function NotificationsPage() {
             ) : (
               <div className="divide-y divide-border/40">
                 {notifications.map((n) => {
-                  const Icon  = TYPE_ICONS[n.type] ?? Bell;
-                  const style = TYPE_STYLES[n.type] ?? "text-muted-foreground bg-muted/30 border-border/40";
+                  const Icon  = notifIcon(n.type);
+                  const style = notifStyle(n.type);
                   return (
                     <div key={n.id} className={cn(
                       "flex items-start gap-4 px-5 py-4 transition-colors",
@@ -131,7 +127,7 @@ export default function NotificationsPage() {
                             <p className={cn("text-sm font-semibold text-foreground", !n.is_read && "text-primary")}>
                               {n.title}
                             </p>
-                            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{n.body}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{n.message}</p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0 mt-0.5">
                             <span className="text-[10px] text-muted-foreground whitespace-nowrap">{formatDateTime(n.created_at)}</span>

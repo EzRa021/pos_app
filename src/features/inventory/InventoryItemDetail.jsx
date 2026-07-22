@@ -5,7 +5,7 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Boxes, BarChart3, RefreshCw, History, AlertTriangle,
+  BarChart3, RefreshCw, History, AlertTriangle,
   TrendingDown, CheckCircle2, XCircle, ArrowRight, Filter, X, ZoomIn, Star,
 } from "lucide-react";
 
@@ -90,7 +90,7 @@ function QtyChange({ value, measurementType, unitType }) {
   const v = parseFloat(value);
   if (v === 0) return <span className="text-xs text-muted-foreground">±0</span>;
   return (
-    <span className={cn("text-xs font-bold tabular-nums", v > 0 ? "text-emerald-400" : "text-rose-400")}>
+    <span className={cn("text-xs font-bold tabular-nums", v > 0 ? "text-success" : "text-destructive")}>
       {v > 0 ? "+" : ""}{formatQuantity(v, measurementType, unitType)}
     </span>
   );
@@ -110,7 +110,7 @@ function MovementHistoryTable({ itemId, storeId, measurementType, unitType }) {
 
   const hasFilter = dateFrom || dateTo || eventType;
 
-  const { movements, total, totalPages, isLoading, error } = useMovementHistory(storeId, {
+  const { movements, total, isLoading, error } = useMovementHistory(storeId, {
     page,
     limit:     15,
     itemId,
@@ -414,7 +414,7 @@ export function InventoryItemDetail({ itemId }) {
             <Button size="sm" variant="outline" onClick={() => navigate(`/products/${itemId}`)}>
               View Item <ArrowRight className="h-3.5 w-3.5" />
             </Button>
-            <Button size="sm" className="bg-emerald-600 hover:bg-emerald-500 text-white" onClick={() => setRestockOpen(true)}>
+            <Button size="sm" variant="success" onClick={() => setRestockOpen(true)}>
               <RefreshCw className="h-3.5 w-3.5" /> Restock
             </Button>
             <Button size="sm" variant="outline" onClick={() => setAdjustOpen(true)}>

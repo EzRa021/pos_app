@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input }  from "@/components/ui/input";
 import { cn }     from "@/lib/utils";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { useWalletBalance, useWalletActions } from "./useWallet";
@@ -14,24 +14,24 @@ import { formatCurrency } from "@/lib/format";
 
 // ── Deposit Dialog ────────────────────────────────────────────────────────────
 function DepositDialog({ open, onOpenChange, customerId, onDeposit }) {
-  const [amount,    setAmount]    = useState("");
-  const [reference, setReference] = useState("");
-  const [notes,     setNotes]     = useState("");
-  const [busy,      setBusy]      = useState(false);
+  const [amount,       setAmount]       = useState("");
+  const [reference,    setReference]    = useState("");
+  const [notes,        setNotes]        = useState("");
+  const [busy,         setBusy]         = useState(false);
+  const [confirmLarge, setConfirmLarge] = useState(false);
+
+  const amt     = parseFloat(amount);
+  const isLarge = amt >= 50_000;
 
   const handleSave = async () => {
-    const amt = parseFloat(amount);
     if (!(amt > 0)) { toast.error("Enter a valid amount."); return; }
-    const largeThreshold = 50_000;
-    if (amt >= largeThreshold) {
-      const ok = window.confirm(`Confirm large top-up: ${formatCurrency(amt)}?`);
-      if (!ok) return;
-    }
+    // Large top-ups require a second, deliberate click (inline, not window.confirm).
+    if (isLarge && !confirmLarge) { setConfirmLarge(true); return; }
     setBusy(true);
     try {
       await onDeposit({ amount: amt, reference: reference || undefined, notes: notes || undefined });
       toast.success(`${formatCurrency(amt)} deposited to wallet.`);
-      setAmount(""); setReference(""); setNotes("");
+      setAmount(""); setReference(""); setNotes(""); setConfirmLarge(false);
       onOpenChange(false);
     } catch (e) {
       toast.error(String(e));
@@ -59,7 +59,7 @@ function DepositDialog({ open, onOpenChange, customerId, onDeposit }) {
           <div className="space-y-1.5">
             <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Amount (₦) *</label>
             <Input type="number" min="0" step="100" value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => { setAmount(e.target.value); setConfirmLarge(false); }}
               placeholder="0.00" className="h-8 text-sm" autoFocus />
           </div>
           <div className="space-y-1.5">
@@ -73,10 +73,22 @@ function DepositDialog({ open, onOpenChange, customerId, onDeposit }) {
               placeholder="Optional notes" className="h-8 text-sm" />
           </div>
         </div>
+        {isLarge && confirmLarge && (
+          <div className="mx-6 mb-1 flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/[0.08] px-3 py-2">
+            <AlertCircle className="h-3.5 w-3.5 text-warning mt-0.5 shrink-0" />
+            <p className="text-[11px] text-warning">
+              Large top-up of <strong>{formatCurrency(amt)}</strong>. Click again to confirm.
+            </p>
+          </div>
+        )}
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} disabled={busy} className="bg-success hover:bg-success/90 text-white gap-1.5">
-            {busy ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</> : <><Plus className="h-3.5 w-3.5" />Deposit</>}
+          <Button size="sm" onClick={handleSave} disabled={busy} className="bg-success hover:bg-success/90 text-success-foreground gap-1.5">
+            {busy
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</>
+              : isLarge && confirmLarge
+                ? <><Plus className="h-3.5 w-3.5" />Confirm Deposit</>
+                : <><Plus className="h-3.5 w-3.5" />Deposit</>}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -93,6 +105,7 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
   const handleSave = async () => {
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt === 0) { toast.error("Enter a non-zero adjustment amount."); return; }
+    if (reason.trim().length < 10) { toast.error("Reason must be at least 10 characters."); return; }
     setBusy(true);
     try {
       await onAdjust({ amount: amt, reason: reason || "" });
@@ -132,12 +145,15 @@ function AdjustDialog({ open, onOpenChange, onAdjust }) {
           <div className="space-y-1.5">
             <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Reason *</label>
             <Input value={reason} onChange={(e) => setReason(e.target.value)}
-              placeholder="Reason for adjustment" className="h-8 text-sm" />
+              placeholder="Reason for adjustment (min 10 characters)" className="h-8 text-sm" />
+            <p className={cn("text-[11px]", reason.trim().length > 0 && reason.trim().length < 10 ? "text-warning" : "text-muted-foreground")}>
+              {reason.trim().length}/10 characters minimum — this is recorded in the audit log.
+            </p>
           </div>
         </div>
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} disabled={busy || !reason.trim()} className="gap-1.5">
+          <Button size="sm" onClick={handleSave} disabled={busy || reason.trim().length < 10} className="gap-1.5">
             {busy ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</> : "Save Adjustment"}
           </Button>
         </DialogFooter>
@@ -198,7 +214,7 @@ export function WalletPanel({ customerId, canManage = true }) {
 
         {canManage && (
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setDepositOpen(true)} className="gap-1.5 bg-success hover:bg-success/90 text-white">
+            <Button size="sm" onClick={() => setDepositOpen(true)} className="gap-1.5 bg-success hover:bg-success/90 text-success-foreground">
               <Plus className="h-3.5 w-3.5" />Deposit
             </Button>
             <Button size="sm" variant="outline" onClick={() => setAdjustOpen(true)} className="gap-1.5">

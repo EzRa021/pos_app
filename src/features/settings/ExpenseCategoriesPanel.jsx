@@ -254,9 +254,9 @@ export function ExpenseCategoriesPanel() {
   );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-muted/20">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border bg-muted/20">
           <div className="flex items-center gap-2">
             <Layers className="h-3.5 w-3.5 text-muted-foreground" />
             <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -268,7 +268,7 @@ export function ExpenseCategoriesPanel() {
           </Button>
         </div>
 
-        <div className="p-5 space-y-2">
+        <div className="p-4 space-y-2">
           {active.map((c) => (
             <CategoryRow key={c.id} cat={c} storeId={storeId} onEdit={setModal} onDelete={setDelCat} />
           ))}

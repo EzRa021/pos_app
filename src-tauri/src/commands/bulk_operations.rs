@@ -10,7 +10,6 @@ use crate::{
         bulk_operations::{
             BulkPriceUpdateDto, BulkStockAdjustmentDto, BulkToggleItemsDto,
             BulkApplyDiscountDto, BulkOperationResult,
-            BulkItemImportDto, BulkImportResult,
             BulkPrintLabelsDto,
         },
         label::ItemLabel,
@@ -18,6 +17,18 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+
+/// Queue affected item rows for cloud sync. Fresh-read push re-reads the
+/// authoritative `items` row on send, so only the id is needed here.
+async fn queue_items_sync(pool: &sqlx::PgPool, ids: &[uuid::Uuid], store_id: i32) {
+    for id in ids {
+        crate::database::sync::queue_row(
+            pool, "items", "UPDATE", &id.to_string(),
+            serde_json::json!({ "id": id }),
+            Some(store_id),
+        ).await;
+    }
+}
 
 // ── bulk_price_update ─────────────────────────────────────────────────────────
 
@@ -51,13 +62,16 @@ pub async fn bulk_price_update(
 
     let cost_clause = if update_cost { format!(", cost_price = {price_expr}") } else { String::new() };
     let where_clause = if let Some(cid) = payload.category_id {
-        format!("store_id = {} AND category_id = {}", payload.store_id, cid)
+        format!("store_id = {} AND category_id = ANY(category_descendant_ids({}))", payload.store_id, cid)
     } else {
         format!("store_id = {} AND department_id = {}", payload.store_id, payload.department_id.unwrap())
     };
 
-    let sql = format!("UPDATE items SET selling_price = {price_expr}{cost_clause}, updated_at = NOW() WHERE {where_clause}");
-    let result = sqlx::query(&sql).execute(&pool).await.map_err(AppError::Database)?;
+    // RETURNING id so we can queue each affected item for cloud sync — bulk
+    // price changes must reach Supabase just like single-item updates do.
+    let sql = format!("UPDATE items SET selling_price = {price_expr}{cost_clause}, updated_at = NOW() WHERE {where_clause} RETURNING id");
+    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(&sql).fetch_all(&pool).await.map_err(AppError::Database)?;
+    let affected = ids.len() as u64;
 
     sqlx::query!(
         r#"INSERT INTO audit_logs (store_id, action, resource, description, severity)
@@ -70,9 +84,11 @@ pub async fn bulk_price_update(
     .await
     .ok();
 
+    queue_items_sync(&pool, &ids, payload.store_id).await;
+
     Ok(BulkOperationResult {
-        affected: result.rows_affected(),
-        message:  format!("{} item(s) repriced via '{}'", result.rows_affected(), payload.method),
+        affected,
+        message:  format!("{affected} item(s) repriced via '{}'", payload.method),
     })
 }
 
@@ -90,6 +106,10 @@ pub async fn bulk_stock_adjustment(
     if payload.items.is_empty() {
         return Err(AppError::Validation("No items provided for adjustment".into()));
     }
+
+    // Block bulk stock changes while a count session is active — matches the
+    // single-item adjust/restock paths and prevents phantom variances mid-count.
+    super::inventory::ensure_no_active_count(&pool, payload.store_id).await?;
 
     let mut tx       = pool.begin().await?;
     let mut affected = 0u64;
@@ -181,35 +201,54 @@ pub async fn bulk_deactivate_items(
 
 async fn bulk_toggle(state: &State<'_, AppState>, payload: BulkToggleItemsDto, active: bool) -> AppResult<BulkOperationResult> {
     let pool = state.pool().await?;
-    let result = if let Some(ids) = payload.item_ids {
-        let uuids: Vec<uuid::Uuid> = ids.iter().filter_map(|s| uuid::Uuid::parse_str(s).ok()).collect();
-        sqlx::query!(
-            "UPDATE item_settings SET is_active=$1 WHERE item_id=ANY($2) AND store_id=$3",
+    // RETURNING item_id so the affected rows can be queued for cloud sync.
+    let ids: Vec<uuid::Uuid> = if let Some(id_strs) = payload.item_ids {
+        let uuids: Vec<uuid::Uuid> = id_strs.iter().filter_map(|s| uuid::Uuid::parse_str(s).ok()).collect();
+        sqlx::query_scalar!(
+            "UPDATE item_settings SET is_active=$1 WHERE item_id=ANY($2) AND store_id=$3 RETURNING item_id",
             active, &uuids, payload.store_id,
         )
-        .execute(&pool)
+        .fetch_all(&pool)
         .await?
     } else if let Some(cid) = payload.category_id {
-        sqlx::query!(
+        sqlx::query_scalar!(
             r#"UPDATE item_settings ist SET is_active=$1
-               FROM items i WHERE ist.item_id=i.id AND i.category_id=$2 AND ist.store_id=$3"#,
+               FROM items i WHERE ist.item_id=i.id AND i.category_id = ANY(category_descendant_ids($2)) AND ist.store_id=$3
+               RETURNING ist.item_id"#,
             active, cid, payload.store_id,
         )
-        .execute(&pool)
+        .fetch_all(&pool)
         .await?
     } else if let Some(did) = payload.department_id {
-        sqlx::query!(
+        sqlx::query_scalar!(
             r#"UPDATE item_settings ist SET is_active=$1
-               FROM items i WHERE ist.item_id=i.id AND i.department_id=$2 AND ist.store_id=$3"#,
+               FROM items i WHERE ist.item_id=i.id AND i.department_id=$2 AND ist.store_id=$3
+               RETURNING ist.item_id"#,
             active, did, payload.store_id,
         )
-        .execute(&pool)
+        .fetch_all(&pool)
         .await?
     } else {
         return Err(AppError::Validation("Provide item_ids, category_id, or department_id".into()));
     };
+
+    let affected = ids.len() as u64;
     let verb = if active { "activated" } else { "deactivated" };
-    Ok(BulkOperationResult { affected: result.rows_affected(), message: format!("{} item(s) {verb}", result.rows_affected()) })
+
+    sqlx::query!(
+        r#"INSERT INTO audit_logs (store_id, action, resource, description, severity)
+           VALUES ($1,$2,'items',$3,'info')"#,
+        payload.store_id,
+        if active { "bulk_activate_items" } else { "bulk_deactivate_items" },
+        format!("Bulk {verb}: {affected} item(s)"),
+    )
+    .execute(&pool)
+    .await
+    .ok();
+
+    queue_items_sync(&pool, &ids, payload.store_id).await;
+
+    Ok(BulkOperationResult { affected, message: format!("{affected} item(s) {verb}") })
 }
 
 // ── bulk_apply_discount ───────────────────────────────────────────────────────
@@ -229,7 +268,7 @@ pub async fn bulk_apply_discount(
     }
 
     let (where_clause, discount_expr) = if let Some(cid) = payload.category_id {
-        (format!("store_id={} AND category_id={}", payload.store_id, cid),
+        (format!("store_id={} AND category_id = ANY(category_descendant_ids({}))", payload.store_id, cid),
          format!("CASE WHEN {percent}=0 THEN NULL ELSE ROUND(selling_price*(1-{percent}/100.0),2) END"))
     } else {
         let did = payload.department_id.unwrap();
@@ -237,90 +276,25 @@ pub async fn bulk_apply_discount(
          format!("CASE WHEN {percent}=0 THEN NULL ELSE ROUND(selling_price*(1-{percent}/100.0),2) END"))
     };
 
-    let sql = format!("UPDATE items SET discount_price={discount_expr}, updated_at=NOW() WHERE {where_clause}");
-    let result = sqlx::query(&sql).execute(&pool).await.map_err(AppError::Database)?;
+    let sql = format!("UPDATE items SET discount_price={discount_expr}, updated_at=NOW() WHERE {where_clause} RETURNING id");
+    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(&sql).fetch_all(&pool).await.map_err(AppError::Database)?;
+    let affected = ids.len() as u64;
+
     let pct_str = if percent == Decimal::ZERO { "cleared".to_string() } else { format!("{percent}% discount applied") };
-    Ok(BulkOperationResult { affected: result.rows_affected(), message: format!("{} item(s): {pct_str}", result.rows_affected()) })
-}
 
-// ── bulk_item_import ──────────────────────────────────────────────────────────
+    sqlx::query!(
+        r#"INSERT INTO audit_logs (store_id, action, resource, description, severity)
+           VALUES ($1,'bulk_apply_discount','items',$2,'info')"#,
+        payload.store_id,
+        format!("Bulk discount: {pct_str} on {affected} item(s)"),
+    )
+    .execute(&pool)
+    .await
+    .ok();
 
-#[tauri::command]
-pub async fn bulk_item_import(
-    state:   State<'_, AppState>,
-    token:   String,
-    payload: BulkItemImportDto,
-) -> AppResult<BulkImportResult> {
-    let claims = guard_permission(&state, &token, "items.create").await?;
-    let pool   = state.pool().await?;
+    queue_items_sync(&pool, &ids, payload.store_id).await;
 
-    if payload.items.is_empty() {
-        return Err(AppError::Validation("No items provided for import".into()));
-    }
-
-    let mut created = 0u64;
-    let mut updated = 0u64;
-    let mut failed  = 0u64;
-    let mut errors  = Vec::new();
-
-    for (idx, row) in payload.items.iter().enumerate() {
-        if row.item_name.trim().is_empty() {
-            failed += 1;
-            errors.push(format!("Row {}: item_name is required", idx + 1));
-            continue;
-        }
-        if row.selling_price < 0.0 || row.cost_price < 0.0 {
-            failed += 1;
-            errors.push(format!("Row {}: prices must be non-negative ('{}')", idx + 1, row.item_name));
-            continue;
-        }
-
-        let cost  = Decimal::try_from(row.cost_price).unwrap_or_default();
-        let sell  = Decimal::try_from(row.selling_price).unwrap_or_default();
-        let sku   = row.sku.clone().unwrap_or_else(|| {
-            format!("SKU-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000").to_uppercase())
-        });
-
-        // Upsert by SKU within store
-        let result = sqlx::query!(
-            r#"INSERT INTO items
-                   (store_id, item_name, sku, barcode, cost_price, selling_price,
-                    category_id, department_id, created_by)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-               ON CONFLICT (store_id, sku) DO UPDATE SET
-                   item_name    = EXCLUDED.item_name,
-                   barcode      = COALESCE(EXCLUDED.barcode, items.barcode),
-                   cost_price   = EXCLUDED.cost_price,
-                   selling_price= EXCLUDED.selling_price,
-                   category_id  = COALESCE(EXCLUDED.category_id,   items.category_id),
-                   department_id= COALESCE(EXCLUDED.department_id, items.department_id),
-                   updated_at   = NOW()
-               RETURNING (xmax = 0) AS is_insert"#,
-            payload.store_id,
-            row.item_name.trim(),
-            sku,
-            row.barcode,
-            cost, sell,
-            row.category_id,
-            row.department_id,
-            claims.user_id,
-        )
-        .fetch_optional(&pool)
-        .await;
-
-        match result {
-            Ok(Some(r)) => {
-                if r.is_insert.unwrap_or(true) { created += 1; } else { updated += 1; }
-            }
-            Ok(None) => { updated += 1; }
-            Err(e) => {
-                failed += 1;
-                errors.push(format!("Row {}: {} — {}", idx + 1, row.item_name, e));
-            }
-        }
-    }
-
-    Ok(BulkImportResult { created, updated, failed, errors })
+    Ok(BulkOperationResult { affected, message: format!("{affected} item(s): {pct_str}") })
 }
 
 // ── bulk_print_labels ───────────────────────────────────────────────────────────────
@@ -404,7 +378,7 @@ pub async fn bulk_print_labels(
                    ON istock.item_id = i.id AND istock.store_id = i.store_id
                LEFT JOIN item_settings ist ON ist.item_id = i.id
                WHERE i.store_id = $1
-                 AND ($2::int IS NULL OR i.category_id   = $2)
+                 AND ($2::int IS NULL OR i.category_id   = ANY(category_descendant_ids($2)))
                  AND ($3::int IS NULL OR i.department_id = $3)
                  AND (ist.is_active IS NULL OR ist.is_active = TRUE)
                ORDER BY i.item_name"#,

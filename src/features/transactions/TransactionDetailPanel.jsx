@@ -4,7 +4,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import {
-  AlertTriangle, Ban, RefreshCw, RotateCcw,
+  AlertTriangle, Ban, RotateCcw,
   User, CreditCard, Package, FileText,
   Loader2, ChevronRight, Printer, Copy, Check, ArrowUpRight,
   ShieldCheck, Hash, Calendar, Clock, Receipt,
@@ -29,7 +29,7 @@ import {
 import { Input }   from "@/components/ui/input";
 import { cn }      from "@/lib/utils";
 import {
-  formatCurrency, formatDateTime, formatDate, formatRef, formatQuantity, stepForType,
+  formatCurrency, formatDate, formatRef, formatQuantity,
 } from "@/lib/format";
 import { usePermission }  from "@/hooks/usePermission";
 import { useAuthStore }   from "@/stores/auth.store";
@@ -152,7 +152,7 @@ function ItemsTable({ items }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-border/40">
-          {items.map((item, idx) => (
+          {items.map((item) => (
             <tr
               key={item.id}
               className="group hover:bg-muted/20 transition-colors duration-100"
@@ -337,7 +337,7 @@ function VoidModal({ open, onOpenChange, tx, onConfirm, isLoading }) {
               </div>
               <DialogFooter className="flex gap-2 pt-1">
                 <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1 text-xs">Cancel</Button>
-                <Button onClick={handleProceed} disabled={!reason.trim()} className="flex-1 text-xs bg-destructive hover:bg-destructive/90 text-white">
+                <Button onClick={handleProceed} disabled={!reason.trim()} className="flex-1 text-xs bg-destructive hover:bg-destructive/90 text-destructive-foreground">
                   Continue
                 </Button>
               </DialogFooter>
@@ -364,7 +364,7 @@ function VoidModal({ open, onOpenChange, tx, onConfirm, isLoading }) {
                 </div>
                 <DialogFooter className="flex gap-2">
                   <Button type="button" variant="outline" onClick={() => setStep(1)} disabled={busy} className="flex-1 text-xs">Back</Button>
-                  <Button type="submit" disabled={busy || pin.length !== 4} className="flex-1 text-xs bg-destructive hover:bg-destructive/90 text-white">
+                  <Button type="submit" disabled={busy || pin.length !== 4} className="flex-1 text-xs bg-destructive hover:bg-destructive/90 text-destructive-foreground">
                     {busy ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />Verifying…</> : "Void Transaction"}
                   </Button>
                 </DialogFooter>
@@ -377,269 +377,12 @@ function VoidModal({ open, onOpenChange, tx, onConfirm, isLoading }) {
   );
 }
 
-// ── FullRefundModal ───────────────────────────────────────────────────────────
-function FullRefundModal({ open, onOpenChange, tx, onConfirm, isLoading }) {
-  const [reason, setReason] = useState("");
-  const [notes,  setNotes]  = useState("");
-  useEffect(() => { if (open) { setReason(""); setNotes(""); } }, [open]);
-
-  async function handleSubmit() {
-    if (!reason.trim()) { toast.error("Please provide a refund reason"); return; }
-    await onConfirm({ reason: reason.trim(), notes: notes.trim() || undefined });
-  }
-
-  const total = formatCurrency(parseFloat(tx?.total_amount ?? 0));
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/50">
-        <div className="h-[3px] w-full bg-gradient-to-r from-warning/80 via-warning to-warning/80" />
-        <div className="px-6 pt-5 pb-6 space-y-4">
-          <DialogHeader>
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-warning/20 bg-warning/8">
-                <RotateCcw className="h-5 w-5 text-warning" />
-              </div>
-              <div className="pt-0.5">
-                <DialogTitle className="text-[14px] font-bold leading-tight">Full Refund</DialogTitle>
-                <DialogDescription className="text-[11px] mt-1 text-muted-foreground">
-                  {formatRef(tx?.reference_no)} · {total}
-                </DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
-
-          <div className="flex items-start gap-2.5 rounded-lg border border-warning/20 bg-warning/6 px-3.5 py-3">
-            <AlertTriangle className="h-3.5 w-3.5 text-warning mt-0.5 shrink-0" />
-            <p className="text-[11px] text-warning/90 leading-relaxed">
-              This will refund <span className="font-bold">{total}</span> and restore all stock.
-              The transaction will be marked as fully refunded.
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            <div>
-              <label className="text-[11px] font-semibold text-foreground mb-1.5 block">
-                Refund Reason <span className="text-destructive">*</span>
-              </label>
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="e.g. Defective product, wrong item delivered…"
-                rows={3}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/60 resize-none focus:outline-none focus:ring-1 focus:ring-warning/40 transition-shadow"
-              />
-            </div>
-            <div>
-              <label className="text-[11px] font-semibold text-foreground mb-1.5 block">
-                Notes <span className="text-muted-foreground font-normal">(optional)</span>
-              </label>
-              <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Additional context…" className="text-xs" />
-            </div>
-          </div>
-
-          <DialogFooter className="flex gap-2 pt-1">
-            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isLoading} className="flex-1 text-xs">Cancel</Button>
-            <Button onClick={handleSubmit} disabled={isLoading || !reason.trim()} className="flex-1 text-xs bg-warning hover:bg-warning/90 text-warning-foreground">
-              {isLoading ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />Processing…</> : `Refund ${total}`}
-            </Button>
-          </DialogFooter>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ── PartialRefundModal ────────────────────────────────────────────────────────
-function PartialRefundModal({ open, onOpenChange, tx, txItems, onConfirm, isLoading }) {
-  const [itemState, setItemState] = useState({});
-  const [notes, setNotes]         = useState("");
-
-  useEffect(() => {
-    if (open && txItems?.length) {
-      const init = {};
-      txItems.forEach((item) => {
-        init[item.item_id] = { enabled: false, quantity: 1, reason: "" };
-      });
-      setItemState(init);
-      setNotes("");
-    }
-  }, [open, txItems]);
-
-  const updateItem = (id, patch) =>
-    setItemState((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
-
-  const { refundTotal, selectedCount } = useMemo(() => {
-    let total = 0; let count = 0;
-    (txItems ?? []).forEach((item) => {
-      const s = itemState[item.item_id];
-      if (!s?.enabled) return;
-      count++;
-      // Use unit_price + proportional discount to match backend's per-line math.
-      const qtyNum = parseFloat(item.quantity);
-      const unitPrice = parseFloat(item.unit_price);
-      const lineDiscountTotal = item.discount != null ? parseFloat(item.discount) : 0;
-      const unitDiscount = qtyNum > 0 ? (lineDiscountTotal / qtyNum) : 0;
-      const unitRefund = unitPrice - unitDiscount;
-      total += unitRefund * s.quantity;
-    });
-    return { refundTotal: total, selectedCount: count };
-  }, [itemState, txItems]);
-
-  async function handleSubmit() {
-    if (selectedCount === 0) { toast.error("Select at least one item to refund"); return; }
-    const items = (txItems ?? [])
-      .filter((item) => itemState[item.item_id]?.enabled)
-      .map((item) => ({
-        item_id:  item.item_id,
-        quantity: itemState[item.item_id].quantity,
-        reason:   itemState[item.item_id].reason.trim() || undefined,
-      }));
-    await onConfirm({ items, notes: notes.trim() || undefined });
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/50">
-        <div className="h-[3px] w-full bg-gradient-to-r from-warning/80 via-warning to-warning/80" />
-        <div className="px-6 pt-5 pb-6 space-y-4">
-          <DialogHeader>
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-warning/20 bg-warning/8">
-                <RefreshCw className="h-5 w-5 text-warning" />
-              </div>
-              <div className="pt-0.5">
-                <DialogTitle className="text-[14px] font-bold leading-tight">Partial Refund</DialogTitle>
-                <DialogDescription className="text-[11px] mt-1 text-muted-foreground">
-                  {formatRef(tx?.reference_no)} · Select items and quantities
-                </DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
-
-          <div className="max-h-[300px] overflow-y-auto space-y-2 pr-0.5 -mr-0.5">
-            {(txItems ?? []).map((item) => {
-              const s = itemState[item.item_id] ?? { enabled: false, quantity: 1, reason: "" };
-              const maxQty = parseFloat(item.quantity);
-              const qtyNum = parseFloat(item.quantity);
-              const unitPrice = parseFloat(item.unit_price);
-              const lineDiscountTotal = item.discount != null ? parseFloat(item.discount) : 0;
-              const unitDiscount = qtyNum > 0 ? (lineDiscountTotal / qtyNum) : 0;
-              const unitRefund = unitPrice - unitDiscount;
-              const lineRef = s.enabled ? formatCurrency(unitRefund * s.quantity) : null;
-
-              return (
-                <div
-                  key={item.item_id}
-                  className={cn(
-                    "rounded-lg border p-3 transition-all duration-150",
-                    s.enabled ? "border-warning/25 bg-warning/5" : "border-border/50 bg-muted/5",
-                  )}
-                >
-                  <div className="flex items-start gap-2.5">
-                    <input
-                      type="checkbox"
-                      checked={s.enabled}
-                      onChange={(e) => updateItem(item.item_id, { enabled: e.target.checked })}
-                      className="mt-0.5 h-3.5 w-3.5 accent-warning cursor-pointer"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="text-xs font-semibold text-foreground">{item.item_name}</p>
-                          <p className="text-[10px] font-mono text-muted-foreground/60">{item.sku}</p>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="text-xs font-mono font-bold tabular-nums">{formatCurrency(parseFloat(item.line_total))}</p>
-                          <p className="text-[10px] text-muted-foreground">
-                            {formatQuantity(parseFloat(item.quantity), item.measurement_type, item.unit_type)} × {formatCurrency(parseFloat(item.unit_price))}
-                          </p>
-                        </div>
-                      </div>
-
-                      {s.enabled && (
-                        <div className="mt-2.5 space-y-2">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-[11px] text-muted-foreground">Qty:</span>
-                            {(() => {
-                              const step = stepForType(item.measurement_type, item.min_increment);
-                              return (
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    onClick={() => updateItem(item.item_id, { quantity: Math.max(step, parseFloat((s.quantity - step).toFixed(3))) })}
-                                    disabled={s.quantity <= step}
-                                    className="h-6 w-6 rounded-md border border-border bg-muted/50 text-xs font-bold hover:bg-muted disabled:opacity-40 transition-colors"
-                                  >−</button>
-                                  <span className="w-12 text-center text-xs font-mono font-semibold tabular-nums">
-                                    {formatQuantity(s.quantity, item.measurement_type, item.unit_type)}
-                                  </span>
-                                  <button
-                                    onClick={() => updateItem(item.item_id, { quantity: Math.min(maxQty, parseFloat((s.quantity + step).toFixed(3))) })}
-                                    disabled={s.quantity >= maxQty}
-                                    className="h-6 w-6 rounded-md border border-border bg-muted/50 text-xs font-bold hover:bg-muted disabled:opacity-40 transition-colors"
-                                  >+</button>
-                                </div>
-                              );
-                            })()}
-                            <span className="text-[10px] text-muted-foreground">of {formatQuantity(maxQty, item.measurement_type, item.unit_type)}</span>
-                            <span className="ml-auto text-xs font-mono font-bold text-warning tabular-nums">{lineRef}</span>
-                          </div>
-                          <Input
-                            value={s.reason}
-                            onChange={(e) => updateItem(item.item_id, { reason: e.target.value })}
-                            placeholder="Item reason (optional)"
-                            className="text-xs h-7"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div>
-            <label className="text-[11px] font-semibold text-foreground mb-1.5 block">
-              Notes <span className="text-muted-foreground font-normal">(optional)</span>
-            </label>
-            <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Overall refund notes…" className="text-xs" />
-          </div>
-
-          {/* Summary */}
-          <div className="flex items-center justify-between rounded-lg border border-warning/20 bg-warning/8 px-4 py-2.5">
-            <span className="text-xs text-warning font-medium">
-              {selectedCount} item{selectedCount !== 1 ? "s" : ""} selected
-            </span>
-            <span className="text-sm font-mono font-bold text-warning tabular-nums">
-              {formatCurrency(refundTotal)}
-            </span>
-          </div>
-
-          <DialogFooter className="flex gap-2 pt-1">
-            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isLoading} className="flex-1 text-xs">Cancel</Button>
-            <Button
-              onClick={handleSubmit}
-              disabled={isLoading || selectedCount === 0}
-              className="flex-1 text-xs bg-warning hover:bg-warning/90 text-warning-foreground"
-            >
-              {isLoading
-                ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />Processing…</>
-                : `Refund ${formatCurrency(refundTotal)}`}
-            </Button>
-          </DialogFooter>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 // ── Main Detail Panel ─────────────────────────────────────────────────────────
 export function TransactionDetailPanel() {
   const { id }   = useParams();
   const navigate = useNavigate();
 
-  const { transaction: tx, items, payments, isLoading, error, voidTx, partialRefundTx, fullRefundTx } =
+  const { transaction: tx, items, payments, isLoading, error, voidTx } =
     useTransaction(id);
 
   const canVoid   = usePermission("transactions.void");
@@ -669,8 +412,6 @@ export function TransactionDetailPanel() {
   }
 
   const [voidOpen,    setVoidOpen]    = useState(false);
-  const [fullOpen,    setFullOpen]    = useState(false);
-  const [partialOpen, setPartialOpen] = useState(false);
   const [returnOpen,  setReturnOpen]  = useState(false);
 
   const [copied, setCopied] = useState(false);
@@ -681,10 +422,9 @@ export function TransactionDetailPanel() {
     });
   }
 
-  const isCompleted       = tx?.status === "completed";
-  const isVoidable        = isCompleted;
-  const isRefundable      = isCompleted || tx?.status === "partially_refunded";
-  const isFullyRefundable = isCompleted;
+  const isCompleted  = tx?.status === "completed";
+  const isVoidable   = isCompleted;
+  const isRefundable = isCompleted || tx?.status === "partially_refunded";
 
   async function handleVoid(payload) {
     try {
@@ -692,22 +432,6 @@ export function TransactionDetailPanel() {
       toast.success("Transaction voided. Stock has been restored.");
       setVoidOpen(false);
     } catch (err) { toast.error(typeof err === "string" ? err : "Failed to void transaction"); }
-  }
-
-  async function handleFullRefund(payload) {
-    try {
-      const result = await fullRefundTx.mutateAsync(payload);
-      toast.success(result?.message ?? "Full refund processed successfully.");
-      setFullOpen(false);
-    } catch (err) { toast.error(typeof err === "string" ? err : "Failed to process refund"); }
-  }
-
-  async function handlePartialRefund(payload) {
-    try {
-      const result = await partialRefundTx.mutateAsync(payload);
-      toast.success(result?.message ?? "Partial refund processed successfully.");
-      setPartialOpen(false);
-    } catch (err) { toast.error(typeof err === "string" ? err : "Failed to process refund"); }
   }
 
   if (isLoading) return <Spinner />;
@@ -769,7 +493,7 @@ export function TransactionDetailPanel() {
       />
 
       <div className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-5xl px-6 py-6">
+        <div className="mx-auto max-w-5xl px-6 py-5">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
             {/* ── Left column — 2/3 ─────────────────────────────────── */}
@@ -972,35 +696,15 @@ export function TransactionDetailPanel() {
 
                   {canRefund && isRefundable && items.length > 0 && (
                     <ActionButton
-                      onClick={() => setPartialOpen(true)}
-                      icon={RefreshCw}
-                      label="Partial Refund"
-                      description="Select items & quantities to refund"
-                      variant="warning"
-                    />
-                  )}
-
-                  {canRefund && isFullyRefundable && (
-                    <ActionButton
-                      onClick={() => setFullOpen(true)}
-                      icon={RotateCcw}
-                      label="Full Refund"
-                      description={`${formatCurrency(total)} · Restores all stock`}
-                      variant="warning"
-                    />
-                  )}
-
-                  {canRefund && isRefundable && items.length > 0 && (
-                    <ActionButton
                       onClick={() => setReturnOpen(true)}
                       icon={RotateCcw}
-                      label="Return Items"
-                      description="Creates a tracked return record"
-                      variant="primary"
+                      label="Return / Refund Items"
+                      description="Refund by item & condition · restores stock"
+                      variant="warning"
                     />
                   )}
 
-                  {!isVoidable && !isRefundable && !isFullyRefundable && (
+                  {!isVoidable && !isRefundable && (
                     <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-muted-foreground/60">
                       <Check className="h-3.5 w-3.5" />
                       Transaction finalised — no further actions
@@ -1020,21 +724,6 @@ export function TransactionDetailPanel() {
         tx={tx}
         onConfirm={handleVoid}
         isLoading={voidTx.isPending}
-      />
-      <FullRefundModal
-        open={fullOpen}
-        onOpenChange={setFullOpen}
-        tx={tx}
-        onConfirm={handleFullRefund}
-        isLoading={fullRefundTx.isPending}
-      />
-      <PartialRefundModal
-        open={partialOpen}
-        onOpenChange={setPartialOpen}
-        tx={tx}
-        txItems={items}
-        onConfirm={handlePartialRefund}
-        isLoading={partialRefundTx.isPending}
       />
       <InitiateReturnModal
         open={returnOpen}

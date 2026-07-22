@@ -29,51 +29,37 @@ use chrono::Utc;
 ///
 /// Uses runtime queries (not macros) so the .sqlx offline cache is not required.
 pub async fn next_series_ref_no(pool: &PgPool, store_id: i32, doc_type: &str) -> String {
-    let (default_prefix, default_suffix, default_pad): (&str, &str, i32) = match doc_type {
-        "invoice"        => ("TNX-", "",    4),
-        "return"         => ("RTN-", "",    5),
-        "purchase_order" => ("PO-",  "",    4),
-        "receipt"        => ("RCP-", "",    5),
-        _                => ("TNX-", "",    4),
+    let mut conn = match pool.acquire().await {
+        Ok(c)  => c,
+        Err(_) => return fallback_ref(doc_type),
     };
+    next_series_ref_no_exec(&mut conn, store_id, doc_type).await
+}
 
-    // Ensure a row exists so the UPDATE below always hits something.
-    let _ = sqlx::query(
-        "INSERT INTO number_series (store_id, doc_type, prefix, suffix, pad_length, next_number)
-         VALUES ($1, $2, $3, $4, $5, 1)
-         ON CONFLICT (store_id, doc_type) DO NOTHING",
-    )
-    .bind(store_id)
-    .bind(doc_type)
-    .bind(default_prefix)
-    .bind(default_suffix)
-    .bind(default_pad)
-    .execute(pool)
-    .await;
-
-    // Atomic increment — returns (value_used, prefix, suffix, pad_length).
-    let row: Result<Option<(i64, String, String, i32)>, _> = sqlx::query_as(
-        "UPDATE number_series
-         SET next_number = next_number + 1, updated_at = NOW()
-         WHERE store_id = $1 AND doc_type = $2
-         RETURNING next_number - 1, prefix, suffix, pad_length",
-    )
-    .bind(store_id)
-    .bind(doc_type)
-    .fetch_optional(pool)
-    .await;
-
-    match row.ok().flatten() {
-        Some((n, prefix, suffix, pad)) => {
-            let seq = format!("{:0>width$}", n, width = pad as usize);
-            if suffix.is_empty() {
-                format!("{}{}", prefix, seq)
-            } else {
-                format!("{}{}-{}", prefix, seq, suffix)
-            }
-        }
-        None => format!("{}{}", default_prefix, Utc::now().timestamp()),
+/// Where each doc_type's numbers must be unique. The UNIQUE constraints on
+/// these columns are GLOBAL (not per-store), so a per-store counter alone can
+/// collide — e.g. a second store's fresh series starting at TNX-0001 when
+/// store 1 already issued it, or a counter left behind existing rows after a
+/// restore / cloud pull. `next_series_ref_no` verifies each candidate against
+/// this table and keeps bumping until it finds a free number, permanently
+/// fast-forwarding the counter past any taken range.
+fn series_unique_target(doc_type: &str) -> Option<(&'static str, &'static str)> {
+    match doc_type {
+        "invoice"        => Some(("transactions",    "reference_no")),
+        "return"         => Some(("returns",         "reference_no")),
+        "purchase_order" => Some(("purchase_orders", "po_number")),
+        _                => None, // no global-unique column to defend
     }
+}
+
+fn fallback_ref(doc_type: &str) -> String {
+    let prefix = match doc_type {
+        "return"         => "RTN-",
+        "purchase_order" => "PO-",
+        "receipt"        => "RCP-",
+        _                => "TNX-",
+    };
+    format!("{}{}", prefix, Utc::now().timestamp())
 }
 
 async fn next_series_ref_no_exec(
@@ -81,13 +67,30 @@ async fn next_series_ref_no_exec(
     store_id: i32,
     doc_type: &str,
 ) -> String {
-    let (default_prefix, default_suffix, default_pad): (&str, &str, i32) = match doc_type {
-        "invoice"        => ("TNX-", "",    4),
-        "return"         => ("RTN-", "",    5),
-        "purchase_order" => ("PO-",  "",    4),
-        "receipt"        => ("RCP-", "",    5),
-        _                => ("TNX-", "",    4),
+    let (default_prefix, default_pad): (&str, i32) = match doc_type {
+        "invoice"        => ("TNX-", 4),
+        "return"         => ("RTN-", 5),
+        "purchase_order" => ("PO-",  4),
+        "receipt"        => ("RCP-", 5),
+        _                => ("TNX-", 4),
     };
+
+    // Default suffix = the store's slug (e.g. "TNX-0001-OSH"). Numbers from
+    // different stores land in the same GLOBALLY-unique column, so a fresh
+    // store restarting at 0001 with an empty suffix collides with store 1's
+    // existing numbers. Only applies when the series row is first created —
+    // admin-configured series are never touched.
+    let default_suffix: String = sqlx::query_as::<_, (Option<String>, String)>(
+        "SELECT store_code, store_name FROM stores WHERE id = $1",
+    )
+    .bind(store_id)
+    .fetch_optional(&mut *executor)
+    .await
+    .ok()
+    .flatten()
+    .map(|(code, name)| store_txn_slug(code.as_deref(), &name))
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| format!("S{store_id}"));
 
     // Ensure a row exists so the UPDATE below always hits something.
     let _ = sqlx::query(
@@ -98,34 +101,107 @@ async fn next_series_ref_no_exec(
     .bind(store_id)
     .bind(doc_type)
     .bind(default_prefix)
-    .bind(default_suffix)
+    .bind(&default_suffix)
     .bind(default_pad)
     .execute(&mut *executor)
     .await;
 
-    // Atomic increment — returns (value_used, prefix, suffix, pad_length).
-    let row: Result<Option<(i64, String, String, i32)>, _> = sqlx::query_as(
-        "UPDATE number_series
-         SET next_number = next_number + 1, updated_at = NOW()
-         WHERE store_id = $1 AND doc_type = $2
-         RETURNING next_number - 1, prefix, suffix, pad_length",
-    )
-    .bind(store_id)
-    .bind(doc_type)
-    .fetch_optional(&mut *executor)
-    .await;
+    let unique_target = series_unique_target(doc_type);
 
-    match row.ok().flatten() {
-        Some((n, prefix, suffix, pad)) => {
-            let seq = format!("{:0>width$}", n, width = pad as usize);
-            if suffix.is_empty() {
-                format!("{}{}", prefix, seq)
-            } else {
-                format!("{}{}-{}", prefix, seq, suffix)
+    // Generate → verify → retry. Each iteration atomically bumps the counter,
+    // so on collision the series fast-forwards past the taken range and never
+    // collides there again (self-healing after restores / pulls / new stores).
+    for attempt in 0..1000 {
+        // Atomic increment — returns (value_used, prefix, suffix, pad_length).
+        let row: Result<Option<(i64, String, String, i32)>, _> = sqlx::query_as(
+            "UPDATE number_series
+             SET next_number = next_number + 1, updated_at = NOW()
+             WHERE store_id = $1 AND doc_type = $2
+             RETURNING next_number - 1, prefix, suffix, pad_length",
+        )
+        .bind(store_id)
+        .bind(doc_type)
+        .fetch_optional(&mut *executor)
+        .await;
+
+        let Some((n, prefix, suffix, pad)) = row.ok().flatten() else {
+            return fallback_ref(doc_type);
+        };
+
+        let seq = format!("{:0>width$}", n, width = pad as usize);
+        let candidate = if suffix.is_empty() {
+            format!("{}{}", prefix, seq)
+        } else {
+            format!("{}{}-{}", prefix, seq, suffix)
+        };
+
+        let Some((table, column)) = unique_target else {
+            return candidate; // nothing to defend against — done
+        };
+
+        let taken: bool = sqlx::query_scalar::<_, bool>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = $1)"
+        ))
+        .bind(&candidate)
+        .fetch_one(&mut *executor)
+        .await
+        .unwrap_or(false);
+
+        if !taken {
+            if attempt > 0 {
+                tracing::info!(
+                    "Ref series {doc_type}/store {store_id}: skipped {attempt} taken number(s) — counter fast-forwarded to a free range."
+                );
             }
+            return candidate;
         }
-        None => format!("{}{}", default_prefix, Utc::now().timestamp()),
     }
+
+    // 1000 consecutive taken numbers — bail out with a guaranteed-unique ref.
+    tracing::warn!("Ref series {doc_type}/store {store_id}: exhausted retry budget, using timestamp ref.");
+    fallback_ref(doc_type)
+}
+
+/// Generate the next value for a free-form numbered document by deriving the
+/// sequence from the data itself: MAX of the numeric tail of existing values
+/// matching `prefix`, plus one, verified unique before use.
+///
+/// This replaces `COUNT(*) + 1` numbering, which produces duplicates as soon
+/// as rows are deleted, restored, or pulled from the cloud (COUNT is not a
+/// high-water mark). Deriving from MAX + verifying against the UNIQUE column
+/// is immune to all of those.
+pub async fn next_tail_number_exec(
+    executor: &mut sqlx::PgConnection,
+    table:    &str,
+    column:   &str,
+    prefix:   &str,
+    pad:      usize,
+) -> String {
+    let base: i64 = sqlx::query_scalar::<_, Option<i64>>(&format!(
+        "SELECT MAX((regexp_match({column}, '([0-9]+)$'))[1]::bigint)
+         FROM {table} WHERE {column} LIKE $1 || '%'"
+    ))
+    .bind(prefix)
+    .fetch_one(&mut *executor)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(0);
+
+    for offset in 1..=1000i64 {
+        let candidate = format!("{}{:0>width$}", prefix, base + offset, width = pad);
+        let taken: bool = sqlx::query_scalar::<_, bool>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = $1)"
+        ))
+        .bind(&candidate)
+        .fetch_one(&mut *executor)
+        .await
+        .unwrap_or(false);
+        if !taken {
+            return candidate;
+        }
+    }
+    format!("{}{}", prefix, Utc::now().timestamp())
 }
 
 /// Atomically increment and return the next reference number for a store.

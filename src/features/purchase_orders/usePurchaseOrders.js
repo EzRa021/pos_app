@@ -9,7 +9,11 @@ import {
   deletePurchaseOrder,
 } from "@/commands/purchase_orders";
 import { invalidateAfterPOReceive, invalidateAfterPOChange } from "@/lib/invalidations";
-import { toastSuccess, onMutationError } from "@/lib/toast";
+
+// NOTE: these mutations intentionally do NOT toast. Every caller (CreatePOPanel
+// and the PurchaseOrderDetailPanel modals/handlers) shows its own success/error
+// toast with the specific PO number — toasting here as well produced two toasts
+// per action. The hooks only own cache invalidation.
 
 // ── PO list hook ──────────────────────────────────────────────────────────────
 export function usePurchaseOrders({
@@ -43,28 +47,22 @@ export function usePurchaseOrders({
   const total      = data?.total      ?? 0;
   const totalPages = data?.total_pages ?? 1;
 
-  const invalidate    = useCallback(() => qc.invalidateQueries({ queryKey: ["purchase-orders", storeId] }), [qc, storeId]);
-  const invalidateAll = useCallback(() => qc.invalidateQueries({ queryKey: ["purchase-orders"] }),          [qc]);
+  const invalidate = useCallback(() => qc.invalidateQueries({ queryKey: ["purchase-orders", storeId] }), [qc, storeId]);
 
   const create = useMutation({
     mutationFn: (p) => createPurchaseOrder({ store_id: storeId, ...p }),
-    onSuccess: (po) => {
-      toastSuccess("Purchase Order Created", `PO #${po?.id ?? ""} has been drafted and is ready to submit.`);
-      invalidate();
-    },
-    onError: (e) => onMutationError("Couldn't Create Purchase Order", e),
+    onSuccess: invalidate,
   });
 
   return {
     storeId, orders, total, totalPages,
     isLoading, isFetching, error: error ?? null, refetch,
-    create, invalidate, invalidateAll,
+    create, invalidate,
   };
 }
 
 // ── Single PO hook ────────────────────────────────────────────────────────────
 export function usePurchaseOrder(id) {
-  const qc      = useQueryClient();
   const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const { data: detail, isLoading, error, refetch } = useQuery({
@@ -81,51 +79,27 @@ export function usePurchaseOrder(id) {
 
   const receive  = useMutation({
     mutationFn: ({ items, notes }) => receivePurchaseOrder(id, items, notes),
-    onSuccess: () => {
-      toastSuccess("Stock Received", "Items have been added to inventory and stock levels updated.");
-      invalidateReceive();
-    },
-    onError: (e) => onMutationError("Couldn't Receive Stock", e),
+    onSuccess: invalidateReceive,
   });
   const cancel   = useMutation({
     mutationFn: () => cancelPurchaseOrder(id),
-    onSuccess: () => {
-      toastSuccess("PO Cancelled", "The purchase order has been cancelled.");
-      invalidateChange();
-    },
-    onError: (e) => onMutationError("Couldn't Cancel PO", e),
+    onSuccess: invalidateChange,
   });
   const submit   = useMutation({
     mutationFn: () => submitPurchaseOrder(id),
-    onSuccess: () => {
-      toastSuccess("PO Submitted", "The purchase order has been sent for approval.");
-      invalidateChange();
-    },
-    onError: (e) => onMutationError("Couldn't Submit PO", e),
+    onSuccess: invalidateChange,
   });
   const approve  = useMutation({
     mutationFn: () => approvePurchaseOrder(id),
-    onSuccess: () => {
-      toastSuccess("PO Approved", "The purchase order is now approved and ready to receive.");
-      invalidateChange();
-    },
-    onError: (e) => onMutationError("Couldn't Approve PO", e),
+    onSuccess: invalidateChange,
   });
   const reject   = useMutation({
     mutationFn: (reason) => rejectPurchaseOrder(id, reason),
-    onSuccess: () => {
-      toastSuccess("PO Rejected", "The purchase order has been rejected.");
-      invalidateChange();
-    },
-    onError: (e) => onMutationError("Couldn't Reject PO", e),
+    onSuccess: invalidateChange,
   });
   const remove   = useMutation({
     mutationFn: () => deletePurchaseOrder(id),
-    onSuccess: () => {
-      toastSuccess("PO Deleted", "The purchase order has been permanently removed.");
-      invalidateChange();
-    },
-    onError: (e) => onMutationError("Couldn't Delete PO", e),
+    onSuccess: invalidateChange,
   });
 
   const items = useMemo(() => detail?.items ?? [], [detail]);

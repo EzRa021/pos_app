@@ -62,56 +62,35 @@ async fn fetch_shift(pool: &sqlx::PgPool, id: i32) -> AppResult<Shift> {
 /// Wrapped in a pg_advisory_xact_lock so concurrent calls serialize and
 /// never produce the same number (avoids 23505 unique-violation races).
 async fn generate_shift_number(pool: &sqlx::PgPool) -> AppResult<String> {
-    let today   = Utc::now().format("%Y%m%d").to_string();
-    let pattern = format!("SH-{}-{}", today, "%");
+    let today = Utc::now().format("%Y%m%d").to_string();
 
     // Serialize per-process via an advisory lock (hash is stable for the key string).
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext('shift_number_gen'))")
         .execute(pool)
         .await?;
 
-    let last: Option<String> = sqlx::query_scalar!(
-        "SELECT shift_number FROM shifts WHERE shift_number LIKE $1 ORDER BY id DESC LIMIT 1",
-        pattern
+    // MAX-of-numeric-tail + verify-unique: immune to rows arriving out of id
+    // order (cloud pulls) or being deleted — unlike ORDER BY id / COUNT(*).
+    let mut conn = pool.acquire().await?;
+    Ok(crate::utils::ref_no::next_tail_number_exec(
+        &mut conn, "shifts", "shift_number", &format!("SH-{today}-"), 3,
     )
-    .fetch_optional(pool)
-    .await?;
-
-    let next_num = last
-        .as_deref()
-        .and_then(|s| s.split('-').last())
-        .and_then(|n| n.parse::<i32>().ok())
-        .unwrap_or(0)
-        + 1;
-
-    Ok(format!("SH-{}-{:03}", today, next_num))
+    .await)
 }
 
 /// Generate CM-YYYYMMDD-NNNN (matches quantum-pos-app generateMovementNumber).
 async fn generate_movement_number(pool: &sqlx::PgPool) -> AppResult<String> {
-    let today   = Utc::now().format("%Y%m%d").to_string();
-    let pattern = format!("CM-{}-{}", today, "%");
+    let today = Utc::now().format("%Y%m%d").to_string();
 
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext('movement_number_gen'))")
         .execute(pool)
         .await?;
 
-    let last: Option<String> = sqlx::query_scalar!(
-        "SELECT movement_number FROM cash_movements WHERE movement_number LIKE $1 ORDER BY id DESC LIMIT 1",
-        pattern
+    let mut conn = pool.acquire().await?;
+    Ok(crate::utils::ref_no::next_tail_number_exec(
+        &mut conn, "cash_movements", "movement_number", &format!("CM-{today}-"), 4,
     )
-    .fetch_optional(pool)
-    .await?
-    .flatten();
-
-    let next_num = last
-        .as_deref()
-        .and_then(|s| s.split('-').last())
-        .and_then(|n| n.parse::<i32>().ok())
-        .unwrap_or(0)
-        + 1;
-
-    Ok(format!("CM-{}-{:04}", today, next_num))
+    .await)
 }
 
 // ── open_shift ────────────────────────────────────────────────────────────────
@@ -224,12 +203,25 @@ pub(crate) async fn close_shift_inner(
 
     let actual = to_dec(payload.actual_cash)?;
 
+    // Canonical drawer formula (same as get_shift_summary and EOD):
+    //   expected = float + cash sales + cash in − cash out − CASH refunds
+    // total_returns is a reporting figure and includes card/transfer/store-
+    // credit refunds that never touched the drawer — subtracting it here
+    // (as the old code did) corrupted the expectation for non-cash refunds.
+    let cash_refunds: Decimal = sqlx::query_scalar::<_, Decimal>(
+        "SELECT COALESCE(total_cash_refunds, 0) FROM shifts WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap_or_default();
+
     let zero     = Decimal::ZERO;
     let expected = shift.opening_float
         + shift.total_cash_sales.unwrap_or(zero)
         + shift.total_cash_in.unwrap_or(zero)
         - shift.total_cash_out.unwrap_or(zero)
-        - shift.total_returns.unwrap_or(zero);
+        - cash_refunds;
     let difference = actual - expected;
 
     // Wrap UPDATE + drawer-event INSERT in one transaction so a partial
@@ -804,13 +796,24 @@ pub(crate) async fn get_shift_summary_inner(
     let total_withdrawals = row.withdrawals;
     let total_payouts  = row.payouts;
 
-    // expected = opening_float + cash_sales + deposits - withdrawals - payouts - returns
+    // Canonical drawer formula (matches close_shift and EOD): subtract only
+    // CASH refunds — total_returns includes non-cash refund methods that
+    // never touched the drawer.
+    let cash_refunds: Decimal = sqlx::query_scalar::<_, Decimal>(
+        "SELECT COALESCE(total_cash_refunds, 0) FROM shifts WHERE id = $1",
+    )
+    .bind(shift_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap_or_default();
+
+    // expected = opening_float + cash_sales + deposits - withdrawals - payouts - cash refunds
     let expected_balance = opening_float
         + total_cash_sales
         + total_deposits
         - total_withdrawals
         - total_payouts
-        - total_returns;
+        - cash_refunds;
 
     Ok(ShiftSummary {
         shift_id: shift_id,
@@ -1072,10 +1075,13 @@ pub(crate) async fn get_shift_detail_stats_inner(
         return Err(AppError::Forbidden);
     }
 
-    // Time window for this shift
+    // Time window for this shift (fallback for legacy rows without shift_id)
     let opened_at = shift.opened_at;
     let closed_at = shift.closed_at.unwrap_or_else(Utc::now);
 
+    // Transactions are matched by their durable shift_id stamp (migration
+    // 0099); the (cashier, store, time-window) heuristic remains only as a
+    // fallback for legacy rows that predate the column.
     // ── Aggregate stats from completed transactions ──────────────────────
     let agg = sqlx::query!(
         r#"SELECT
@@ -1085,15 +1091,18 @@ pub(crate) async fn get_shift_detail_stats_inner(
             COALESCE(SUM(t.total_amount) FILTER (WHERE t.payment_method = 'credit'), 0) AS "credit_sales_amount!: rust_decimal::Decimal"
            FROM transactions t
            LEFT JOIN transaction_items ti ON ti.tx_id = t.id
-           WHERE t.cashier_id = $1
-             AND t.store_id   = $2
-             AND t.created_at >= $3
-             AND t.created_at <= $4
-             AND t.status     = 'completed'"#,
+           WHERE (t.shift_id = $5
+                  OR (t.shift_id IS NULL
+                      AND t.cashier_id = $1
+                      AND t.store_id   = $2
+                      AND t.created_at >= $3
+                      AND t.created_at <= $4))
+             AND t.status = 'completed'"#,
         shift.opened_by,
         shift.store_id,
         opened_at,
         closed_at,
+        shift_id,
     )
     .fetch_one(&pool)
     .await?;
@@ -1103,11 +1112,13 @@ pub(crate) async fn get_shift_detail_stats_inner(
         r#"SELECT ti.item_name, SUM(ti.quantity) AS "total_qty!: rust_decimal::Decimal"
            FROM transaction_items ti
            JOIN transactions t ON t.id = ti.tx_id
-           WHERE t.cashier_id = $1
-             AND t.store_id   = $2
-             AND t.created_at >= $3
-             AND t.created_at <= $4
-             AND t.status     = 'completed'
+           WHERE (t.shift_id = $5
+                  OR (t.shift_id IS NULL
+                      AND t.cashier_id = $1
+                      AND t.store_id   = $2
+                      AND t.created_at >= $3
+                      AND t.created_at <= $4))
+             AND t.status = 'completed'
            GROUP BY ti.item_name
            ORDER BY "total_qty!: rust_decimal::Decimal" DESC
            LIMIT 1"#,
@@ -1115,6 +1126,7 @@ pub(crate) async fn get_shift_detail_stats_inner(
         shift.store_id,
         opened_at,
         closed_at,
+        shift_id,
     )
     .fetch_optional(&pool)
     .await?;

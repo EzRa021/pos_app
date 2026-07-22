@@ -357,11 +357,11 @@ export function TaxSettingsPanel() {
   );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
 
       {/* Header card */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-muted/20">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border bg-muted/20">
           <div className="flex items-center gap-2">
             <Tag className="h-3.5 w-3.5 text-muted-foreground" />
             <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -373,7 +373,7 @@ export function TaxSettingsPanel() {
           </Button>
         </div>
 
-        <div className="p-5 space-y-2">
+        <div className="p-4 space-y-2">
           {cats.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-8 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-muted/30">
@@ -392,7 +392,7 @@ export function TaxSettingsPanel() {
           ) : (
             <>
               {active.length > 0 && (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {active.map((c) => (
                     <TaxRow key={c.id} cat={c} onEdit={setModal} onDelete={setDelCat} />
                   ))}

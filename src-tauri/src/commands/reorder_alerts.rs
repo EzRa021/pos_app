@@ -22,6 +22,26 @@ pub async fn check_reorder_alerts(
     guard_permission(&state, &token, "inventory.read").await?;
     let pool = state.pool().await?;
 
+    // Auto-resolve alerts whose stock has recovered above the reorder point.
+    // Without this, a pending alert would linger forever after the item was
+    // restocked, permanently inflating the notification-bell badge. This runs on
+    // every post-sale check (usePos calls check_reorder_alerts after each sale),
+    // so the pending count stays self-correcting with no manual "resolve" step.
+    sqlx::query!(
+        r#"UPDATE reorder_alerts ra
+           SET status = 'resolved'
+           FROM item_stock istock, item_settings ist
+           WHERE ra.store_id = $1
+             AND ra.status IN ('pending', 'acknowledged')
+             AND istock.item_id = ra.item_id AND istock.store_id = ra.store_id
+             AND ist.item_id = ra.item_id
+             AND ist.min_stock_level IS NOT NULL
+             AND istock.available_quantity > ist.min_stock_level::numeric"#,
+        store_id,
+    )
+    .execute(&pool)
+    .await?;
+
     let new_alerts: u64 = sqlx::query!(
         r#"
         INSERT INTO reorder_alerts (item_id, store_id, current_qty, min_stock_level)
@@ -136,93 +156,3 @@ pub async fn get_reorder_alerts(
     .map_err(AppError::from)
 }
 
-// ── acknowledge_reorder_alert ─────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn acknowledge_reorder_alert(
-    state: State<'_, AppState>,
-    token: String,
-    id:    i32,
-) -> AppResult<ReorderAlert> {
-    let claims = guard_permission(&state, &token, "inventory.adjust").await?;
-    let pool   = state.pool().await?;
-
-    let status: String = sqlx::query_scalar!(
-        "SELECT status FROM reorder_alerts WHERE id = $1", id
-    )
-    .fetch_optional(&pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("Reorder alert {id} not found")))?;
-
-    if status != "pending" {
-        return Err(AppError::Validation(
-            format!("Alert is already '{status}' — only pending alerts can be acknowledged"),
-        ));
-    }
-
-    sqlx::query!(
-        r#"UPDATE reorder_alerts
-           SET status = 'acknowledged', acknowledged_by = $1, acknowledged_at = NOW()
-           WHERE id = $2"#,
-        claims.user_id, id,
-    )
-    .execute(&pool)
-    .await?;
-
-    fetch_alert(&pool, id).await
-}
-
-// ── link_po_to_alert ──────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn link_po_to_alert(
-    state: State<'_, AppState>,
-    token: String,
-    id:    i32,
-    po_id: i32,
-) -> AppResult<ReorderAlert> {
-    guard_permission(&state, &token, "inventory.adjust").await?;
-    let pool = state.pool().await?;
-
-    sqlx::query!(
-        "UPDATE reorder_alerts SET status = 'ordered', linked_po_id = $1 WHERE id = $2",
-        po_id, id,
-    )
-    .execute(&pool)
-    .await?;
-
-    fetch_alert(&pool, id).await
-}
-
-// ── helper ────────────────────────────────────────────────────────────────────
-
-async fn fetch_alert(pool: &sqlx::PgPool, id: i32) -> AppResult<ReorderAlert> {
-    sqlx::query_as!(
-        ReorderAlert,
-        r#"
-        SELECT
-            ra.id,
-            ra.item_id         AS "item_id!: Uuid",
-            ra.store_id,
-            i.item_name,
-            i.sku,
-            COALESCE(c.category_name, 'Uncategorized') AS category_name,
-            ra.triggered_at,
-            ra.current_qty     AS "current_qty!: rust_decimal::Decimal",
-            ra.min_stock_level AS "min_stock_level!: rust_decimal::Decimal",
-            ra.status,
-            ra.linked_po_id,
-            ra.acknowledged_by,
-            ra.acknowledged_at,
-            ra.created_at
-        FROM reorder_alerts ra
-        JOIN items         i  ON i.id  = ra.item_id
-        LEFT JOIN categories c ON c.id = i.category_id
-        WHERE ra.id = $1
-        "#,
-        id,
-    )
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("Reorder alert {id} not found")))
-}

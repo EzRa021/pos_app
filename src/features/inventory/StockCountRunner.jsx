@@ -9,10 +9,10 @@
 //   • Cancelled/completed states have clearer CTAs
 // ============================================================================
 
-import React, { useState, useMemo, useCallback, useEffect } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  ClipboardList, CheckCircle2, Clock, Search, X,
+  CheckCircle2, Clock, Search, X,
   Package, BarChart3, AlertTriangle, Check, Minus, Plus as PlusIcon,
   Ban, Loader2, ChevronRight, ArrowUpRight, ArrowDownRight,
 } from "lucide-react";
@@ -33,7 +33,7 @@ import {
   useInventoryForCount,
 } from "@/features/inventory/useInventory";
 import { useBranchStore }  from "@/stores/branch.store";
-import { formatQuantity, formatCurrency, stepForType } from "@/lib/format";
+import { formatQuantity, stepForType } from "@/lib/format";
 import { cn }             from "@/lib/utils";
 
 // ── Progress ring ─────────────────────────────────────────────────────────────
@@ -167,16 +167,16 @@ function CountItemDialog({ open, onOpenChange, item, existingCount, onRecord, is
               <div className={cn(
                 "mt-2 flex items-center justify-between rounded-lg border px-3 py-1.5",
                 variance > 0
-                  ? "border-emerald-500/25 bg-emerald-500/5"
+                  ? "border-success/25 bg-success/5"
                   : variance < 0
-                    ? "border-rose-500/25 bg-rose-500/5"
+                    ? "border-destructive/25 bg-destructive/5"
                     : "border-border/60 bg-muted/20",
               )}>
                 <span className="text-[11px] text-muted-foreground">Variance</span>
                 <span className={cn(
                   "text-xs font-bold tabular-nums flex items-center gap-1",
-                  variance > 0 ? "text-emerald-400"    :
-                  variance < 0 ? "text-rose-400"        : "text-muted-foreground",
+                  variance > 0 ? "text-success"    :
+                  variance < 0 ? "text-destructive"        : "text-muted-foreground",
                 )}>
                   {variance > 0 ? <ArrowUpRight className="h-3 w-3" /> :
                    variance < 0 ? <ArrowDownRight className="h-3 w-3" /> : null}
@@ -209,8 +209,7 @@ function CountItemDialog({ open, onOpenChange, item, existingCount, onRecord, is
             >
               Cancel
             </Button>
-            <Button
-              className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white"
+            <Button variant="success" className="flex-1 "
               disabled={parsedQty == null || isNaN(parsedQty) || parsedQty < 0 || isRecording}
               onClick={handleRecord}
             >
@@ -250,12 +249,12 @@ function CompleteDialog({ open, onOpenChange, session, mutation }) {
   return (
     <Dialog open={open} onOpenChange={(v) => !mutation.isPending && onOpenChange(v)}>
       <DialogContent className="max-w-sm border-border bg-card p-0 overflow-hidden shadow-2xl">
-        <div className="h-[3px] bg-emerald-500" />
+        <div className="h-[3px] bg-success" />
         <div className="px-6 pt-5 pb-6">
           <DialogHeader className="mb-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-500/25 bg-emerald-500/10">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-success/25 bg-success/10">
+                <CheckCircle2 className="h-4 w-4 text-success" />
               </div>
               <div>
                 <DialogTitle className="text-[15px] font-bold">Complete Count?</DialogTitle>
@@ -277,15 +276,15 @@ function CompleteDialog({ open, onOpenChange, session, mutation }) {
               <span className="text-muted-foreground">Items with variance</span>
               <span className={cn(
                 "font-semibold",
-                (session?.items_with_variance ?? 0) > 0 ? "text-amber-400" : "text-emerald-400",
+                (session?.items_with_variance ?? 0) > 0 ? "text-warning" : "text-success",
               )}>
                 {session?.items_with_variance ?? 0}
               </span>
             </div>
             {(session?.items_counted ?? 0) < (session?.total_items ?? 0) && (
               <div className="flex items-center gap-1.5 pt-1.5 border-t border-border/40">
-                <AlertTriangle className="h-3 w-3 text-amber-400 shrink-0" />
-                <p className="text-[10px] text-amber-400">
+                <AlertTriangle className="h-3 w-3 text-warning shrink-0" />
+                <p className="text-[10px] text-warning">
                   {(session?.total_items ?? 0) - (session?.items_counted ?? 0)} items have not been
                   counted yet and will be treated as zero variance.
                 </p>
@@ -330,8 +329,7 @@ function CompleteDialog({ open, onOpenChange, session, mutation }) {
             >
               Cancel
             </Button>
-            <Button
-              className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white"
+            <Button variant="success" className="flex-1 "
               disabled={mutation.isPending}
               onClick={handleComplete}
             >
@@ -440,14 +438,14 @@ const ItemRow = React.memo(function ItemRow({ item, countedItem, onSelect, isInP
       className={cn(
         "flex items-center gap-3 px-4 py-3 border-b border-border/50 last:border-0 transition-colors",
         isInProgress && "cursor-pointer hover:bg-muted/20",
-        isCounted    && "bg-emerald-500/[0.03]",
+        isCounted    && "bg-success/[0.03]",
       )}
     >
       {/* Count indicator */}
       <div className={cn(
         "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-[10px] font-bold",
         isCounted
-          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+          ? "border-success/30 bg-success/10 text-success"
           : "border-border/60 bg-muted/30 text-muted-foreground",
       )}>
         {isCounted
@@ -474,7 +472,7 @@ const ItemRow = React.memo(function ItemRow({ item, countedItem, onSelect, isInP
         {variance != null && variance !== 0 && (
           <p className={cn(
             "text-[10px] font-semibold tabular-nums",
-            variance > 0 ? "text-emerald-400" : "text-rose-400",
+            variance > 0 ? "text-success" : "text-destructive",
           )}>
             {variance > 0 ? "+" : ""}{formatQuantity(variance, measureType, unitType)}
           </p>
@@ -586,8 +584,8 @@ export function StockCountRunner({ sessionId }) {
         badge={
           <span className={cn(
             "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-            isInProgress && "border-amber-500/30 bg-amber-500/10 text-amber-400",
-            isCompleted  && "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+            isInProgress && "border-warning/30 bg-warning/10 text-warning",
+            isCompleted  && "border-success/30 bg-success/10 text-success",
             isCancelled  && "border-border/60 bg-muted/40 text-muted-foreground",
           )}>
             {isInProgress && <Clock className="h-2.5 w-2.5" />}
@@ -618,8 +616,7 @@ export function StockCountRunner({ sessionId }) {
                   Cancel
                 </Button>
                 <Button
-                  size="sm"
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white"
+                  size="sm" variant="success"
                   onClick={() => setCompleteOpen(true)}
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" />
@@ -673,7 +670,7 @@ export function StockCountRunner({ sessionId }) {
                   {
                     label: "Variances",
                     value: variantCount,
-                    color: variantCount > 0 ? "text-amber-400" : "text-emerald-400",
+                    color: variantCount > 0 ? "text-warning" : "text-success",
                   },
                 ].map(({ label, value, color }) => (
                   <div key={label} className="text-center">
@@ -692,8 +689,8 @@ export function StockCountRunner({ sessionId }) {
 
           {/* Completed state CTA */}
           {isCompleted && (
-            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center">
-              <CheckCircle2 className="h-8 w-8 text-emerald-400 mx-auto mb-2" />
+            <div className="rounded-xl border border-success/20 bg-success/5 p-6 text-center">
+              <CheckCircle2 className="h-8 w-8 text-success mx-auto mb-2" />
               <p className="text-sm font-semibold text-foreground">Count completed</p>
               <p className="text-xs text-muted-foreground mt-1">
                 {session.items_counted ?? 0} items counted ·{" "}

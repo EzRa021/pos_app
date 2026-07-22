@@ -98,6 +98,7 @@ pub struct CreateBusinessPayload {
     pub business_type: String,
     pub email:         Option<String>,
     pub phone:         Option<String>,
+    pub address:       Option<String>,
     pub currency:      String,
     pub timezone:      String,
 }
@@ -121,6 +122,33 @@ pub struct SetupSuperAdminPayload {
     pub username:   String,
     pub email:      String,
     pub password:   String,
+}
+
+// ── Bootstrap gate ────────────────────────────────────────────────────────────
+
+/// Refuse an onboarding-only bootstrap command once onboarding has completed.
+///
+/// `create_business` and `restore_business_from_cloud` are intentionally
+/// unauthenticated — they must run before any user account exists. But nothing
+/// previously re-closed them afterwards, and in client/server mode the RPC
+/// server is reachable over the LAN (default :4000), so an unauthenticated peer
+/// could insert a business row or trigger a full cloud restore over live data.
+/// Once `onboarding_complete = 'true'`, these are permanently closed.
+async fn ensure_onboarding_open(pool: &PgPool) -> Result<(), String> {
+    let done = sqlx::query_scalar!(
+        "SELECT value FROM app_config WHERE key = 'onboarding_complete'"
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if done.as_deref() == Some("true") {
+        return Err(
+            "Onboarding has already been completed on this device. \
+             This endpoint is closed.".to_string()
+        );
+    }
+    Ok(())
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -208,6 +236,8 @@ pub async fn create_business(
     cloud_pool: Option<&PgPool>,
     payload: CreateBusinessPayload,
 ) -> Result<BusinessResponse, String> {
+    ensure_onboarding_open(pool).await?;
+
     if payload.name.trim().is_empty() {
         return Err("Business name is required".to_string());
     }
@@ -216,14 +246,15 @@ pub async fn create_business(
 
     sqlx::query!(
         r#"
-        INSERT INTO businesses (id, name, type, email, phone, currency, timezone)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO businesses (id, name, type, email, phone, address, currency, timezone)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         "#,
         id,
         payload.name.trim(),
         payload.business_type,
         payload.email.as_deref().filter(|s| !s.is_empty()),
         payload.phone.as_deref().filter(|s| !s.is_empty()),
+        payload.address.as_deref().filter(|s| !s.is_empty()),
         payload.currency,
         payload.timezone,
     )
@@ -261,13 +292,14 @@ pub async fn create_business(
     if let Some(cloud) = cloud_pool {
         if crate::database::sync::is_cloud_sync_enabled(pool).await {
             let _ = sqlx::query!(
-                r#"INSERT INTO businesses (id, name, type, email, phone, currency, timezone)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                r#"INSERT INTO businesses (id, name, type, email, phone, address, currency, timezone)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                    ON CONFLICT (id) DO UPDATE SET
                        name     = EXCLUDED.name,
                        type     = EXCLUDED.type,
                        email    = EXCLUDED.email,
                        phone    = EXCLUDED.phone,
+                       address  = EXCLUDED.address,
                        currency = EXCLUDED.currency,
                        timezone = EXCLUDED.timezone"#,
                 id,
@@ -275,6 +307,7 @@ pub async fn create_business(
                 payload.business_type,
                 payload.email.as_deref().filter(|s| !s.is_empty()),
                 payload.phone.as_deref().filter(|s| !s.is_empty()),
+                payload.address.as_deref().filter(|s| !s.is_empty()),
                 payload.currency,
                 payload.timezone,
             )
@@ -413,51 +446,6 @@ pub async fn setup_super_admin(
     })
 }
 
-/// Link this installation to an existing business by UUID.
-/// Used when the business was previously created on another device.
-pub async fn link_existing_business(
-    pool: &PgPool,
-    business_id_str: &str,
-) -> Result<BusinessResponse, String> {
-    let id = business_id_str
-        .trim()
-        .parse::<Uuid>()
-        .map_err(|_| "Invalid Business ID format. Please enter a valid UUID.".to_string())?;
-
-    // Check if the business exists locally
-    let biz = sqlx::query!(
-        "SELECT id, name, type as business_type, currency, timezone
-         FROM businesses WHERE id = $1",
-        id
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| {
-        "Business not found on this device. Cloud sync must be configured to \
-         pull data from another device. Please set up a new business instead.".to_string()
-    })?;
-
-    finalize_link(pool, &id).await?;
-
-    sqlx::query!(
-        "INSERT INTO sync_log (business_id, event_type, message)
-         VALUES ($1, 'business_linked', 'Existing business linked during onboarding')",
-        id
-    )
-    .execute(pool)
-    .await
-    .ok();
-
-    Ok(BusinessResponse {
-        id:            biz.id.to_string(),
-        name:          biz.name,
-        business_type: biz.business_type,
-        currency:      biz.currency,
-        timezone:      biz.timezone,
-    })
-}
-
 /// Return full business profile (for Settings page and title bar).
 pub async fn get_business_info(pool: &PgPool) -> Result<Option<BusinessInfo>, String> {
     let id_str = sqlx::query_scalar!(
@@ -539,6 +527,8 @@ pub async fn restore_business_from_cloud(
     cloud_pool: &PgPool,
     business_id_str: &str,
 ) -> Result<RestoreResult, String> {
+    ensure_onboarding_open(local_pool).await?;
+
     let id = business_id_str
         .trim()
         .parse::<Uuid>()
@@ -585,6 +575,11 @@ pub async fn restore_business_from_cloud(
             "stock_movements",
             "customers",
             "suppliers",
+            // Loyalty is store-scoped and now pushed to cloud via record_points_tx,
+            // so restore it too. Ordered after customers (FK: loyalty_transactions
+            // → customers).
+            "loyalty_settings",
+            "loyalty_transactions",
         ];
 
         for table in &store_tables {
@@ -655,7 +650,22 @@ async fn pull_json_by_store_ids(
         .map_err(|e| format!("Failed to pull {table}: {e}"))
 }
 
+/// ON CONFLICT target per restored table. Most tables key on `id`, but a
+/// hardcoded `(id)` silently broke every table without that column: the
+/// statement errored per-row and `upsert_json_rows` warn-skipped it — most
+/// notably item_stock (composite PK), so "Restore from Cloud" brought back
+/// items with ZERO stock quantities.
+fn restore_conflict_target(table: &str) -> &'static str {
+    match table {
+        "item_stock"       => "item_id, store_id",
+        "loyalty_settings" => "store_id",
+        _                  => "id",
+    }
+}
+
 async fn upsert_json_rows(pool: &PgPool, table: &str, rows: &[Value]) -> i64 {
+    let conflict = restore_conflict_target(table);
+    let key_cols: Vec<&str> = conflict.split(", ").collect();
     let mut count = 0i64;
     for row in rows {
         let obj = match row.as_object() {
@@ -671,19 +681,19 @@ async fn upsert_json_rows(pool: &PgPool, table: &str, rows: &[Value]) -> i64 {
         let updates: Vec<String> = cols
             .iter()
             .enumerate()
-            .filter(|(_, c)| **c != "id")
+            .filter(|(_, c)| !key_cols.contains(*c))
             .map(|(i, c)| format!("{c} = ${}", i + 1))
             .collect();
 
         let stmt = if updates.is_empty() {
             format!(
-                "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT (id) DO NOTHING",
+                "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT ({conflict}) DO NOTHING",
                 cols.join(", "),
                 placeholders.join(", "),
             )
         } else {
             format!(
-                "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT (id) DO UPDATE SET {}",
+                "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT ({conflict}) DO UPDATE SET {}",
                 cols.join(", "),
                 placeholders.join(", "),
                 updates.join(", "),

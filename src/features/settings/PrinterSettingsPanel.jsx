@@ -65,14 +65,14 @@ function PrinterPicker({ title, icon: Icon, description, storageKey, printers, l
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
         <Icon className="h-3.5 w-3.5 text-muted-foreground" />
         <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
           {title}
         </h3>
       </div>
 
-      <div className="p-5 space-y-4">
+      <div className="p-4 space-y-4">
         <p className="text-xs text-muted-foreground">{description}</p>
 
         {/* Printer list */}
@@ -229,7 +229,7 @@ export function PrinterSettingsPanel() {
   useEffect(() => { refresh(); }, []);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
 
       {/* How-it-works info banner */}
       <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3.5">

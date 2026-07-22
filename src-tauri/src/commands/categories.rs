@@ -34,6 +34,8 @@ pub(crate) async fn get_categories_inner(
           c.store_id,
           c.department_id                 AS "department_id?",
           c.parent_category_id            AS "parent_category_id?",
+          c.path                          AS "path?",
+          c.depth,
           c.display_order,
           c.color                         AS "color?",
           c.icon                          AS "icon?",
@@ -86,6 +88,8 @@ pub(crate) async fn get_category_inner(
           c.store_id,
           c.department_id                 AS "department_id?",
           c.parent_category_id            AS "parent_category_id?",
+          c.path                          AS "path?",
+          c.depth,
           c.display_order,
           c.color                         AS "color?",
           c.icon                          AS "icon?",
@@ -196,7 +200,8 @@ pub(crate) async fn update_category_inner(
            category_name      = COALESCE($2,  category_name),
            description        = COALESCE($3,  description),
            department_id      = COALESCE($4,  department_id),
-           parent_category_id = COALESCE($5,  parent_category_id),
+           parent_category_id = CASE WHEN $15::bool IS TRUE THEN NULL
+                                     ELSE COALESCE($5, parent_category_id) END,
            display_order      = COALESCE($6,  display_order),
            color              = COALESCE($7,  color),
            icon               = COALESCE($8,  icon),
@@ -221,7 +226,8 @@ pub(crate) async fn update_category_inner(
         payload.requires_weighing,
         tax_rate,
         payload.is_active,
-        id
+        id,
+        payload.clear_parent,
     )
     .execute(&pool)
     .await?;
@@ -245,23 +251,6 @@ pub(crate) async fn update_category_inner(
     ).await;
 
     get_category_inner(state, token, id).await
-}
-
-pub(crate) async fn delete_category_inner(
-    state: &AppState,
-    token: String,
-    id:    i32,
-) -> AppResult<()> {
-    let claims = guard_permission(state, &token, "categories.delete").await?;
-    let pool = state.pool().await?;
-    sqlx::query!(
-        "UPDATE categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id
-    )
-    .execute(&pool)
-    .await?;
-    write_audit_log(&pool, claims.user_id, None, "deactivate", "category",
-        &format!("Deactivated category id {id}"), "warning").await;
-    Ok(())
 }
 
 pub(crate) async fn hard_delete_category_inner(
@@ -302,6 +291,8 @@ pub(crate) async fn search_categories_inner(
           c.store_id,
           c.department_id                 AS "department_id?",
           c.parent_category_id            AS "parent_category_id?",
+          c.path                          AS "path?",
+          c.depth,
           c.display_order,
           c.color                         AS "color?",
           c.icon                          AS "icon?",
@@ -331,56 +322,6 @@ pub(crate) async fn search_categories_inner(
         lim
     )
     .fetch_all(&pool)
-    .await
-    .map_err(AppError::from)
-}
-
-pub(crate) async fn get_category_by_code_inner(
-    state:    &AppState,
-    token:    String,
-    code:     String,
-    store_id: Option<i32>,
-) -> AppResult<Option<Category>> {
-    guard_permission(state, &token, "categories.read").await?;
-    let pool = state.pool().await?;
-
-    sqlx::query_as!(
-        Category,
-        r#"
-        SELECT
-          c.id,
-          c.category_code                 AS "category_code?",
-          c.category_name,
-          c.description,
-          c.store_id,
-          c.department_id                 AS "department_id?",
-          c.parent_category_id            AS "parent_category_id?",
-          c.display_order,
-          c.color                         AS "color?",
-          c.icon                          AS "icon?",
-          c.image_url                     AS "image_url?",
-          c.is_visible_in_pos,
-          c.requires_weighing,
-          c.default_tax_rate              AS "default_tax_rate?",
-          c.is_active,
-          c.created_at,
-          c.updated_at,
-          s.store_name                    AS "store_name?",
-          d.department_name               AS "department_name?",
-          d.department_code               AS "department_code?",
-          pc.category_name                AS "parent_category_name?",
-          (SELECT COUNT(*)::bigint FROM items i WHERE i.category_id = c.id) AS "item_count?"
-        FROM categories c
-        JOIN stores s       ON c.store_id      = s.id
-        LEFT JOIN departments d  ON c.department_id      = d.id
-        LEFT JOIN categories pc  ON c.parent_category_id = pc.id
-        WHERE c.category_code = $1
-          AND ($2::int IS NULL OR c.store_id = $2)
-        "#,
-        code,
-        store_id
-    )
-    .fetch_optional(&pool)
     .await
     .map_err(AppError::from)
 }
@@ -432,92 +373,6 @@ pub(crate) async fn get_pos_categories_inner(
     Ok(result)
 }
 
-pub(crate) async fn get_subcategories_inner(
-    state:     &AppState,
-    token:     String,
-    parent_id: i32,
-    is_active: Option<bool>,
-) -> AppResult<Vec<Category>> {
-    guard_permission(state, &token, "categories.read").await?;
-    let pool = state.pool().await?;
-
-    sqlx::query_as!(
-        Category,
-        r#"
-        SELECT
-          c.id,
-          c.category_code                 AS "category_code?",
-          c.category_name,
-          c.description,
-          c.store_id,
-          c.department_id                 AS "department_id?",
-          c.parent_category_id            AS "parent_category_id?",
-          c.display_order,
-          c.color                         AS "color?",
-          c.icon                          AS "icon?",
-          c.image_url                     AS "image_url?",
-          c.is_visible_in_pos,
-          c.requires_weighing,
-          c.default_tax_rate              AS "default_tax_rate?",
-          c.is_active,
-          c.created_at,
-          c.updated_at,
-          s.store_name                    AS "store_name?",
-          d.department_name               AS "department_name?",
-          d.department_code               AS "department_code?",
-          NULL::text                      AS "parent_category_name?",
-          (SELECT COUNT(*)::bigint FROM items i WHERE i.category_id = c.id) AS "item_count?"
-        FROM categories c
-        JOIN stores s       ON c.store_id = s.id
-        LEFT JOIN departments d ON c.department_id = d.id
-        WHERE c.parent_category_id = $1
-          AND ($2::bool IS NULL OR c.is_active = $2)
-        ORDER BY c.display_order ASC, c.category_name ASC
-        "#,
-        parent_id,
-        is_active
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::from)
-}
-
-pub(crate) async fn get_category_items_inner(
-    state:       &AppState,
-    token:       String,
-    category_id: i32,
-    is_active:   Option<bool>,
-) -> AppResult<Vec<serde_json::Value>> {
-    guard_permission(state, &token, "categories.read").await?;
-    let pool = state.pool().await?;
-
-    let rows = sqlx::query!(
-        r#"
-        SELECT i.id, i.item_name, i.sku, i.barcode, i.selling_price, ist.is_active
-        FROM   items i
-        LEFT JOIN item_settings ist ON ist.item_id = i.id
-        WHERE  i.category_id = $1
-          AND ($2::bool IS NULL OR ist.is_active = $2)
-        ORDER  BY i.item_name ASC
-        "#,
-        category_id,
-        is_active
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    let result = rows.iter().map(|r| serde_json::json!({
-        "id":            r.id,
-        "item_name":     r.item_name,
-        "sku":           r.sku,
-        "barcode":       r.barcode,
-        "selling_price": r.selling_price,
-        "is_active":     r.is_active,
-    })).collect();
-
-    Ok(result)
-}
-
 pub(crate) async fn activate_category_inner(
     state: &AppState,
     token: String,
@@ -542,45 +397,6 @@ pub(crate) async fn deactivate_category_inner(
     get_category_inner(state, token, id).await
 }
 
-pub(crate) async fn assign_category_department_inner(
-    state:         &AppState,
-    token:         String,
-    category_id:   i32,
-    department_id: Option<i32>,
-) -> AppResult<Category> {
-    guard_permission(state, &token, "categories.update").await?;
-    let pool = state.pool().await?;
-    sqlx::query!(
-        "UPDATE categories SET department_id = $1, updated_at = NOW() WHERE id = $2",
-        department_id, category_id
-    )
-    .execute(&pool)
-    .await?;
-    get_category_inner(state, token, category_id).await
-}
-
-pub(crate) async fn count_categories_inner(
-    state:         &AppState,
-    token:         String,
-    store_id:      Option<i32>,
-    department_id: Option<i32>,
-    is_active:     Option<bool>,
-) -> AppResult<i64> {
-    guard_permission(state, &token, "categories.read").await?;
-    let pool = state.pool().await?;
-    sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM categories
-           WHERE ($1::int  IS NULL OR store_id      = $1)
-             AND ($2::int  IS NULL OR department_id = $2)
-             AND ($3::bool IS NULL OR is_active     = $3)"#,
-        store_id, department_id, is_active
-    )
-    .fetch_one(&pool)
-    .await
-    .map(|c| c.unwrap_or(0))
-    .map_err(AppError::from)
-}
-
 // ── Tauri command wrappers ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -591,15 +407,6 @@ pub async fn get_categories(
     department_id: Option<i32>,
 ) -> AppResult<Vec<Category>> {
     get_categories_inner(&state, token, store_id, department_id).await
-}
-
-#[tauri::command]
-pub async fn get_category(
-    state: State<'_, AppState>,
-    token: String,
-    id:    i32,
-) -> AppResult<Category> {
-    get_category_inner(&state, token, id).await
 }
 
 #[tauri::command]
@@ -619,15 +426,6 @@ pub async fn update_category(
     payload: UpdateCategoryDto,
 ) -> AppResult<Category> {
     update_category_inner(&state, token, id, payload).await
-}
-
-#[tauri::command]
-pub async fn delete_category(
-    state: State<'_, AppState>,
-    token: String,
-    id:    i32,
-) -> AppResult<()> {
-    delete_category_inner(&state, token, id).await
 }
 
 #[tauri::command]
@@ -651,42 +449,12 @@ pub async fn search_categories(
 }
 
 #[tauri::command]
-pub async fn get_category_by_code(
-    state:    State<'_, AppState>,
-    token:    String,
-    code:     String,
-    store_id: Option<i32>,
-) -> AppResult<Option<Category>> {
-    get_category_by_code_inner(&state, token, code, store_id).await
-}
-
-#[tauri::command]
 pub async fn get_pos_categories(
     state:    State<'_, AppState>,
     token:    String,
     store_id: i32,
 ) -> AppResult<Vec<serde_json::Value>> {
     get_pos_categories_inner(&state, token, store_id).await
-}
-
-#[tauri::command]
-pub async fn get_subcategories(
-    state:     State<'_, AppState>,
-    token:     String,
-    parent_id: i32,
-    is_active: Option<bool>,
-) -> AppResult<Vec<Category>> {
-    get_subcategories_inner(&state, token, parent_id, is_active).await
-}
-
-#[tauri::command]
-pub async fn get_category_items(
-    state:       State<'_, AppState>,
-    token:       String,
-    category_id: i32,
-    is_active:   Option<bool>,
-) -> AppResult<Vec<serde_json::Value>> {
-    get_category_items_inner(&state, token, category_id, is_active).await
 }
 
 #[tauri::command]
@@ -707,23 +475,3 @@ pub async fn deactivate_category(
     deactivate_category_inner(&state, token, id).await
 }
 
-#[tauri::command]
-pub async fn assign_category_department(
-    state:         State<'_, AppState>,
-    token:         String,
-    category_id:   i32,
-    department_id: Option<i32>,
-) -> AppResult<Category> {
-    assign_category_department_inner(&state, token, category_id, department_id).await
-}
-
-#[tauri::command]
-pub async fn count_categories(
-    state:         State<'_, AppState>,
-    token:         String,
-    store_id:      Option<i32>,
-    department_id: Option<i32>,
-    is_active:     Option<bool>,
-) -> AppResult<i64> {
-    count_categories_inner(&state, token, store_id, department_id, is_active).await
-}

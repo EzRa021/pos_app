@@ -177,17 +177,17 @@ export function AppearancePanel() {
   const accentHex = ACCENT_COLORS[selectedAccent]?.hex ?? ACCENT_COLORS.blue.hex;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
 
       {/* ── Theme picker ─────────────────────────────────────────────────── */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+        <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
           <Sun className="h-3.5 w-3.5 text-muted-foreground" />
           <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
             Interface Theme
           </h3>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-4 space-y-4">
           <p className="text-xs text-muted-foreground leading-relaxed">
             Choose how Quantum POS looks for this branch. The setting is saved per branch —
             different branches can use different themes.
@@ -225,13 +225,13 @@ export function AppearancePanel() {
 
       {/* ── Accent colour picker ─────────────────────────────────────────── */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+        <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
           <Palette className="h-3.5 w-3.5 text-muted-foreground" />
           <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
             Accent Colour
           </h3>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-4 space-y-4">
           <p className="text-xs text-muted-foreground leading-relaxed">
             Choose the primary accent colour used for active navigation, buttons, and focus rings.
             Works with both dark and light themes.
@@ -285,12 +285,12 @@ export function AppearancePanel() {
 
       {/* ── Info card ────────────────────────────────────────────────────── */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+        <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
           <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
             About Themes
           </h3>
         </div>
-        <div className="p-5 space-y-2.5">
+        <div className="p-4 space-y-2.5">
           {[
             { icon: Moon, label: "Dark mode",  desc: "Default for all branches. Best in low-light retail environments." },
             { icon: Sun,  label: "Light mode", desc: "Recommended for outdoor kiosks or brightly lit environments." },

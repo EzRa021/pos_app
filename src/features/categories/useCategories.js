@@ -38,7 +38,7 @@ export function useCategories(storeIdOverride) {
   const create = useMutation({
     mutationFn: (payload) => createCategory({ store_id: storeId, ...payload }),
     onSuccess: (c) => {
-      toastSuccess("Category Created", `"${c.name}" has been added to your catalog.`);
+      toastSuccess("Category Created", `"${c.category_name}" has been added to your catalog.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Create Category", e),
@@ -47,7 +47,7 @@ export function useCategories(storeIdOverride) {
   const update = useMutation({
     mutationFn: ({ id, ...payload }) => updateCategory(id, payload),
     onSuccess: (c) => {
-      toastSuccess("Category Updated", `Changes to "${c.name}" have been saved.`);
+      toastSuccess("Category Updated", `Changes to "${c.category_name}" have been saved.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Update Category", e),
@@ -57,7 +57,7 @@ export function useCategories(storeIdOverride) {
   const activate = useMutation({
     mutationFn: (id) => activateCategory(id),
     onSuccess: (c) => {
-      toastSuccess("Category Activated", `"${c.name}" is now active.`);
+      toastSuccess("Category Activated", `"${c.category_name}" is now active.`);
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Activate Category", e),
@@ -66,7 +66,7 @@ export function useCategories(storeIdOverride) {
   const deactivate = useMutation({
     mutationFn: (id) => deactivateCategory(id),
     onSuccess: (c) => {
-      toastSuccess("Category Deactivated", `"${c.name}" has been deactivated.`);
+      toastSuccess("Category Deactivated", `"${c.category_name}" has been deactivated.`);
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Deactivate Category", e),

@@ -452,7 +452,7 @@ function SchedulePriceChangeDialog({ open, onOpenChange, storeId, onSchedule }) 
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)} disabled={busy}>Cancel</Button>
           <Button size="sm" onClick={handleSave} disabled={busy || !canSubmit}
-            className="gap-1.5 bg-warning hover:bg-warning/90 text-white">
+            className="gap-1.5 bg-warning hover:bg-warning/90 text-warning-foreground">
             {busy
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Scheduling…</>
               : <><Calendar className="h-3.5 w-3.5" />Schedule</>}
@@ -812,8 +812,8 @@ function OverviewTab({ canManage, storeId, stats }) {
               onClick={(e) => { e.stopPropagation(); setConfirm({ id: row.id, action: "reject", item_name: row.item_name, old_price: row.old_price, new_price: row.new_price }); }}>
               <X className="h-3 w-3 mr-0.5" />Reject
             </Button>
-            <Button size="xs"
-              className="h-6 px-2 text-[10px] font-semibold bg-success hover:bg-success/90 text-white"
+            <Button size="xs" variant="success"
+              className="h-6 px-2 text-[10px] font-semibold"
               onClick={(e) => { e.stopPropagation(); setConfirm({ id: row.id, action: "approve", item_name: row.item_name, old_price: row.old_price, new_price: row.new_price }); }}>
               <Check className="h-3 w-3 mr-0.5" />Approve
             </Button>
@@ -1038,7 +1038,7 @@ function ScheduledTab({ canManage, storeId }) {
             </p>
           </div>
           <Button size="sm" onClick={handleApplyDue} disabled={applyDue.isPending}
-            className="shrink-0 gap-1.5 bg-warning hover:bg-warning/90 text-white">
+            className="shrink-0 gap-1.5 bg-warning hover:bg-warning/90 text-warning-foreground">
             {applyDue.isPending
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Applying…</>
               : <><Check className="h-3.5 w-3.5" />Apply Now ({dueNow.length})</>}
@@ -1095,13 +1095,23 @@ function ScheduledTab({ canManage, storeId }) {
 
 // ── Tab: Price Lists ──────────────────────────────────────────────────────────
 
+const LISTS_PAGE_SIZE = 10;
+
 function PriceListsTab({ canManage, storeId }) {
   const [createOpen,   setCreateOpen]   = useState(false);
   const [itemsTarget,  setItemsTarget]  = useState(null);
   const [toggleTarget, setToggleTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [page,         setPage]         = useState(1);
 
   const { lists, isLoading, create, update, remove } = usePriceLists();
+
+  // Price lists are a small, fully-fetched set — paginate client-side so the
+  // table stays tidy without a server round-trip per page.
+  const pagedLists = useMemo(
+    () => lists.slice((page - 1) * LISTS_PAGE_SIZE, page * LISTS_PAGE_SIZE),
+    [lists, page],
+  );
 
   const handleToggle = async () => {
     try {
@@ -1219,9 +1229,10 @@ function PriceListsTab({ canManage, storeId }) {
       >
         <DataTable
           columns={columns}
-          data={lists}
+          data={pagedLists}
           isLoading={isLoading}
           onRowClick={(row) => setItemsTarget(row)}
+          pagination={{ page, pageSize: LISTS_PAGE_SIZE, total: lists.length, onPageChange: setPage }}
           emptyState={
             <EmptyState icon={List}
               title="No price lists"
@@ -1285,8 +1296,8 @@ function PriceListsTab({ canManage, storeId }) {
           <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
             <Button variant="outline" size="sm" onClick={() => setToggleTarget(null)}>Keep</Button>
             <Button size="sm" disabled={update.isPending}
-              className={cn("flex-1 text-white",
-                isActivating ? "bg-success hover:bg-success/90" : "bg-warning/90 hover:bg-warning")}
+              className={cn("flex-1",
+                isActivating ? "bg-success hover:bg-success/90 text-success-foreground" : "bg-warning/90 hover:bg-warning text-warning-foreground")}
               onClick={handleToggle}>
               {isActivating ? "Activate" : "Deactivate"}
             </Button>

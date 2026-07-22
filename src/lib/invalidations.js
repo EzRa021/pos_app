@@ -154,6 +154,13 @@ export function invalidateAfterVoid(storeId) {
   inv(["analytics-sales-summary"]);
   inv(["analytics-revenue-period"]);
   inv(["analytics-payment-methods"]);
+  // Voids/refunds reverse shift sales counters and add cash refunds — the
+  // shift KPI cards and close-shift expected cash must refresh too.
+  inv(["shift-summary"]);
+  inv(["shift-stats"]);
+  inv(["shifts"]);
+  inv(["shift"]);
+  inv(["store-active-shifts"]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,6 +174,12 @@ export function invalidateAfterReturn(storeId) {
   invalidateStock(storeId);
   inv(["analytics-returns"]);
   inv(["analytics-sales-summary"]);
+  // Returns bump shift return counters and (cash refunds) drawer expectation.
+  inv(["shift-summary"]);
+  inv(["shift-stats"]);
+  inv(["shifts"]);
+  inv(["shift"]);
+  inv(["store-active-shifts"]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

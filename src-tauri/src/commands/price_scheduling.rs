@@ -139,14 +139,25 @@ pub async fn apply_scheduled_prices(
 ) -> AppResult<serde_json::Value> {
     let claims = guard_permission(&state, &token, "items.update").await?;
     let pool   = state.pool().await?;
+    let (count, applied) = apply_due_scheduled_prices(&pool, Some(claims.user_id)).await?;
+    Ok(serde_json::json!({ "due": count, "applied": applied, "skipped": count - applied }))
+}
 
+/// Apply every scheduled price change whose `effective_at` has passed.
+/// Shared by the `apply_scheduled_prices` command (with the caller's user id) and
+/// the background auto-apply loop (with `None`, since `price_history.changed_by`
+/// is nullable). Returns `(due, applied)`.
+pub(crate) async fn apply_due_scheduled_prices(
+    pool:       &sqlx::PgPool,
+    changed_by: Option<i32>,
+) -> AppResult<(i64, i64)> {
     let due = sqlx::query!(
         r#"SELECT id, item_id, store_id, new_selling_price, new_cost_price
            FROM scheduled_price_changes
            WHERE applied=FALSE AND cancelled=FALSE AND effective_at<=NOW()
            ORDER BY effective_at ASC"#,
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await?;
 
     let count       = due.len() as i64;
@@ -193,7 +204,25 @@ pub async fn apply_scheduled_prices(
         sqlx::query!(
             "INSERT INTO price_history (item_id, store_id, old_price, new_price, changed_by, reason) \
              VALUES ($1, $2, $3, $4, $5, 'Scheduled price change')",
-            rec.item_id, rec.store_id, old_price, rec.new_selling_price, claims.user_id,
+            rec.item_id, rec.store_id, old_price, rec.new_selling_price, changed_by,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Mirror onto the item's unified history timeline (same feed PO receipts
+        // and direct item edits write to), so applied schedules show in Item ▸ History.
+        sqlx::query!(
+            r#"INSERT INTO item_history
+                   (item_id, store_id, event_type, event_description,
+                    price_before, price_after, performed_by, reference_type, reference_id)
+               VALUES ($1,$2,'PRICE_CHANGE',$3,$4,$5,$6,'scheduled_price_change',$7)"#,
+            rec.item_id,
+            rec.store_id,
+            format!("Scheduled price applied → ₦{}", rec.new_selling_price),
+            old_price,
+            rec.new_selling_price,
+            changed_by,
+            rec.id.to_string(),
         )
         .execute(&mut *tx)
         .await?;
@@ -209,7 +238,7 @@ pub async fn apply_scheduled_prices(
         applied += 1;
     }
 
-    Ok(serde_json::json!({ "due": count, "applied": applied, "skipped": count - applied }))
+    Ok((count, applied))
 }
 
 // ── helper ────────────────────────────────────────────────────────────────────

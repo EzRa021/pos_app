@@ -15,7 +15,6 @@ use crate::{
         CategoryProfitAnalysis,
         CustomerAnalytics,
         CustomerAnalyticsReport,
-        DailySummary,
         DeadStockItem,
         DepartmentAnalytics,
         DepartmentProfitAnalysis,
@@ -25,7 +24,6 @@ use crate::{
         ItemAnalytics,
         LowMarginItem,
         PaymentMethodSummary,
-        PaymentTrend,
         PeakHour,
         PeriodComparison,
         PeriodComparisonMetric,
@@ -39,11 +37,8 @@ use crate::{
         SalesSummary,
         SlowMovingItem,
         StockVelocityItem,
-        SupplierAnalytics,
         TaxReport,
         TaxReportRow,
-        TopCategory,
-        TopItem,
         VatByCategoryRow,
     },
     state::AppState,
@@ -159,90 +154,6 @@ pub async fn get_revenue_by_period(
 }
 
 #[tauri::command]
-pub async fn get_top_items(
-    state: State<'_, AppState>,
-    token: String,
-    filters: AnalyticsFilters,
-) -> AppResult<Vec<TopItem>> {
-    guard_permission(&state, &token, "analytics.read").await?;
-    let pool = state.pool().await?;
-    let df = filters.date_from.as_deref();
-    let dt = filters.date_to.as_deref();
-    let limit = filters.limit.unwrap_or(10).clamp(1, 100);
-
-    let items = sqlx::query_as!(
-        TopItem,
-        r#"SELECT
-               ti.item_id,
-               ti.item_name                          AS "item_name!",
-               ti.sku                                AS "sku!",
-               COALESCE(SUM(ti.quantity), 0)         AS "qty_sold!",
-               COALESCE(SUM(ti.line_total), 0)       AS "revenue!",
-               MAX(ist.measurement_type)             AS "measurement_type: String",
-               MAX(ist.unit_type)                    AS "unit_type: String"
-           FROM   transaction_items ti
-           JOIN   transactions      t   ON t.id = ti.tx_id
-           JOIN   items             i   ON i.id = ti.item_id
-           LEFT  JOIN item_settings ist ON ist.item_id = i.id
-           WHERE  t.status = 'completed'
-             AND ($1::int  IS NULL OR t.store_id   = $1)
-             AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
-             AND ($3::text IS NULL OR t.created_at <= $3::timestamptz)
-           GROUP  BY ti.item_id, ti.item_name, ti.sku
-           ORDER  BY 4 DESC
-           LIMIT  $4"#,
-        filters.store_id,
-        df,
-        dt,
-        limit,
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    Ok(items)
-}
-
-#[tauri::command]
-pub async fn get_top_categories(
-    state: State<'_, AppState>,
-    token: String,
-    filters: AnalyticsFilters,
-) -> AppResult<Vec<TopCategory>> {
-    guard_permission(&state, &token, "analytics.read").await?;
-    let pool = state.pool().await?;
-    let df = filters.date_from.as_deref();
-    let dt = filters.date_to.as_deref();
-    let limit = filters.limit.unwrap_or(10).clamp(1, 100);
-
-    let cats = sqlx::query_as!(
-        TopCategory,
-        r#"SELECT
-               COALESCE(c.category_name, 'Uncategorized') AS "category_name!",
-               COALESCE(SUM(ti.quantity),   0)            AS "qty_sold!",
-               COALESCE(SUM(ti.line_total), 0)            AS "revenue!"
-           FROM   transaction_items ti
-           JOIN   transactions      t ON t.id = ti.tx_id
-           JOIN   items             i ON i.id = ti.item_id
-           LEFT JOIN categories     c ON c.id = i.category_id
-           WHERE  t.status = 'completed'
-             AND ($1::int  IS NULL OR t.store_id   = $1)
-             AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
-             AND ($3::text IS NULL OR t.created_at <= $3::timestamptz)
-           GROUP  BY c.category_name
-           ORDER  BY 2 DESC
-           LIMIT  $4"#,
-        filters.store_id,
-        df,
-        dt,
-        limit,
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    Ok(cats)
-}
-
-#[tauri::command]
 pub async fn get_payment_method_summary(
     state: State<'_, AppState>,
     token: String,
@@ -276,88 +187,6 @@ pub async fn get_payment_method_summary(
     .fetch_all(&pool)
     .await
     .map_err(AppError::from)
-}
-
-#[tauri::command]
-pub async fn get_daily_summary(
-    state: State<'_, AppState>,
-    token: String,
-    store_id: i32,
-    date: Option<String>,
-) -> AppResult<DailySummary> {
-    guard_permission(&state, &token, "analytics.read").await?;
-    let pool = state.pool().await?;
-    let date_str = date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
-
-    let sales_row = sqlx::query!(
-        r#"SELECT
-               COUNT(DISTINCT id)                                                                   AS transaction_count,
-               COALESCE(SUM(total_amount),    0)                                                   AS gross_sales,
-               COALESCE(SUM(discount_amount), 0)                                                   AS total_discounts,
-               COALESCE(SUM(tax_amount),      0)                                                   AS total_tax,
-               COALESCE(SUM(total_amount - tax_amount), 0)                                         AS net_sales,
-               COALESCE(SUM(CASE WHEN payment_method = 'cash'     THEN total_amount ELSE 0 END), 0) AS cash_sales,
-               COALESCE(SUM(CASE WHEN payment_method = 'card'     THEN total_amount ELSE 0 END), 0) AS card_sales,
-               COALESCE(SUM(CASE WHEN payment_method = 'transfer' THEN total_amount ELSE 0 END), 0) AS transfer_sales,
-               COALESCE(SUM(CASE WHEN payment_method = 'credit'   THEN total_amount ELSE 0 END), 0) AS credit_sales
-           FROM  transactions
-           WHERE status   = 'completed'
-             AND store_id = $1
-             AND created_at::date = $2::text::date"#,
-        store_id,
-        date_str,
-    )
-    .fetch_one(&pool)
-    .await?;
-
-    let items_sold: Decimal = sqlx::query_scalar!(
-        r#"SELECT COALESCE(SUM(ti.quantity), 0)
-           FROM   transaction_items ti
-           JOIN   transactions t ON t.id = ti.tx_id
-           WHERE  t.status   = 'completed'
-             AND  t.store_id = $1
-             AND  t.created_at::date = $2::text::date"#,
-        store_id,
-        date_str,
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or_default();
-
-    let total_expenses: Decimal = sqlx::query_scalar!(
-        r#"SELECT COALESCE(SUM(amount), 0)
-           FROM   expenses
-           WHERE  store_id        = $1
-             AND  approval_status = 'approved'
-             AND  deleted_at      IS NULL
-             AND  expense_date::date = $2::text::date"#,
-        store_id,
-        date_str,
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or_default();
-
-    let net_sales = sales_row.net_sales.unwrap_or_default();
-    let gross_profit = net_sales - sales_row.total_tax.unwrap_or_default();
-    let net_profit = gross_profit - total_expenses;
-
-    Ok(DailySummary {
-        date: date_str,
-        transaction_count: sales_row.transaction_count.unwrap_or(0),
-        items_sold,
-        gross_sales: sales_row.gross_sales.unwrap_or_default(),
-        total_discounts: sales_row.total_discounts.unwrap_or_default(),
-        net_sales,
-        total_tax: sales_row.total_tax.unwrap_or_default(),
-        total_expenses,
-        gross_profit,
-        net_profit,
-        cash_sales: sales_row.cash_sales.unwrap_or_default(),
-        card_sales: sales_row.card_sales.unwrap_or_default(),
-        transfer_sales: sales_row.transfer_sales.unwrap_or_default(),
-        credit_sales: sales_row.credit_sales.unwrap_or_default(),
-    })
 }
 
 #[tauri::command]
@@ -417,6 +246,7 @@ pub async fn get_category_analytics(
         CategoryAnalytics,
         r#"SELECT
                COALESCE(c.category_name, 'Uncategorized') AS "category_name!",
+               COALESCE(rootc.category_name, c.category_name, 'Uncategorized') AS "root_category_name!",
                COALESCE(SUM(ti.quantity),   0)            AS "qty_sold!",
                COALESCE(SUM(ti.line_total), 0)            AS "revenue!",
                COUNT(DISTINCT t.id)                       AS "transaction_count!"
@@ -424,11 +254,12 @@ pub async fn get_category_analytics(
            JOIN   transactions t  ON t.id  = ti.tx_id
            JOIN   items         i  ON i.id  = ti.item_id
            LEFT JOIN categories     c  ON c.id  = i.category_id
+           LEFT JOIN categories  rootc ON rootc.id = NULLIF(split_part(c.path, '/', 2), '')::int
            WHERE  t.status = 'completed'
              AND ($1::int  IS NULL OR t.store_id   = $1)
              AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
              AND ($3::text IS NULL OR t.created_at <= $3::timestamptz)
-           GROUP  BY c.category_name
+           GROUP  BY c.category_name, rootc.category_name
            ORDER  BY 3 DESC
            LIMIT  $4"#,
         filters.store_id,
@@ -707,6 +538,7 @@ pub async fn get_profit_analysis(
         r#"
         SELECT
             COALESCE(c.category_name, 'Uncategorized')             AS "category_name!",
+            COALESCE(rootc.category_name, c.category_name, 'Uncategorized') AS "root_category_name!",
             COALESCE(SUM(ti.quantity),                  0)         AS "qty_sold!:     Decimal",
             COALESCE(SUM(ti.line_total),                0)         AS "revenue!:      Decimal",
             COALESCE(SUM(ti.quantity * i.cost_price),   0)         AS "cost_of_goods!: Decimal",
@@ -723,11 +555,12 @@ pub async fn get_profit_analysis(
         JOIN   transactions      t ON t.id = ti.tx_id
         JOIN   items             i ON i.id = ti.item_id
         LEFT JOIN categories     c ON c.id = i.category_id
+        LEFT JOIN categories  rootc ON rootc.id = NULLIF(split_part(c.path, '/', 2), '')::int
         WHERE  t.status = 'completed'
           AND ($1::int  IS NULL OR t.store_id   = $1)
           AND ($2::text IS NULL OR t.created_at >= $2::timestamptz)
           AND ($3::text IS NULL OR t.created_at <= $3::timestamptz)
-        GROUP  BY c.category_name
+        GROUP  BY c.category_name, rootc.category_name
         ORDER  BY 5 DESC
         "#,
         filters.store_id,
@@ -792,6 +625,7 @@ pub async fn get_profit_analysis(
             .into_iter()
             .map(|r| CategoryProfitAnalysis {
                 category_name: r.category_name,
+                root_category_name: r.root_category_name,
                 qty_sold: r.qty_sold,
                 revenue: r.revenue,
                 cost_of_goods: r.cost_of_goods,
@@ -1772,141 +1606,6 @@ pub async fn get_discount_analytics(
             })
             .collect(),
     })
-}
-
-// ── 12. Payment trends ────────────────────────────────────────────────────────
-
-/// Returns payment-method breakdown over time (period-series).
-/// Each row is one (period, payment_method) pair with its share (%) of
-/// total revenue in that period.
-#[tauri::command]
-pub async fn get_payment_trends(
-    state: State<'_, AppState>,
-    token: String,
-    filters: AnalyticsFilters,
-) -> AppResult<Vec<PaymentTrend>> {
-    guard_permission(&state, &token, "analytics.read").await?;
-    let pool = state.pool().await?;
-    let df = filters.date_from.as_deref();
-    let dt = filters.date_to.as_deref();
-
-    let trunc = match filters.period.as_deref().unwrap_or("month") {
-        "week" => "week",
-        "day" => "day",
-        "year" => "year",
-        _ => "month",
-    };
-
-    let rows = sqlx::query!(
-        r#"
-        SELECT
-            DATE_TRUNC($1, created_at)::text                   AS "period!",
-            payment_method                                      AS "payment_method!",
-            COUNT(*)                                            AS "count!: i64",
-            COALESCE(SUM(total_amount), 0)                     AS "total!: Decimal",
-            ROUND(
-                COALESCE(SUM(total_amount), 0) * 100.0
-                / NULLIF(
-                    SUM(SUM(total_amount)) OVER (
-                        PARTITION BY DATE_TRUNC($1, created_at)
-                    ), 0
-                ), 2
-            )                                                   AS "percentage!: Decimal"
-        FROM  transactions
-        WHERE status = 'completed'
-          AND ($2::int  IS NULL OR store_id   = $2)
-          AND ($3::text IS NULL OR created_at >= $3::timestamptz)
-          AND ($4::text IS NULL OR created_at <= $4::timestamptz)
-        GROUP  BY DATE_TRUNC($1, created_at), payment_method
-        ORDER  BY 1 ASC, 4 DESC
-        "#,
-        trunc,
-        filters.store_id,
-        df,
-        dt,
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|r| PaymentTrend {
-            period: r.period,
-            payment_method: r.payment_method,
-            count: r.count,
-            total: r.total,
-            percentage: r.percentage,
-        })
-        .collect())
-}
-
-// ── 13. Supplier analytics ────────────────────────────────────────────────────
-
-/// Returns purchase order statistics per supplier, including average lead time
-/// and current outstanding balance owed.
-#[tauri::command]
-pub async fn get_supplier_analytics(
-    state: State<'_, AppState>,
-    token: String,
-    filters: AnalyticsFilters,
-) -> AppResult<Vec<SupplierAnalytics>> {
-    guard_permission(&state, &token, "analytics.read").await?;
-    let pool = state.pool().await?;
-    let df = filters.date_from.as_deref();
-    let dt = filters.date_to.as_deref();
-    let limit = filters.limit.unwrap_or(20).clamp(1, 200);
-
-    let rows = sqlx::query!(
-        r#"
-        SELECT
-            s.id                                                AS "supplier_id!",
-            s.supplier_name                                     AS "supplier_name!",
-            COALESCE(po_stats.total_orders,    0)              AS "total_orders!:      i64",
-            COALESCE(po_stats.total_value,     0)              AS "total_order_value!: Decimal",
-            COALESCE(po_stats.pending_orders,  0)              AS "pending_orders!:    i64",
-            po_stats.avg_lead_time_days                        AS "avg_lead_time_days: Option<Decimal>",
-            COALESCE(s.current_balance,        0)              AS "current_balance!:   Decimal"
-        FROM suppliers s
-        LEFT JOIN (
-            SELECT
-                supplier_id,
-                COUNT(*)                                         AS total_orders,
-                SUM(total_amount)                                AS total_value,
-                COUNT(CASE WHEN status IN ('pending','approved') THEN 1 END)
-                                                                 AS pending_orders,
-                AVG(
-                    CASE WHEN received_at IS NOT NULL
-                         THEN EXTRACT(EPOCH FROM received_at - ordered_at) / 86400.0
-                         ELSE NULL END
-                )                                                AS avg_lead_time_days
-            FROM   purchase_orders
-            WHERE ($1::int  IS NULL OR store_id   = $1)
-              AND ($2::text IS NULL OR ordered_at >= $2::timestamptz)
-              AND ($3::text IS NULL OR ordered_at <= $3::timestamptz)
-            GROUP  BY supplier_id
-        ) po_stats ON po_stats.supplier_id = s.id
-        WHERE ($1::int IS NULL OR s.store_id = $1)
-          AND s.is_active = TRUE
-        ORDER BY COALESCE(po_stats.total_value, 0) DESC NULLS LAST
-        LIMIT $4
-        "#,
-        filters.store_id, df, dt, limit,
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|r| SupplierAnalytics {
-            supplier_id: r.supplier_id,
-            supplier_name: r.supplier_name,
-            total_orders: r.total_orders,
-            total_order_value: r.total_order_value,
-            pending_orders: r.pending_orders,
-            avg_lead_time_days: r.avg_lead_time_days.flatten(),
-            current_balance: r.current_balance,
-        })
-        .collect())
 }
 
 // ── 14. Tax report ────────────────────────────────────────────────────────────

@@ -5,10 +5,10 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Package, Edit3, Archive, Power, PowerOff, ArrowLeft,
-  BarChart3, History, Boxes, Hash, Tag, DollarSign, ClipboardList,
-  CheckCircle2, XCircle, AlertTriangle, TrendingDown, Clock,
-  RefreshCw, Filter, X, User, Hash as HashIcon, Printer, ZoomIn, Star,
+  Edit3, Archive, Power, PowerOff,
+  BarChart3, History, Boxes, ClipboardList,
+  CheckCircle2, XCircle, AlertTriangle, TrendingDown, TrendingUp, Tag,
+  RefreshCw, Filter, X, Printer, ZoomIn, Star,
 } from "lucide-react";
 
 import { PageHeader }       from "@/components/shared/PageHeader";
@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select";
 
 import { useItem, useItemHistory }  from "@/features/items/useItems";
+import { useItemPriceHistory }      from "@/features/price_management/usePriceManagement";
 import { useFavourites }            from "@/features/pos/useFavourites";
 import { ItemFormDialog }           from "@/features/items/ItemFormDialog";
 import { useInventoryItem }         from "@/features/inventory/useInventory";
@@ -37,7 +38,7 @@ import { AdjustInventoryDialog }    from "@/features/inventory/AdjustInventoryDi
 import { RestockDialog }            from "@/features/inventory/RestockDialog";
 import { PrintLabelsDialog }        from "@/features/labels/PrintLabelsDialog";
 import {
-  formatCurrency, formatDecimal, formatQuantity,
+  formatCurrency, formatQuantity,
   formatDateTime, formatDate, measurementTypeLabel,
 } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -233,6 +234,59 @@ function HistoryEventDrawer({ event, open, onClose, measurementType, unitType })
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+// ── Price history tab ─────────────────────────────────────────────────────────
+// Surfaces the price_history audit trail (approved change requests + applied
+// scheduled changes) for a single item.
+function PriceHistoryTab({ itemId, storeId }) {
+  const { history, isLoading } = useItemPriceHistory(itemId, storeId);
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center py-12"><Spinner /></div>;
+  }
+  if (!history.length) {
+    return (
+      <EmptyState icon={Tag}
+        title="No price changes yet"
+        description="Approved price change requests and applied scheduled updates for this item will appear here."
+        compact
+      />
+    );
+  }
+
+  return (
+    <div className="divide-y divide-border/40">
+      {history.map((h) => {
+        const oldP = parseFloat(h.old_price ?? 0);
+        const newP = parseFloat(h.new_price ?? 0);
+        const up   = newP > oldP;
+        const flat = newP === oldP;
+        return (
+          <div key={h.id} className="flex items-center gap-4 px-4 py-3">
+            <div className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border",
+              flat ? "border-border/60 bg-muted/30 text-muted-foreground"
+                   : up ? "border-destructive/20 bg-destructive/10 text-destructive"
+                        : "border-success/20 bg-success/10 text-success",
+            )}>
+              {flat ? <Tag className="h-4 w-4" /> : up ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-foreground tabular-nums">
+                <span className="text-muted-foreground line-through mr-1.5">{formatCurrency(oldP)}</span>
+                {formatCurrency(newP)}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{h.reason ?? "Price change"}</p>
+            </div>
+            <span className="text-[10px] text-muted-foreground shrink-0 whitespace-nowrap">
+              {formatDateTime(h.created_at)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -463,6 +517,7 @@ export function ItemDetailView({ itemId }) {
   const tabs = [
     { key: "details", label: "Details", icon: ClipboardList },
     { key: "stock",   label: "Stock",   icon: Boxes },
+    { key: "pricing", label: "Pricing", icon: Tag },
     { key: "history", label: "History", icon: History },
   ];
 
@@ -727,6 +782,15 @@ export function ItemDetailView({ itemId }) {
                   onAdjust={()  => setAdjustOpen(true)}
                 />
               </div>
+            </div>
+          )}
+
+          {activeTab === "pricing" && (
+            <div className="rounded-xl border border-border bg-card overflow-hidden">
+              <div className="px-4 py-3 border-b border-border bg-muted/20">
+                <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Price History</h3>
+              </div>
+              <PriceHistoryTab itemId={itemId} storeId={storeId} />
             </div>
           )}
 

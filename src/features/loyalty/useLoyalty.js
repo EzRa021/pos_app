@@ -62,7 +62,8 @@ export function useCustomerLoyalty(customerId) {
   const earn   = useMutation({
     mutationFn: (p) => earnPoints({ customer_id: customerId, store_id: storeId, ...p }),
     onSuccess: (r) => {
-      toastSuccess("Points Earned", `${r?.points_earned ?? ""} points added to customer's balance.`);
+      // Backend returns a LoyaltyTransaction: `points` is +N for earn.
+      toastSuccess("Points Earned", `${Math.abs(r?.points ?? 0).toLocaleString()} points added to customer's balance.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Earn Points", e),
@@ -70,7 +71,8 @@ export function useCustomerLoyalty(customerId) {
   const redeem = useMutation({
     mutationFn: (p) => redeemPoints({ customer_id: customerId, store_id: storeId, ...p }),
     onSuccess: (r) => {
-      toastSuccess("Points Redeemed", `${r?.points_redeemed ?? ""} points deducted from customer's balance.`);
+      // `points` is stored as -N for redeem — show the magnitude.
+      toastSuccess("Points Redeemed", `${Math.abs(r?.points ?? 0).toLocaleString()} points deducted from customer's balance.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Redeem Points", e),

@@ -8,7 +8,7 @@ import {
   Package, Plus, Search, Edit3, Archive, Power, PowerOff,
   X, TrendingDown, DollarSign, Box, RefreshCw, Tag, Percent,
   PackagePlus, ChevronDown, Check, Minus, AlertTriangle, Printer,
-  Layers, FileSpreadsheet, Star,
+  FileSpreadsheet, Star,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -18,7 +18,7 @@ import { PageHeader }   from "@/components/shared/PageHeader";
 import { Button }       from "@/components/ui/button";
 import { Input }        from "@/components/ui/input";
 import {
-  Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter,
+  Dialog, DialogContent, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -176,8 +176,8 @@ function BulkSelectionBar({
       </div>
 
       {/* Activate */}
-      <Button size="sm" disabled={activating} onClick={onActivate}
-        className="h-7 gap-1.5 text-xs px-2.5 bg-success hover:bg-success/90 text-white">
+      <Button size="sm" variant="success" disabled={activating} onClick={onActivate}
+        className="h-7 gap-1.5 text-xs px-2.5">
         {activating ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Power className="h-3 w-3" />}
         Activate
       </Button>
@@ -262,7 +262,7 @@ function BulkActionsMenu({ onPriceUpdate, onDiscount, onPrintLabels }) {
                 Category / Dept Scope
               </p>
             </div>
-            {menuItems.map((item, i) => {
+            {menuItems.map((item) => {
               const Icon = item.icon;
               return (
                 <div key={item.label}>
@@ -311,7 +311,7 @@ function ArchiveDialog({ open, onOpenChange, item, mutation }) {
     <Dialog open={open} onOpenChange={(v) => !mutation.isPending && onOpenChange(v)}>
       <DialogContent className="max-w-sm border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/60">
         <div className="h-[3px] w-full bg-destructive" />
-        <div className="px-6 pt-5 pb-6">
+        <div className="px-6 py-5">
           <div className="flex items-center gap-3 mb-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-destructive/25 bg-destructive/10">
               <Archive className="h-4 w-4 text-destructive" />
@@ -537,7 +537,7 @@ export function ItemsTable() {
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const {
-    storeId, items, total, totalPages, currentPage,
+    storeId, items, total, currentPage,
     isLoading, isFetching, error, summary,
     create, update, activate, deactivate, archive,
   } = useItems({
@@ -673,7 +673,7 @@ export function ItemsTable() {
       )}
 
       {/* ── Filters ─────────────────────────────────────────────────────── */}
-      <div className="px-6 pt-4">
+      <div className="px-6 pt-5">
         <FilterBar
           search={search}                   onSearch={setSearch}
           isActive={isActive}               onIsActive={setIsActive}
@@ -685,7 +685,7 @@ export function ItemsTable() {
       </div>
 
       {/* ── Table ───────────────────────────────────────────────────────── */}
-      <div className="px-6 pt-3 pb-6">
+      <div className="px-6 pt-5 pb-5">
         {error ? (
           <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {typeof error === "string" ? error : "Unable to load items."}

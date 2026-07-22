@@ -150,16 +150,6 @@ pub struct UpdateItemDto {
     pub image_data:            Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct AdjustStockDto {
-    pub item_id:         Uuid,
-    pub store_id:        i32,
-    pub adjustment_type: Option<String>,  // ADJUSTMENT | RESTOCK | DAMAGE | etc.
-    pub adjustment:      f64,             // quantity change (can be negative)
-    pub reason:          Option<String>,
-    pub notes:           Option<String>,
-}
-
 /// Lightweight search result (for POS barcode / autocomplete).
 /// Includes measurement_type and unit_type so the POS can render the
 /// correct quantity input (integer for pieces, decimal for weight/volume).

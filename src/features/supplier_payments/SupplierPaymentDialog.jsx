@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input }  from "@/components/ui/input";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 

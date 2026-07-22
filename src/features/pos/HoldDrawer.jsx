@@ -120,7 +120,8 @@ export function HoldDrawer({
                 const note     = cartData.note ?? held.label ?? "";
                 const itemCount = items.reduce((s, i) => s + (i.quantity ?? 0), 0);
 
-                // Estimate subtotal for display
+                // Rough line-sum for display only — excludes tax and any
+                // cart-level discount, so it is shown with a "≈" prefix.
                 const estTotal = items.reduce(
                   (s, i) => s + i.price * i.quantity - (i.discount ?? 0), 0
                 );
@@ -143,8 +144,8 @@ export function HoldDrawer({
                           {formatDateTime(held.created_at)}
                         </p>
                       </div>
-                      <span className="text-[12px] font-bold text-foreground tabular-nums font-mono shrink-0">
-                        {formatCurrency(estTotal)}
+                      <span className="text-[12px] font-bold text-foreground tabular-nums font-mono shrink-0" title="Approximate — excludes tax and cart discount">
+                        ≈ {formatCurrency(estTotal)}
                       </span>
                     </div>
 

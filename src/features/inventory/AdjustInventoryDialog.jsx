@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { useState, useEffect } from "react";
-import { BarChart3 } from "lucide-react";
+import { BarChart3, AlertTriangle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button }   from "@/components/ui/button";
 import { Input }    from "@/components/ui/input";
@@ -57,12 +57,12 @@ export function AdjustInventoryDialog({ open, onOpenChange, item, mutation }) {
   return (
     <Dialog open={open} onOpenChange={(v) => !mutation.isPending && onOpenChange(v)}>
       <DialogContent className="max-w-sm border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/60">
-        <div className="h-[3px] w-full bg-amber-500" />
+        <div className="h-[3px] w-full bg-warning" />
         <div className="px-6 pt-5 pb-6">
           <DialogHeader className="mb-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-amber-500/25 bg-amber-500/10">
-                <BarChart3 className="h-4 w-4 text-amber-400" />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-warning/25 bg-warning/10">
+                <BarChart3 className="h-4 w-4 text-warning" />
               </div>
               <div>
                 <DialogTitle className="text-[15px] font-bold">Adjust Inventory</DialogTitle>
@@ -96,11 +96,15 @@ export function AdjustInventoryDialog({ open, onOpenChange, item, mutation }) {
                   New total:{" "}
                   <strong className={cn(
                     "tabular-nums",
-                    isNeg ? "text-rose-400" : isPos ? "text-emerald-400" : "text-foreground",
+                    isNeg ? "text-destructive" : isPos ? "text-success" : "text-foreground",
                   )}>
                     {formatQuantity(newQty, measureType, unitType)}
                   </strong>
-                  {newQty < 0 && <span className="text-rose-400 ml-1">⚠ negative</span>}
+                  {newQty < 0 && (
+                    <span className="inline-flex items-center gap-0.5 text-destructive ml-1">
+                      <AlertTriangle className="h-3 w-3" /> negative
+                    </span>
+                  )}
                 </p>
               )}
             </div>

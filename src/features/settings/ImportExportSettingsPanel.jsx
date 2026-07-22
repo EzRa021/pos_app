@@ -62,7 +62,7 @@ export function ImportExportSettingsPanel() {
   const hasFolder = !!saved.trim();
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       {/* Info banner */}
       <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/[0.04] px-4 py-3.5">
         <Info className="h-4 w-4 text-primary mt-0.5 shrink-0" />
@@ -77,7 +77,7 @@ export function ImportExportSettingsPanel() {
       </div>
 
       {/* Folder picker */}
-      <div className="rounded-xl border border-border bg-card p-5 space-y-4">
+      <div className="rounded-xl border border-border bg-card p-3 space-y-4">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/30">
             <FolderOpen className="h-4 w-4 text-muted-foreground" />
@@ -85,7 +85,7 @@ export function ImportExportSettingsPanel() {
           <h3 className="text-[13px] font-bold text-foreground">Export Folder</h3>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Folder path
           </label>
@@ -161,7 +161,7 @@ export function ImportExportSettingsPanel() {
       </div>
 
       {/* What gets exported here */}
-      <div className="rounded-xl border border-border bg-card p-5 space-y-3">
+      <div className="rounded-xl border border-border bg-card p-3 space-y-3">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted/30">
             <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
@@ -169,7 +169,7 @@ export function ImportExportSettingsPanel() {
           <h3 className="text-[13px] font-bold text-foreground">Files saved to this folder</h3>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           {[
             { label: "Item export",           file: "items_export_YYYY-MM-DD.xlsx" },
             { label: "Filtered item export",  file: "items_export_<filter>_YYYY-MM-DD.xlsx" },

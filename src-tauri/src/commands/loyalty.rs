@@ -13,6 +13,7 @@ use crate::{
     state::AppState,
 };
 use super::auth::guard_permission;
+use super::audit::write_audit_log;
 
 // ── get_loyalty_settings ──────────────────────────────────────────────────────
 
@@ -231,6 +232,10 @@ pub async fn adjust_points(
     if payload.points == 0 {
         return Err(AppError::Validation("Adjustment must be non-zero".into()));
     }
+    // Reason is mandatory — mirrors the client and gives the audit log meaning.
+    let notes = payload.notes.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::Validation("A reason is required for point adjustments".into()))?
+        .to_string();
     if payload.points < 0 {
         let balance = current_balance(&pool, payload.customer_id).await?;
         if balance < payload.points.abs() {
@@ -239,10 +244,14 @@ pub async fn adjust_points(
             )));
         }
     }
-    record_points_tx(
+    let tx = record_points_tx(
         &pool, payload.customer_id, payload.store_id, None,
-        "adjust", payload.points, payload.notes, claims.user_id,
-    ).await
+        "adjust", payload.points, Some(notes.clone()), claims.user_id,
+    ).await?;
+    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "adjust", "loyalty_points",
+        &format!("Adjusted loyalty points for customer {} by {} (after: {}) — {}",
+            payload.customer_id, payload.points, tx.balance_after, notes), "warning").await;
+    Ok(tx)
 }
 
 // ── get_loyalty_history ───────────────────────────────────────────────────────
@@ -431,6 +440,21 @@ pub(crate) async fn record_points_tx(
     .await?;
 
     tx.commit().await?;
+
+    // Cloud sync (best-effort) — mirrors the wallet path so loyalty balances
+    // don't diverge across terminals. Pushes the updated customer balance and
+    // the ledger row.
+    crate::database::sync::queue_row(
+        pool, "customers", "UPDATE", &customer_id.to_string(),
+        serde_json::json!({ "id": customer_id, "store_id": store_id, "loyalty_points": balance_after }),
+        Some(store_id),
+    ).await;
+    crate::database::sync::queue_row(
+        pool, "loyalty_transactions", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id, "customer_id": customer_id, "store_id": store_id,
+                            "type": r#type, "points": points, "balance_after": balance_after }),
+        Some(store_id),
+    ).await;
 
     sqlx::query_as!(
         LoyaltyTransaction,

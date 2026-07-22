@@ -12,6 +12,7 @@ use crate::{
         CreateTransferDto, SendTransferDto, ReceiveTransferDto, TransferFilters,
         ExecuteTransferDto,
     },
+    models::pagination::PagedResult,
     state::AppState,
 };
 use super::auth::guard_permission;
@@ -57,12 +58,10 @@ pub async fn create_transfer(
     }
 
     let mut tx = pool.begin().await?;
-    let seq: i64 = sqlx::query_scalar!("SELECT COUNT(*) + 1 FROM stock_transfers")
-        .fetch_one(&mut *tx)
-        .await?
-        .unwrap_or(1);
-    let year            = chrono::Utc::now().format("%Y");
-    let transfer_number = format!("TRF-{year}-{seq:05}");
+    let year = chrono::Utc::now().format("%Y");
+    let transfer_number = crate::utils::ref_no::next_tail_number_exec(
+        tx.as_mut(), "stock_transfers", "transfer_number", &format!("TRF-{year}-"), 5,
+    ).await;
 
     let id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO stock_transfers
@@ -87,12 +86,13 @@ pub async fn create_transfer(
         .ok_or_else(|| AppError::NotFound(format!("Item {} not found", item.item_id)))?;
         let qty = crate::utils::qty::validate_qty_opt(raw_qty, meta.measurement_type.as_deref(), &meta.item_name)?;
         sqlx::query!(
-            r#"INSERT INTO stock_transfer_items (transfer_id, item_id, qty_requested, unit_type)
-               SELECT $1, $2, $3, ist.unit_type
+            r#"INSERT INTO stock_transfer_items (transfer_id, item_id, destination_item_id, qty_requested, unit_type)
+               SELECT $1, $2, $3, $4, ist.unit_type
                FROM   item_settings ist
                WHERE  ist.item_id = $2"#,
             id,
             item.item_id,
+            item.destination_item_id,
             qty,
         )
         .execute(&mut *tx)
@@ -222,12 +222,6 @@ pub async fn send_transfer(
 
 // ── receive_transfer ──────────────────────────────────────────────────────────
 
-/// Roles allowed to accept/receive an incoming stock transfer on behalf of
-/// the destination store. Deliberately narrower than generic "inventory.adjust"
-/// — cashiers and stock keepers cannot accept incoming transfers.
-const TRANSFER_RECEIVE_ROLES: [&str; 5] =
-    ["super_admin", "admin", "gm", "manager", "inventory_manager"];
-
 #[tauri::command]
 pub async fn receive_transfer(
     state:   State<'_, AppState>,
@@ -235,7 +229,11 @@ pub async fn receive_transfer(
     id:      i32,
     payload: ReceiveTransferDto,
 ) -> AppResult<StockTransfer> {
-    let claims = super::auth::guard(&state, &token).await?;
+    // Deliberately narrower than generic "inventory.adjust" — cashiers and
+    // stock keepers cannot accept incoming transfers. Granted by migration 0100
+    // to super_admin/admin/gm/manager/inventory_manager, matching the hardcoded
+    // allowlist this replaced (now grantable without a recompile).
+    let claims = guard_permission(&state, &token, "inventory.transfer_receive").await?;
     let pool   = state.pool().await?;
     let mut tx = pool.begin().await?;
 
@@ -246,12 +244,9 @@ pub async fn receive_transfer(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("Transfer {id} not found")))?;
 
-    // Only admin / gm / store manager / inventory manager may approve &
-    // accept an incoming transfer — and only for their own store, unless
-    // they hold a global role.
-    if !TRANSFER_RECEIVE_ROLES.contains(&claims.role_slug.as_str()) {
-        return Err(AppError::Forbidden);
-    }
+    // Store scope: may only accept transfers destined for your own store,
+    // unless you hold a global role. (The *right* to receive at all is checked
+    // by the guard_permission above.)
     if !claims.is_global && claims.store_id != Some(transfer.to_store_id) {
         return Err(AppError::Forbidden);
     }
@@ -383,7 +378,7 @@ pub async fn get_transfers(
     state:   State<'_, AppState>,
     token:   String,
     filters: TransferFilters,
-) -> AppResult<Vec<StockTransfer>> {
+) -> AppResult<PagedResult<StockTransfer>> {
     guard_permission(&state, &token, "inventory.read").await?;
     let pool  = state.pool().await?;
     let limit = filters.limit.unwrap_or(50).clamp(1, 500);
@@ -391,6 +386,23 @@ pub async fn get_transfers(
     let off   = (page - 1) * limit;
 
     let sp = filters.search.as_deref();
+
+    let total: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*)
+           FROM stock_transfers st
+           JOIN stores sf  ON sf.id  = st.from_store_id
+           JOIN stores st2 ON st2.id = st.to_store_id
+           WHERE ($1::int  IS NULL OR st.from_store_id=$1 OR st.to_store_id=$1)
+             AND ($2::text IS NULL OR st.status=$2)
+             AND ($3::text IS NULL OR st.transfer_number ILIKE '%' || $3 || '%'
+                  OR sf.store_name  ILIKE '%' || $3 || '%'
+                  OR st2.store_name ILIKE '%' || $3 || '%'
+                  OR st.notes       ILIKE '%' || $3 || '%')"#,
+        filters.store_id, filters.status, sp,
+    )
+    .fetch_one(&pool)
+    .await?
+    .unwrap_or(0);
 
     let rows = sqlx::query!(
         r#"SELECT st.id, st.transfer_number, st.from_store_id, st.to_store_id,
@@ -423,7 +435,7 @@ pub async fn get_transfers(
             items,
         });
     }
-    Ok(result)
+    Ok(PagedResult::new(result, total, page, limit))
 }
 
 // ── search_transfers_inner ───────────────────────────────────────────────────
@@ -648,12 +660,10 @@ pub(crate) async fn execute_transfer_inner(
     let mut tx = pool.begin().await?;
 
     // Generate transfer number ─────────────────────────────────────────────────
-    let seq: i64 = sqlx::query_scalar!("SELECT COUNT(*) + 1 FROM stock_transfers")
-        .fetch_one(&mut *tx)
-        .await?
-        .unwrap_or(1);
     let year = chrono::Utc::now().format("%Y");
-    let transfer_number = format!("TRF-{year}-{seq:05}");
+    let transfer_number = crate::utils::ref_no::next_tail_number_exec(
+        tx.as_mut(), "stock_transfers", "transfer_number", &format!("TRF-{year}-"), 5,
+    ).await;
 
     // Insert header ───────────────────────────────────────────────────────────
     let transfer_id: i32 = sqlx::query_scalar!(
@@ -1025,10 +1035,10 @@ async fn create_pending_transfer_inner(
 ) -> AppResult<StockTransfer> {
     let mut tx = pool.begin().await?;
 
-    let seq: i64 = sqlx::query_scalar!("SELECT COUNT(*) + 1 FROM stock_transfers")
-        .fetch_one(&mut *tx).await?.unwrap_or(1);
     let year = chrono::Utc::now().format("%Y");
-    let transfer_number = format!("TRF-{year}-{seq:05}");
+    let transfer_number = crate::utils::ref_no::next_tail_number_exec(
+        tx.as_mut(), "stock_transfers", "transfer_number", &format!("TRF-{year}-"), 5,
+    ).await;
 
     let transfer_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO stock_transfers
@@ -1070,7 +1080,7 @@ async fn create_pending_transfer_inner(
             r#"INSERT INTO stock_transfer_items
                    (transfer_id, item_id, destination_item_id, qty_requested, unit_type)
                VALUES ($1, $2, $3, $4, $5)"#,
-            transfer_id, leg.item_id, None::<Uuid>, qty, unit_type,
+            transfer_id, leg.item_id, leg.destination_item_id, qty, unit_type,
         )
         .execute(&mut *tx).await?;
     }
@@ -1096,11 +1106,10 @@ pub(crate) async fn approve_transfer_inner(
     token: String,
     id:    i32,
 ) -> AppResult<StockTransfer> {
-    // Only global (admin) users can approve
-    let claims = super::auth::guard(state, &token).await?;
-    if !claims.is_global {
-        return Err(AppError::Forbidden);
-    }
+    // Approving executes the transfer and moves stock. guard_permission
+    // short-circuits for global roles, so this preserves the previous
+    // "global only" behaviour while making the right grantable (migration 0100).
+    let claims = guard_permission(state, &token, "inventory.transfer_approve").await?;
     let pool = state.pool().await?;
 
     let transfer = sqlx::query!(

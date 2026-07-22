@@ -2,18 +2,16 @@
 // features/inventory/InventoryDashboard.jsx — Main inventory page
 // ============================================================================
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Boxes, Search, X, TrendingDown, AlertTriangle, DollarSign,
-  BarChart3, Package, RefreshCw, Filter, ArrowUpDown, Plus,
-  CheckCircle2, ClipboardList, Star,
+  RefreshCw, Plus, ClipboardList, Star,
 } from "lucide-react";
 
 import { DataTable }  from "@/components/shared/DataTable";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { PageHeader } from "@/components/shared/PageHeader";
-import { Spinner }    from "@/components/shared/Spinner";
 import { Button }     from "@/components/ui/button";
 import { Input }      from "@/components/ui/input";
 import {
@@ -25,7 +23,7 @@ import { useFavourites }         from "@/features/pos/useFavourites";
 import { ItemImage }             from "@/components/shared/ItemImage";
 import { RestockDialog }         from "@/features/inventory/RestockDialog";
 import { AdjustInventoryDialog } from "@/features/inventory/AdjustInventoryDialog";
-import { formatCurrency, formatQuantity, formatPricePerUnit, formatDate } from "@/lib/format";
+import { formatCurrency, formatQuantity, formatPricePerUnit } from "@/lib/format";
 import { MEASUREMENT_TYPE_OPTIONS } from "@/lib/constants";
 import { cn }                    from "@/lib/utils";
 
@@ -33,9 +31,9 @@ import { cn }                    from "@/lib/utils";
 function StatCard({ label, value, sub, icon: Icon, accent = "primary" }) {
   const rings = {
     primary:     "border-primary/20 bg-primary/5 text-primary",
-    success:     "border-emerald-500/20 bg-emerald-500/5 text-emerald-400",
-    warning:     "border-amber-500/20 bg-amber-500/5 text-amber-400",
-    destructive: "border-red-500/20 bg-red-500/5 text-red-400",
+    success:     "border-success/20 bg-success/5 text-success",
+    warning:     "border-warning/20 bg-warning/5 text-warning",
+    destructive: "border-destructive/20 bg-destructive/5 text-destructive",
   };
   return (
     <div className="rounded-xl border border-border bg-card p-4 flex items-start gap-3">
@@ -54,9 +52,9 @@ function StatCard({ label, value, sub, icon: Icon, accent = "primary" }) {
 // ── Stock status badge ────────────────────────────────────────────────────────
 function StockStatusBadge({ status }) {
   const styles = {
-    low:    "border-amber-500/30 bg-amber-500/10 text-amber-400",
+    low:    "border-warning/30 bg-warning/10 text-warning",
     high:   "border-sky-500/30 bg-sky-500/10 text-sky-400",
-    normal: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+    normal: "border-success/30 bg-success/10 text-success",
   };
   const labels = { low: "Low", high: "High", normal: "Normal" };
   const s = status ?? "normal";
@@ -89,7 +87,7 @@ export function InventoryDashboard() {
   useEffect(() => setPage(1), [debouncedSearch, lowStock, measurementType]);
 
   const {
-    storeId, records, total, totalPages, currentPage,
+    storeId, records, total, currentPage,
     isLoading, isFetching, error, summary, lowStockList,
     restock, adjust,
   } = useInventory({
@@ -135,7 +133,7 @@ export function InventoryDashboard() {
         return (
           <span className={cn(
             "text-sm font-bold tabular-nums",
-            q === 0 ? "text-red-400" : m > 0 && q <= m ? "text-amber-400" : "text-foreground",
+            q === 0 ? "text-destructive" : m > 0 && q <= m ? "text-warning" : "text-foreground",
           )}>
             {formatQuantity(q, row.measurement_type, row.unit_type)}
           </span>
@@ -193,11 +191,11 @@ export function InventoryDashboard() {
                 pinned ? "text-amber-400 fill-amber-400" : "text-muted-foreground/40 hover:text-amber-400",
               )} />
             </Button>
-            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+            <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-success hover:text-success hover:bg-success/10"
               onClick={(e) => { e.stopPropagation(); setRestockItem(row); }}>
-              + Restock
+              <Plus className="h-3 w-3" /> Restock
             </Button>
-            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-warning hover:text-warning hover:bg-warning/10"
               onClick={(e) => { e.stopPropagation(); setAdjustItem(row); }}>
               Adjust
             </Button>
@@ -236,14 +234,14 @@ export function InventoryDashboard() {
 
       {/* Low stock alert strip */}
       {lowStockList.length > 0 && !lowStock && (
-        <div className="mx-6 mt-4 rounded-xl border border-amber-500/25 bg-amber-500/8 px-4 py-3 flex items-center justify-between">
+        <div className="mx-6 mt-4 rounded-xl border border-warning/25 bg-warning/8 px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <TrendingDown className="h-4 w-4 text-amber-400 shrink-0" />
-            <p className="text-xs font-medium text-amber-300">
+            <TrendingDown className="h-4 w-4 text-warning shrink-0" />
+            <p className="text-xs font-medium text-warning">
               <strong>{lowStockList.length}</strong> item{lowStockList.length !== 1 ? "s" : ""} are running low on stock
             </p>
           </div>
-          <Button size="sm" variant="outline" className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10 h-7 text-[11px]"
+          <Button size="sm" variant="outline" className="border-warning/30 text-warning hover:bg-warning/10 h-7 text-[11px]"
             onClick={() => setLowStock(true)}>
             View
           </Button>
@@ -251,7 +249,7 @@ export function InventoryDashboard() {
       )}
 
       {/* Filters */}
-      <div className="px-6 pt-4 flex flex-wrap items-center gap-2">
+      <div className="px-6 pt-5 flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)}
@@ -279,7 +277,7 @@ export function InventoryDashboard() {
           className={cn(
             "flex items-center gap-1.5 rounded-md border px-2.5 h-8 text-xs font-medium transition-all",
             lowStock
-              ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+              ? "border-warning/40 bg-warning/10 text-warning"
               : "border-border text-muted-foreground hover:text-foreground",
           )}>
           <TrendingDown className="h-3 w-3" /> Low Stock Only
@@ -297,7 +295,7 @@ export function InventoryDashboard() {
       </div>
 
       {/* Table */}
-      <div className="px-6 pt-3 pb-6">
+      <div className="px-6 pt-5 pb-5">
         {error ? (
           <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {typeof error === "string" ? error : "Unable to load inventory."}

@@ -10,7 +10,6 @@ import { toastSuccess, onMutationError } from "@/lib/toast";
 
 export function useStockTransfers({ search, status, page = 1, limit = 25 } = {}) {
   const storeId = useBranchStore((s) => s.activeStore?.id);
-  const qc      = useQueryClient();
 
   const queryKey = ["stock-transfers", storeId, { search, status, page, limit }];
 
@@ -28,62 +27,22 @@ export function useStockTransfers({ search, status, page = 1, limit = 25 } = {})
     placeholderData: (prev) => prev,
   });
 
-  // Invalidate transfer list only — no stock movement yet
-  const invalidateList = () =>
-    qc.invalidateQueries({ queryKey: ["stock-transfers", storeId] });
-
-  // Receiving a transfer restocks items — must also refresh inventory, items, POS grid
-  const invalidateListAndStock = () => {
-    invalidateList();
-    invalidateStock(storeId); // refreshes items, pos-items, item, inventory, inv_summary, low_stock
-  };
-
-  const create  = useMutation({
-    mutationFn: createTransfer,
-    onSuccess: () => {
-      toastSuccess("Transfer Created", "The stock transfer has been drafted and is ready to send.");
-      invalidateList();
-    },
-    onError: (e) => onMutationError("Couldn't Create Transfer", e),
-  });
-  const send    = useMutation({
-    mutationFn: ({ id, ...p }) => sendTransfer(id, p),
-    onSuccess: () => {
-      toastSuccess("Transfer Sent", "Stock is in transit and awaiting receipt at the destination.");
-      invalidateList();
-    },
-    onError: (e) => onMutationError("Couldn't Send Transfer", e),
-  });
-  const receive = useMutation({
-    mutationFn: ({ id, ...p }) => receiveTransfer(id, p),
-    onSuccess: () => {
-      toastSuccess("Transfer Received", "Stock has been received and inventory levels updated.");
-      invalidateListAndStock();
-    },
-    onError: (e) => onMutationError("Couldn't Receive Transfer", e),
-  });
-  const cancel  = useMutation({
-    mutationFn: cancelTransfer,
-    onSuccess: () => {
-      toastSuccess("Transfer Cancelled", "The stock transfer has been cancelled.");
-      invalidateList();
-    },
-    onError: (e) => onMutationError("Couldn't Cancel Transfer", e),
-  });
-
-  // Backend returns a plain Vec<StockTransfer> array (no pagination wrapper)
-  const transfers = Array.isArray(data) ? data : [];
+  // Backend returns a PagedResult { data, total, page, total_pages }.
+  const transfers  = data?.data        ?? [];
+  const total      = data?.total       ?? 0;
+  const totalPages = data?.total_pages ?? 1;
 
   return {
     storeId,
     transfers,
-    total:     transfers.length,
+    total,
+    totalPages,
     isLoading,
     isFetching,
-    create, send, receive, cancel,
   };
 }
 
+// Admin (global) users move stock instantly via execute_transfer.
 export function useExecuteTransfer() {
   const storeId = useBranchStore((s) => s.activeStore?.id);
   const qc      = useQueryClient();
@@ -96,6 +55,22 @@ export function useExecuteTransfer() {
       invalidateStock(storeId);
     },
     onError: (e) => onMutationError("Transfer Failed", e),
+  });
+}
+
+// Non-global users submit a request that lands in the pending_approval queue
+// for an admin to approve. No stock moves until approval.
+export function useCreateTransfer() {
+  const storeId = useBranchStore((s) => s.activeStore?.id);
+  const qc      = useQueryClient();
+
+  return useMutation({
+    mutationFn: createTransfer,
+    onSuccess: () => {
+      toastSuccess("Transfer Submitted", "Your transfer request is awaiting admin approval.");
+      qc.invalidateQueries({ queryKey: ["stock-transfers", storeId] });
+    },
+    onError: (e) => onMutationError("Couldn't Submit Transfer", e),
   });
 }
 
@@ -120,38 +95,23 @@ export function useStockTransfer(id) {
     invalidateStock(storeId); // receiving restocks items
   };
 
+  // These mutations intentionally do NOT toast — the detail-page dialogs and
+  // handlers own their own success/error toasts. The hook only invalidates.
   const send    = useMutation({
     mutationFn: (p) => sendTransfer(id, p),
-    onSuccess: () => {
-      toastSuccess("Transfer Sent", "Stock is in transit and awaiting receipt at the destination.");
-      invalidateDetail();
-    },
-    onError: (e) => onMutationError("Couldn't Send Transfer", e),
+    onSuccess: invalidateDetail,
   });
   const receive = useMutation({
     mutationFn: (p) => receiveTransfer(id, p),
-    onSuccess: () => {
-      toastSuccess("Transfer Received", "Stock has been received and inventory levels updated.");
-      invalidateDetailAndStock();
-    },
-    onError: (e) => onMutationError("Couldn't Receive Transfer", e),
+    onSuccess: invalidateDetailAndStock,
   });
   const cancel  = useMutation({
     mutationFn: () => cancelTransfer(id),
-    onSuccess: () => {
-      toastSuccess("Transfer Cancelled", "The stock transfer has been cancelled.");
-      invalidateDetail();
-    },
-    onError: (e) => onMutationError("Couldn't Cancel Transfer", e),
+    onSuccess: invalidateDetail,
   });
-
   const approve = useMutation({
     mutationFn: () => approveTransfer(id),
-    onSuccess: () => {
-      toastSuccess("Transfer Approved", "Stock has been moved and inventory levels updated.");
-      invalidateDetailAndStock();
-    },
-    onError: (e) => onMutationError("Couldn't Approve Transfer", e),
+    onSuccess: invalidateDetailAndStock,
   });
 
   return { transfer: data, isLoading, error: error ?? null, send, receive, cancel, approve };

@@ -219,24 +219,6 @@ pub(crate) async fn hard_delete_department_inner(
     Ok(())
 }
 
-pub(crate) async fn delete_department_inner(
-    state: &AppState,
-    token: String,
-    id:    i32,
-) -> AppResult<()> {
-    let claims = guard_permission(state, &token, "departments.delete").await?;
-    let pool = state.pool().await?;
-    sqlx::query!(
-        "UPDATE departments SET is_active = FALSE, updated_at = NOW() WHERE id = $1",
-        id
-    )
-    .execute(&pool)
-    .await?;
-    write_audit_log(&pool, claims.user_id, None, "deactivate", "department",
-        &format!("Deactivated department id {id}"), "warning").await;
-    Ok(())
-}
-
 pub(crate) async fn search_departments_inner(
     state: &AppState,
     token: String,
@@ -330,121 +312,6 @@ pub(crate) async fn get_departments_by_store_inner(
     .map_err(AppError::from)
 }
 
-pub(crate) async fn get_global_departments_inner(
-    state:     &AppState,
-    token:     String,
-    is_active: Option<bool>,
-) -> AppResult<Vec<Department>> {
-    guard_permission(state, &token, "departments.read").await?;
-    let pool = state.pool().await?;
-
-    sqlx::query_as!(
-        Department,
-        r#"
-        SELECT
-          d.id,
-          d.store_id                        AS "store_id?",
-          d.department_code                 AS "department_code?",
-          d.department_name,
-          d.description,
-          d.parent_department_id            AS "parent_department_id?",
-          d.display_order,
-          d.color                           AS "color?",
-          d.icon                            AS "icon?",
-          d.is_active,
-          d.created_at,
-          d.updated_at,
-          s.store_name                      AS "store_name?",
-          pd.department_name                AS "parent_department_name?",
-          (SELECT COUNT(*)::bigint FROM categories c WHERE c.department_id = d.id) AS "category_count?"
-        FROM departments d
-        LEFT JOIN stores      s  ON d.store_id             = s.id
-        LEFT JOIN departments pd ON d.parent_department_id = pd.id
-        WHERE d.store_id IS NULL
-          AND ($1::bool IS NULL OR d.is_active = $1)
-        ORDER BY d.display_order ASC, d.department_name ASC
-        "#,
-        is_active
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::from)
-}
-
-pub(crate) async fn get_department_by_code_inner(
-    state: &AppState,
-    token: String,
-    code:  String,
-) -> AppResult<Option<Department>> {
-    guard_permission(state, &token, "departments.read").await?;
-    let pool = state.pool().await?;
-
-    sqlx::query_as!(
-        Department,
-        r#"
-        SELECT
-          d.id,
-          d.store_id                        AS "store_id?",
-          d.department_code                 AS "department_code?",
-          d.department_name,
-          d.description,
-          d.parent_department_id            AS "parent_department_id?",
-          d.display_order,
-          d.color                           AS "color?",
-          d.icon                            AS "icon?",
-          d.is_active,
-          d.created_at,
-          d.updated_at,
-          s.store_name                      AS "store_name?",
-          pd.department_name                AS "parent_department_name?",
-          (SELECT COUNT(*)::bigint FROM categories c WHERE c.department_id = d.id) AS "category_count?"
-        FROM departments d
-        LEFT JOIN stores      s  ON d.store_id             = s.id
-        LEFT JOIN departments pd ON d.parent_department_id = pd.id
-        WHERE d.department_code = $1
-        "#,
-        code
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(AppError::from)
-}
-
-pub(crate) async fn get_department_categories_inner(
-    state:         &AppState,
-    token:         String,
-    department_id: i32,
-    is_active:     Option<bool>,
-) -> AppResult<Vec<serde_json::Value>> {
-    guard_permission(state, &token, "departments.read").await?;
-    let pool = state.pool().await?;
-
-    let rows = sqlx::query!(
-        r#"
-        SELECT id, category_code, category_name, store_id, is_active, is_visible_in_pos
-        FROM   categories
-        WHERE  department_id = $1
-          AND ($2::bool IS NULL OR is_active = $2)
-        ORDER  BY display_order ASC, category_name ASC
-        "#,
-        department_id,
-        is_active
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    let result = rows.iter().map(|r| serde_json::json!({
-        "id":                r.id,
-        "category_code":     r.category_code,
-        "category_name":     r.category_name,
-        "store_id":          r.store_id,
-        "is_active":         r.is_active,
-        "is_visible_in_pos": r.is_visible_in_pos,
-    })).collect();
-
-    Ok(result)
-}
-
 pub(crate) async fn activate_department_inner(
     state: &AppState,
     token: String,
@@ -469,27 +336,6 @@ pub(crate) async fn deactivate_department_inner(
     get_department_inner(state, token, id).await
 }
 
-pub(crate) async fn count_departments_inner(
-    state:     &AppState,
-    token:     String,
-    store_id:  Option<i32>,
-    is_active: Option<bool>,
-) -> AppResult<i64> {
-    guard_permission(state, &token, "departments.read").await?;
-    let pool = state.pool().await?;
-    sqlx::query_scalar!(
-        r#"SELECT COUNT(*) FROM departments
-           WHERE ($1::int  IS NULL OR store_id  = $1)
-             AND ($2::bool IS NULL OR is_active = $2)"#,
-        store_id,
-        is_active
-    )
-    .fetch_one(&pool)
-    .await
-    .map(|c| c.unwrap_or(0))
-    .map_err(AppError::from)
-}
-
 // ── Tauri command wrappers ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -499,15 +345,6 @@ pub async fn get_departments(
     store_id: Option<i32>,
 ) -> AppResult<Vec<Department>> {
     get_departments_inner(&state, token, store_id).await
-}
-
-#[tauri::command]
-pub async fn get_department(
-    state: State<'_, AppState>,
-    token: String,
-    id:    i32,
-) -> AppResult<Department> {
-    get_department_inner(&state, token, id).await
 }
 
 #[tauri::command]
@@ -527,15 +364,6 @@ pub async fn update_department(
     payload: UpdateDepartmentDto,
 ) -> AppResult<Department> {
     update_department_inner(&state, token, id, payload).await
-}
-
-#[tauri::command]
-pub async fn delete_department(
-    state: State<'_, AppState>,
-    token: String,
-    id:    i32,
-) -> AppResult<()> {
-    delete_department_inner(&state, token, id).await
 }
 
 #[tauri::command]
@@ -569,34 +397,6 @@ pub async fn get_departments_by_store(
 }
 
 #[tauri::command]
-pub async fn get_global_departments(
-    state:     State<'_, AppState>,
-    token:     String,
-    is_active: Option<bool>,
-) -> AppResult<Vec<Department>> {
-    get_global_departments_inner(&state, token, is_active).await
-}
-
-#[tauri::command]
-pub async fn get_department_by_code(
-    state: State<'_, AppState>,
-    token: String,
-    code:  String,
-) -> AppResult<Option<Department>> {
-    get_department_by_code_inner(&state, token, code).await
-}
-
-#[tauri::command]
-pub async fn get_department_categories(
-    state:         State<'_, AppState>,
-    token:         String,
-    department_id: i32,
-    is_active:     Option<bool>,
-) -> AppResult<Vec<serde_json::Value>> {
-    get_department_categories_inner(&state, token, department_id, is_active).await
-}
-
-#[tauri::command]
 pub async fn activate_department(
     state: State<'_, AppState>,
     token: String,
@@ -614,12 +414,3 @@ pub async fn deactivate_department(
     deactivate_department_inner(&state, token, id).await
 }
 
-#[tauri::command]
-pub async fn count_departments(
-    state:     State<'_, AppState>,
-    token:     String,
-    store_id:  Option<i32>,
-    is_active: Option<bool>,
-) -> AppResult<i64> {
-    count_departments_inner(&state, token, store_id, is_active).await
-}

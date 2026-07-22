@@ -29,7 +29,7 @@ import {
   Banknote, CreditCard, Smartphone, Receipt,
   ArrowLeft, ArrowRight, Clock, X, User,
   Tag, CheckCircle2, Loader2, ChevronDown,
-  Wallet, Star, Lock, Scale, RefreshCw, Copy,
+  Wallet, Star, Lock, Scale,
 } from "lucide-react";
 
 import { Button }   from "@/components/ui/button";
@@ -63,9 +63,9 @@ import { getLoyaltyBalance, getLoyaltySettings } from "@/commands/loyalty";
 import { getStoreSettings }     from "@/commands/store_settings";
 import { getPaymentMethods }    from "@/commands/payment_methods";
 
-import { formatCurrency, formatName }  from "@/lib/format";
+import { formatCurrency }              from "@/lib/format";
 import { getAutoLockMinutes }          from "@/features/settings/security-utils";
-import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS, isActiveShiftStatus } from "@/lib/constants";
+import { PAYMENT_METHODS, isActiveShiftStatus } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,6 +89,13 @@ function generatePaymentRef(storeName = "") {
   return `${prefix}-${date}-${rand}`;
 }
 
+// Per-method colour coding is an intentional, deliberate exception to the
+// "semantic tokens only" rule: cashiers rely on a distinct, memorised colour per
+// payment method for fast recognition under time pressure. Cash/Card/Transfer
+// reuse the semantic success/primary/warning tokens; Mobile Money, Wallet and
+// Loyalty have no matching semantic token, so they use fixed named accents
+// (cyan / violet / amber). Credit deliberately does NOT use `destructive` — a
+// credit sale is a normal outcome, not an error — so it uses rose instead.
 const PM_CONFIG = {
   [PAYMENT_METHODS.CASH]: {
     label:    "Cash",
@@ -241,6 +248,7 @@ export default function PosPage() {
   const [isCharging,        setIsCharging]        = useState(false);
   const [isHolding,         setIsHolding]         = useState(false);
   const [creditLimitError,  setCreditLimitError]  = useState(null); // { available, required, customerName }
+  const [showClearConfirm,  setShowClearConfirm]  = useState(false);
 
   // ── Weigh modal state ─────────────────────────────────────────────────────
   // weighModal.item: the full enriched item being weighed (null = closed)
@@ -483,10 +491,18 @@ export default function PosPage() {
     setWeighModal({ item: null, qty: "" });
   }, []);
 
-  const handleClearCart = useCallback(() => {
+  // Clearing a built-up cart is destructive and has no undo, so confirm first
+  // when there's anything to lose (empty cart clears silently).
+  const doClearCart = useCallback(() => {
     clearCart();
     setPayments([]);
+    setShowClearConfirm(false);
   }, [clearCart]);
+
+  const handleClearCart = useCallback(() => {
+    if (cartItems.length === 0) { doClearCart(); return; }
+    setShowClearConfirm(true);
+  }, [cartItems.length, doClearCart]);
 
   // ── Wallet pay ────────────────────────────────────────────────────────────
   const handleWalletPay = useCallback(() => {
@@ -762,31 +778,34 @@ export default function PosPage() {
               )}
             </div>
 
-            {/* Lock POS button */}
-            <button
-              onClick={lockPos}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-all"
-              title="Lock POS screen"
-            >
-              <Lock className="h-3 w-3" /> Lock
-            </button>
+            {/* Right-aligned controls: Lock + view toggle */}
+            <div className="flex items-center gap-2">
+              {/* Lock POS button */}
+              <button
+                onClick={lockPos}
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-all"
+                title="Lock POS screen"
+              >
+                <Lock className="h-3 w-3" /> Lock
+              </button>
 
-            {/* Grid / List toggle */}
-            <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background/80 p-0.5">
-              {["grid", "list"].map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setViewMode(m)}
-                  className={cn(
-                    "flex h-6 w-7 items-center justify-center rounded-md transition-all duration-150",
-                    viewMode === m
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  {m === "grid" ? <Grid3X3 className="h-3.5 w-3.5" /> : <List className="h-3.5 w-3.5" />}
-                </button>
-              ))}
+              {/* Grid / List toggle */}
+              <div className="flex items-center gap-0.5 rounded-lg border border-border bg-background/80 p-0.5">
+                {["grid", "list"].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setViewMode(m)}
+                    className={cn(
+                      "flex h-6 w-7 items-center justify-center rounded-md transition-all duration-150",
+                      viewMode === m
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {m === "grid" ? <Grid3X3 className="h-3.5 w-3.5" /> : <List className="h-3.5 w-3.5" />}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -1162,6 +1181,13 @@ export default function PosPage() {
         error={creditLimitError}
         onClose={() => setCreditLimitError(null)}
       />
+
+      <ClearCartDialog
+        open={showClearConfirm}
+        itemCount={cartItems.length}
+        onCancel={() => setShowClearConfirm(false)}
+        onConfirm={doClearCart}
+      />
     </div>
   );
 }
@@ -1225,7 +1251,7 @@ function ItemCard({ item, onAdd, pinned, onPin, onUnpin }) {
           )}
           title={pinned ? "Remove from Quick Access" : "Add to Quick Access"}
         >
-          <Star className={cn("h-2.5 w-2.5", pinned ? "text-amber-400 fill-amber-400" : "text-white")} />
+          <Star className={cn("h-2.5 w-2.5", pinned ? "text-amber-400 fill-amber-400" : "text-foreground")} />
         </button>
       </div>
 
@@ -1525,6 +1551,48 @@ function CreditLimitDialog({ error, onClose }) {
         <DialogFooter>
           <Button className="w-full" onClick={onClose}>
             Got it, adjust the sale
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ClearCartDialog — confirm before discarding a non-empty cart
+// ─────────────────────────────────────────────────────────────────────────────
+function ClearCartDialog({ open, itemCount, onCancel, onConfirm }) {
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
+      <DialogContent className="sm:max-w-sm bg-card border-border shadow-2xl shadow-black/60">
+        <DialogHeader>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-destructive/15 border border-destructive/25">
+              <Trash2 className="h-5 w-5 text-destructive" />
+            </div>
+            <div>
+              <DialogTitle className="text-[15px] font-bold text-foreground leading-tight">
+                Clear the cart?
+              </DialogTitle>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {itemCount} item{itemCount === 1 ? "" : "s"} and any entered payments will be
+                removed. This can&apos;t be undone.
+              </p>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <p className="text-[11px] text-muted-foreground leading-relaxed px-1">
+          To keep this sale for later instead, close this dialog and use <span className="font-semibold text-foreground">Hold</span>.
+        </p>
+
+        <DialogFooter className="gap-2 sm:gap-2">
+          <Button variant="outline" className="flex-1" onClick={onCancel} autoFocus>
+            Keep cart
+          </Button>
+          <Button variant="destructive" className="flex-1 gap-1.5" onClick={onConfirm}>
+            <Trash2 className="h-3.5 w-3.5" />
+            Clear cart
           </Button>
         </DialogFooter>
       </DialogContent>

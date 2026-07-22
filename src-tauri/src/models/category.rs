@@ -16,6 +16,12 @@ pub struct Category {
     pub store_id:             i32,
     pub department_id:        Option<i32>,
     pub parent_category_id:   Option<i32>,
+    /// Materialized ancestor-id path, e.g. "/3/7/" (migration 0101).
+    /// Lets the UI sort/indent the tree and filter out a node's own subtree
+    /// when picking a new parent, without extra round-trips.
+    pub path:                 Option<String>,
+    /// 0 = root. Capped at 5 by the DB trigger.
+    pub depth:                i32,
     pub display_order:        i32,
     pub color:                Option<String>,
     pub icon:                 Option<String>,
@@ -73,6 +79,12 @@ pub struct UpdateCategoryDto {
     pub description:        Option<String>,
     pub department_id:      Option<i32>,
     pub parent_category_id: Option<i32>,
+    /// Every other field uses COALESCE (None = "leave unchanged"), which makes
+    /// it impossible to null a column back out. Promoting a nested category
+    /// back to a root needs an explicit signal, so this flag wins over
+    /// `parent_category_id` when true.
+    #[serde(default)]
+    pub clear_parent:       Option<bool>,
     pub display_order:      Option<i32>,
     pub color:              Option<String>,
     pub icon:               Option<String>,

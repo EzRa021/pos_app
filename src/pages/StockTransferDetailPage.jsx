@@ -1,8 +1,8 @@
 // pages/StockTransferDetailPage.jsx
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeftRight, Send, PackageCheck, X, Loader2,
-  Package, AlertTriangle, CheckCircle2,
+import { useParams } from "react-router-dom";
+import { Send, PackageCheck, X, Loader2,
+  AlertTriangle, CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader }  from "@/components/shared/PageHeader";
@@ -11,13 +11,14 @@ import { Button }      from "@/components/ui/button";
 import { Input }       from "@/components/ui/input";
 import { cn }          from "@/lib/utils";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
+import { ConfirmDialog }    from "@/components/shared/ConfirmDialog";
 import { useStockTransfer } from "@/features/stock_transfers/useStockTransfers";
 import { usePermission }    from "@/hooks/usePermission";
 import { useAuthStore }     from "@/stores/auth.store";
-import { formatCurrency, formatDateTime } from "@/lib/format";
+import { formatDateTime }   from "@/lib/format";
 
 // ── Send Dialog ───────────────────────────────────────────────────────────────
 function SendDialog({ open, onOpenChange, transfer, onSend }) {
@@ -161,7 +162,7 @@ function ReceiveDialog({ open, onOpenChange, transfer, onReceive }) {
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => handleOpen(false)}>Cancel</Button>
           <Button size="sm" onClick={handleSave} disabled={busy}
-            className="gap-1.5 bg-success hover:bg-success/90 text-white">
+            className="gap-1.5 bg-success hover:bg-success/90 text-success-foreground">
             {busy ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Receiving…</> : <><PackageCheck className="h-3.5 w-3.5" />Confirm Receipt</>}
           </Button>
         </DialogFooter>
@@ -174,13 +175,13 @@ function ReceiveDialog({ open, onOpenChange, transfer, onReceive }) {
 export default function StockTransferDetailPage() {
   const { id: idParam } = useParams();
   const id       = parseInt(idParam, 10);
-  const navigate = useNavigate();
-  const canAct   = usePermission("inventory.create");
+  const canAct   = usePermission("inventory.adjust");
   const isGlobal = useAuthStore((s) => s.user?.is_global ?? false);
   const roleSlug = useAuthStore((s) => s.user?.role_slug);
   const userStoreId = useAuthStore((s) => s.user?.store_id);
   const [sendOpen,    setSendOpen]    = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState(null); // "cancel" | "approve" | null
 
   // Only admin / gm / store manager / inventory manager at the destination
   // store (or a global user) may approve & accept an incoming transfer.
@@ -188,8 +189,7 @@ export default function StockTransferDetailPage() {
 
   const { transfer, isLoading, error, send, receive, cancel, approve } = useStockTransfer(id);
 
-  const handleCancel = async () => {
-    if (!confirm("Cancel this transfer?")) return;
+  const doCancel = async () => {
     try {
       await cancel.mutateAsync();
       toast.success("Transfer cancelled.");
@@ -198,10 +198,10 @@ export default function StockTransferDetailPage() {
     }
   };
 
-  const handleApprove = async () => {
-    if (!confirm("Approve and execute this transfer? Stock will move immediately.")) return;
+  const doApprove = async () => {
     try {
       await approve.mutateAsync();
+      toast.success("Transfer approved. Stock has been moved.");
     } catch (e) {
       toast.error(String(e));
     }
@@ -221,7 +221,6 @@ export default function StockTransferDetailPage() {
 
   const isDraft    = transfer.status === "draft";
   const isTransit  = transfer.status === "in_transit";
-  const isReceived = transfer.status === "received";
   const isPending  = transfer.status === "pending_approval";
 
   return (
@@ -237,9 +236,9 @@ export default function StockTransferDetailPage() {
               {isPending && isGlobal && (
                 <Button
                   size="sm"
-                  onClick={handleApprove}
+                  onClick={() => setConfirmAction("approve")}
                   disabled={approve.isPending}
-                  className="gap-1.5 bg-success hover:bg-success/90 text-white"
+                  className="gap-1.5 bg-success hover:bg-success/90 text-success-foreground"
                 >
                   {approve.isPending
                     ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Approving…</>
@@ -252,7 +251,7 @@ export default function StockTransferDetailPage() {
                 </span>
               )}
               {isPending && (
-                <Button size="sm" variant="outline" onClick={handleCancel}
+                <Button size="sm" variant="outline" onClick={() => setConfirmAction("cancel")}
                   disabled={cancel.isPending} className="gap-1.5 text-destructive border-destructive/30">
                   <X className="h-3.5 w-3.5" />Cancel
                 </Button>
@@ -262,7 +261,7 @@ export default function StockTransferDetailPage() {
                   <Button size="sm" onClick={() => setSendOpen(true)} className="gap-1.5">
                     <Send className="h-3.5 w-3.5" />Dispatch
                   </Button>
-                  <Button size="sm" variant="outline" onClick={handleCancel}
+                  <Button size="sm" variant="outline" onClick={() => setConfirmAction("cancel")}
                     disabled={cancel.isPending} className="gap-1.5 text-destructive border-destructive/30">
                     <X className="h-3.5 w-3.5" />Cancel
                   </Button>
@@ -274,7 +273,7 @@ export default function StockTransferDetailPage() {
                   (isGlobal || userStoreId === transfer.to_store_id);
                 return canReceive ? (
                   <Button size="sm" onClick={() => setReceiveOpen(true)}
-                    className="gap-1.5 bg-success hover:bg-success/90 text-white">
+                    className="gap-1.5 bg-success hover:bg-success/90 text-success-foreground">
                     <PackageCheck className="h-3.5 w-3.5" />Receive
                   </Button>
                 ) : (
@@ -363,6 +362,18 @@ export default function StockTransferDetailPage() {
         onOpenChange={setReceiveOpen}
         transfer={transfer}
         onReceive={(p) => receive.mutateAsync(p)}
+      />
+
+      <ConfirmDialog
+        open={confirmAction !== null}
+        onOpenChange={(v) => { if (!v) setConfirmAction(null); }}
+        title={confirmAction === "approve" ? "Approve & execute transfer?" : "Cancel transfer?"}
+        description={confirmAction === "approve"
+          ? "Stock will move from the source store to the destination immediately. This cannot be undone."
+          : "This transfer request will be cancelled. No stock will move."}
+        confirmLabel={confirmAction === "approve" ? "Approve & Execute" : "Cancel Transfer"}
+        variant={confirmAction === "approve" ? "warning" : "destructive"}
+        onConfirm={confirmAction === "approve" ? doApprove : doCancel}
       />
     </>
   );

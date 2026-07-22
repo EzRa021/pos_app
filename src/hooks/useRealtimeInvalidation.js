@@ -9,21 +9,32 @@ import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { getSupabaseClient } from "@/lib/supabase";
 
-// Map Supabase table names → React Query keys to invalidate
+// Map Supabase table names → React Query keys to invalidate.
+// `storeScoped: false` means the table has no store_id column (global or
+// reachable only through a parent FK) — subscribe without the store_id
+// filter, since Postgres would reject filtering on a nonexistent column.
 const TABLE_QUERY_MAP = {
-  transactions:       ["transactions"],
-  transaction_items:  ["transactions"],
-  item_stock:         ["inventory", "items", "pos-items"],
-  items:              ["items", "pos-items", "item"],
-  expenses:           ["expenses"],
-  shifts:             ["shifts", "active-shift"],
-  credit_sales:       ["credit-sales"],
-  customers:          ["customers", "customer"],
-  payments:           ["payments"],
-  returns:            ["returns"],
-  purchase_orders:    ["purchase-orders"],
-  notifications:      ["notifications", "unread-count"],
-  reorder_alerts:     ["reorder-alerts"],
+  transactions:       { keys: ["transactions"] },
+  transaction_items:  { keys: ["transactions"], storeScoped: false },
+  item_stock:         { keys: ["inventory", "items", "pos-items"] },
+  items:              { keys: ["items", "pos-items", "item"] },
+  expenses:           { keys: ["expenses"] },
+  shifts:             { keys: ["shifts", "active-shift"] },
+  credit_sales:       { keys: ["credit-sales"] },
+  customers:          { keys: ["customers", "customer"] },
+  payments:           { keys: ["payments", "transactions"], storeScoped: false },
+  returns:            { keys: ["returns"] },
+  purchase_orders:    { keys: ["purchase-orders"] },
+  notifications:      { keys: ["notifications", "unread-count"] },
+  reorder_alerts:     { keys: ["reorder-alerts"] },
+  categories:         { keys: ["categories"] },
+  departments:        { keys: ["departments"] },
+  suppliers:          { keys: ["suppliers"] },
+  tax_categories:     { keys: ["tax-categories"], storeScoped: false },
+  stores:             { keys: ["stores", "business-info"], storeScoped: false },
+  supplier_payments:  { keys: ["supplier-payments", "supplier-payments-all"] },
+  customer_wallet_transactions: { keys: ["wallet-balance", "wallet-history", "wallet-customers"] },
+  loyalty_transactions: { keys: ["loyalty-balance", "loyalty-history"] },
 };
 
 export function useRealtimeInvalidation(storeId) {
@@ -47,19 +58,13 @@ export function useRealtimeInvalidation(storeId) {
       });
     };
 
-    Object.entries(TABLE_QUERY_MAP).forEach(([table, queryKeys]) => {
+    Object.entries(TABLE_QUERY_MAP).forEach(([table, { keys: queryKeys, storeScoped = true }]) => {
+      const config = { event: "*", schema: "public", table };
+      if (storeScoped) config.filter = `store_id=eq.${storeId}`;
+
       const channel = client
         .channel(`realtime:${table}:store:${storeId}`)
-        .on(
-          "postgres_changes",
-          {
-            event:  "*",
-            schema: "public",
-            table,
-            filter: `store_id=eq.${storeId}`,
-          },
-          handleChange(queryKeys),
-        )
+        .on("postgres_changes", config, handleChange(queryKeys))
         .subscribe((status) => {
           if (status === "SUBSCRIBED") {
             // Connected

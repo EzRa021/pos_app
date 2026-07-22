@@ -11,7 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useBranchStore } from "@/stores/branch.store";
 import { useShiftStore }  from "@/stores/shift.store";
 import { getItems, getItemByBarcode } from "@/commands/items";
-import { getCategories } from "@/commands/categories";
+import { getPosCategories } from "@/commands/categories";
 import { getCustomers }  from "@/commands/customers";
 import { createTransaction } from "@/commands/transactions";
 import { checkReorderAlerts } from "@/commands/reorder_alerts";
@@ -54,8 +54,8 @@ export function usePos({
 
   // ── Categories ────────────────────────────────────────────────────────────
   const { data: catsRaw } = useQuery({
-    queryKey:  ["categories", storeId],
-    queryFn:   () => getCategories(storeId),
+    queryKey:  ["pos-categories", storeId],
+    queryFn:   () => getPosCategories(storeId),
     enabled:   !!storeId,
     staleTime: 5 * 60_000,
   });

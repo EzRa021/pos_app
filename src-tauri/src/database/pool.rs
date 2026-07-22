@@ -381,6 +381,18 @@ async fn run_migrations_embedded(pool: &PgPool, username: &str) -> AppResult<()>
             ))?;
 
         for (version, filename, content, hash) in &to_run {
+            // Progress log per file — without this the runner is silent for the
+            // entire transaction, which reads as a hang on slow WAN links
+            // (a first-time Supabase migration is thousands of sequential
+            // round-trips and legitimately takes several minutes).
+            //
+            // NOTE: batching each file into one sqlx::raw_sql() round-trip was
+            // tried and reverted — RawSql's borrow across the awaits inside
+            // tauri/axum's generated Send futures fails HRTB ("implementation
+            // of `Executor` is not general enough"). Per-statement query() is
+            // the proven-compiling path.
+            tracing::info!("Applying migration {version:04}: {filename}");
+
             for stmt in split_sql_statements(content) {
                 sqlx::query(&stmt)
                     .execute(&mut *tx)

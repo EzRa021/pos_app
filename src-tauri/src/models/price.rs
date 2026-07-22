@@ -99,16 +99,3 @@ pub struct PriceChangeStats {
     pub applied_count:  i64,
     pub rejected_count: i64,
 }
-
-#[derive(Debug, Serialize, Clone, sqlx::FromRow)]
-pub struct PriceHistory {
-    pub id:         i32,
-    pub item_id:    Uuid,
-    pub item_name:  Option<String>,
-    pub store_id:   i32,
-    pub old_price:  Decimal,
-    pub new_price:  Decimal,
-    pub changed_by: i32,
-    pub reason:     Option<String>,
-    pub created_at: DateTime<Utc>,
-}

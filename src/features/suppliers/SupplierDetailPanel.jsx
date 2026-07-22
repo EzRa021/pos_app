@@ -4,11 +4,11 @@
 import { useState, useMemo } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import {
-  Truck, Phone, Mail, MapPin, Building2, FileText,
+  Truck, Phone, Mail, Building2, FileText,
   Edit3, Power, PowerOff, AlertTriangle, ChevronLeft,
   Package, ShoppingCart, CheckCircle2, Clock, ArrowUpRight,
-  Banknote, Plus, Loader2, TrendingUp, BarChart3, Timer,
-  XCircle, Activity,
+  Banknote, Plus, Loader2, BarChart3,
+  Activity,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -27,7 +27,7 @@ import { EmptyState }    from "@/components/shared/EmptyState";
 import { DataTable }     from "@/components/shared/DataTable";
 import { Button }        from "@/components/ui/button";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Input }         from "@/components/ui/input";
@@ -587,7 +587,7 @@ function RecordPaymentDialog({ open, onOpenChange, supplierName, onRecord }) {
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)} disabled={busy}>Cancel</Button>
           <Button size="sm" onClick={handleSave} disabled={busy}
-            className="bg-success hover:bg-success/90 text-white gap-1.5">
+            className="bg-success hover:bg-success/90 text-success-foreground gap-1.5">
             {busy
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</>
               : <><Banknote className="h-3.5 w-3.5" />Record Payment</>}
@@ -658,7 +658,7 @@ function SupplierPaymentsSection({ supplierId, supplierName, canManage }) {
         icon={Banknote}
         action={canManage && (
           <Button size="sm" onClick={() => setPayOpen(true)}
-            className="h-7 gap-1 bg-success hover:bg-success/90 text-white text-xs px-2.5">
+            className="h-7 gap-1 bg-success hover:bg-success/90 text-success-foreground text-xs px-2.5">
             <Plus className="h-3 w-3" />Record Payment
           </Button>
         )}
@@ -718,7 +718,6 @@ function SupplierPaymentsSection({ supplierId, supplierName, canManage }) {
 
 export function SupplierDetailPanel() {
   const { id }       = useParams();
-  const navigate     = useNavigate();
   const canManage    = usePermission("suppliers.update");
   const supplierId   = parseInt(id, 10);
 
@@ -959,8 +958,8 @@ export function SupplierDetailPanel() {
             <Button variant="outline" size="sm" onClick={() => setToggleOpen(false)}>Keep</Button>
             <Button
               size="sm"
-              className={cn("flex-1 text-white",
-                isActivating ? "bg-success hover:bg-success/90" : "bg-warning/90 hover:bg-warning"
+              className={cn("flex-1",
+                isActivating ? "bg-success hover:bg-success/90 text-success-foreground" : "bg-warning/90 hover:bg-warning text-warning-foreground"
               )}
               onClick={handleToggle}
               disabled={activate.isPending || deactivate.isPending}

@@ -159,7 +159,10 @@ pub async fn adjust_wallet(
 }
 
 // ── internal: debit_wallet ────────────────────────────────────────────────────
-
+// Currently UNUSED: POS checkout (create_transaction) and returns both perform
+// their wallet debit inline rather than calling this. Kept as the canonical
+// helper, but note it duplicates that inline logic and will drift — prefer
+// routing those call sites through here if this is ever revived.
 #[allow(dead_code)]
 pub(crate) async fn debit_wallet(
     pool:           &sqlx::PgPool,

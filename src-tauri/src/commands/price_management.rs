@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, AppResult},
     models::price::{
-        PriceList, PriceListItem, PriceChange, PriceHistory, PriceChangeStats,
+        PriceList, PriceListItem, PriceChange, PriceChangeStats,
         CreatePriceListDto, UpdatePriceListDto, AddPriceListItemDto,
         RequestPriceChangeDto, PriceListFilters,
     },
@@ -374,6 +374,24 @@ pub async fn approve_price_change(
     .execute(&mut *db_tx)
     .await?;
 
+    // Also record on the item's unified history timeline (same feed PO receipts
+    // and direct item edits write to), so approvals show in Item ▸ History.
+    sqlx::query!(
+        r#"INSERT INTO item_history
+               (item_id, store_id, event_type, event_description,
+                price_before, price_after, performed_by, reference_type, reference_id)
+           VALUES ($1,$2,'PRICE_CHANGE',$3,$4,$5,$6,'price_change',$7)"#,
+        pc.item_id,
+        pc.store_id,
+        format!("Selling price changed ₦{old_price} → ₦{} (approved request #{id})", pc.new_price),
+        old_price,
+        pc.new_price,
+        claims.user_id,
+        id.to_string(),
+    )
+    .execute(&mut *db_tx)
+    .await?;
+
     // Apply the new selling price to the item
     sqlx::query!(
         "UPDATE items SET selling_price = $1, updated_at = NOW() WHERE id = $2",
@@ -557,40 +575,3 @@ pub async fn get_price_change_stats(
     Ok(row)
 }
 
-// ── Price History ─────────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn get_price_history(
-    state:    State<'_, AppState>,
-    token:    String,
-    item_id:  Uuid,
-    store_id: Option<i32>,
-    limit:    Option<i64>,
-) -> AppResult<Vec<PriceHistory>> {
-    guard_permission(&state, &token, "items.read").await?;
-    let pool = state.pool().await?;
-    let lim  = limit.unwrap_or(50).clamp(1, 200);
-
-    sqlx::query_as!(
-        PriceHistory,
-        r#"SELECT ph.id, ph.item_id,
-                  i.item_name,
-                  ph.store_id,
-                  ph.old_price   AS "old_price!",
-                  ph.new_price   AS "new_price!",
-                  ph.changed_by  AS "changed_by!",
-                  ph.reason, ph.created_at
-           FROM   price_history ph
-           JOIN   items i ON i.id = ph.item_id
-           WHERE  ph.item_id = $1
-             AND (ph.store_id = $2 OR $2 IS NULL)
-           ORDER  BY ph.created_at DESC
-           LIMIT  $3"#,
-        item_id,
-        store_id as Option<i32>,
-        lim,
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::from)
-}

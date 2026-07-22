@@ -64,14 +64,14 @@ function saveSchedule(s) {
 function SectionCard({ title, icon: Icon, children, badge }) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+      <div className="flex items-center justify-between gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
         <div className="flex items-center gap-2.5">
           {Icon && <Icon className="h-3.5 w-3.5 text-muted-foreground" />}
           <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{title}</h3>
         </div>
         {badge}
       </div>
-      <div className="p-5">{children}</div>
+      <div className="p-4">{children}</div>
     </div>
   );
 }
@@ -697,7 +697,7 @@ function ExportSection() {
 
 export function BackupPanel() {
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
 
       {/* Warning banner */}
       <div className="flex items-start gap-2.5 rounded-xl border border-warning/30 bg-warning/[0.07] px-4 py-3.5">

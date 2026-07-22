@@ -48,6 +48,13 @@ pub async fn create_tax_category(
     .fetch_one(&pool)
     .await?;
 
+    // LWW-synced (0103): snapshot is only a trigger — push re-reads the row.
+    crate::database::sync::queue_row(
+        &pool, "tax_categories", "INSERT", &id.to_string(),
+        serde_json::json!({ "id": id }),
+        None,
+    ).await;
+
     sqlx::query_as!(
         TaxCategory,
         "SELECT id, name, code, rate, is_inclusive, description, is_active, created_at
@@ -77,12 +84,19 @@ pub async fn update_tax_category(
            rate         = COALESCE($2, rate),
            is_inclusive = COALESCE($3, is_inclusive),
            description  = COALESCE($4, description),
-           is_active    = COALESCE($5, is_active)
+           is_active    = COALESCE($5, is_active),
+           updated_at   = NOW()
            WHERE id = $6"#,
         payload.name, rate, payload.is_inclusive, payload.description, payload.is_active, id,
     )
     .execute(&pool)
     .await?;
+
+    crate::database::sync::queue_row(
+        &pool, "tax_categories", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id }),
+        None,
+    ).await;
 
     sqlx::query_as!(
         TaxCategory,
@@ -107,10 +121,17 @@ pub async fn delete_tax_category(
     let pool = state.pool().await?;
 
     sqlx::query!(
-        "UPDATE tax_categories SET is_active = FALSE WHERE id = $1", id
+        "UPDATE tax_categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id
     )
     .execute(&pool)
     .await?;
+
+    // Soft delete syncs as an UPDATE tombstone (hard DELETEs are dropped by replay).
+    crate::database::sync::queue_row(
+        &pool, "tax_categories", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id, "is_active": false }),
+        None,
+    ).await;
 
     Ok(())
 }

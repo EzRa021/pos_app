@@ -215,7 +215,7 @@ export function BusinessProfilePanel() {
   // ── Edit mode ─────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-5">
-      <div className="rounded-xl border border-border bg-card p-5">
+      <div className="rounded-xl border border-border bg-card p-3">
         <div className="flex items-center justify-between mb-4">
           <p className="text-xs font-bold text-foreground uppercase tracking-wider">Edit Profile</p>
           <div className="flex gap-2">

@@ -24,11 +24,11 @@ import { formatDateTime } from "@/lib/format";
 function SectionCard({ title, icon: Icon, children }) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
         {Icon && <Icon className="h-3.5 w-3.5 text-muted-foreground" />}
         <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{title}</h3>
       </div>
-      <div className="p-5">{children}</div>
+      <div className="p-4">{children}</div>
     </div>
   );
 }
@@ -181,7 +181,7 @@ function ActiveSessionsPanel() {
   );
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs text-muted-foreground">{sessions.length} active session{sessions.length !== 1 ? "s" : ""}</p>
         <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7 text-[11px] gap-1">
@@ -227,7 +227,7 @@ function ActiveSessionsPanel() {
 // ── Main panel ────────────────────────────────────────────────────────────────
 export function SecuritySettingsPanel() {
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <SectionCard title="POS PIN (Quick Lock)" icon={KeyRound}>
         <PinSetterPanel />
       </SectionCard>

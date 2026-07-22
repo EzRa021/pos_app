@@ -233,6 +233,14 @@ pub(crate) async fn refresh_token_inner(state: &AppState, payload: RefreshReques
     let claims = decode_token(&payload.refresh_token, &state.jwt_secret)?;
     let pool   = state.pool().await?;
 
+    // ── Enforce token type ────────────────────────────────────────────────────
+    // Only tokens minted as refresh tokens (role_slug == "refresh") may be
+    // exchanged here. This prevents an access token — which carries real role
+    // and permission claims — from being replayed against the refresh endpoint.
+    if claims.role_slug != "refresh" {
+        return Err(AppError::Unauthorized("Not a refresh token".into()));
+    }
+
     // ── Verify the refresh token hasn't been revoked ──────────────────────────
     // Revoking a session or deactivating a user expires their user_sessions row.
     // A structurally valid JWT that has been administratively revoked must be
@@ -253,6 +261,19 @@ pub(crate) async fn refresh_token_inner(state: &AppState, payload: RefreshReques
             "Session has been revoked. Please log in again.".into()
         ));
     }
+
+    // ── Rotate: retire the presented refresh token ────────────────────────────
+    // A refresh token is single-use. Expiring the old user_sessions row here means
+    // a leaked/replayed refresh token cannot mint a second access token, and a
+    // stolen-then-rotated token is detectably dead on next use.
+    sqlx::query!(
+        "UPDATE user_sessions SET expires_at = NOW() WHERE refresh_token = $1",
+        payload.refresh_token
+    )
+    .execute(&pool)
+    .await
+    .ok();
+
     let row = sqlx::query_as!(
         UserAuthRow,
         r#"
@@ -412,6 +433,30 @@ pub(crate) async fn change_password_inner(
     .execute(&pool)
     .await?;
 
+    // ── Revoke every OTHER session for this user ──────────────────────────────
+    // A password change should log the account out everywhere except the device
+    // that performed it. Expire all durable sessions that aren't the current one,
+    // then evict the matching in-memory sessions so revocation is immediate.
+    let current_hash = crate::utils::crypto::hash_string(&token);
+    sqlx::query!(
+        "UPDATE active_sessions SET expires_at = NOW() \
+         WHERE user_id = $1 AND token_hash <> $2 AND expires_at > NOW()",
+        claims.user_id, current_hash,
+    )
+    .execute(&pool)
+    .await
+    .ok();
+    sqlx::query!(
+        "UPDATE user_sessions SET expires_at = NOW() \
+         WHERE user_id = $1 AND token <> $2 AND expires_at > NOW()",
+        claims.user_id, token,
+    )
+    .execute(&pool)
+    .await
+    .ok();
+    state.sessions.write().await
+        .retain(|t, s| s.user_id != claims.user_id || t == &token);
+
     write_audit_log(&pool, claims.user_id, claims.store_id, "change_password", "auth",
         "Password changed", "warning").await;
 
@@ -429,11 +474,17 @@ pub async fn change_password(
 
 // ── REQUEST PASSWORD RESET ────────────────────────────────────────────────────
 
-#[tauri::command]
-pub async fn request_password_reset(
-    state:    State<'_, AppState>,
+pub(crate) async fn request_password_reset_inner(
+    state:    &AppState,
+    token:    String,
     username: String,
 ) -> AppResult<String> {
+    // Generating a reset token hands the caller the ability to set ANY user's
+    // password. This is an administrative action and must be gated — previously
+    // it was unauthenticated and reachable over the LAN HTTP RPC, allowing full
+    // account takeover (including admin) by anyone who could reach the port.
+    guard_permission(state, &token, "users.update").await?;
+
     let pool = state.pool().await?;
 
     let user_id: Option<i32> = sqlx::query_scalar!(
@@ -465,6 +516,15 @@ pub async fn request_password_reset(
     .await?;
 
     Ok(token)
+}
+
+#[tauri::command]
+pub async fn request_password_reset(
+    state:    State<'_, AppState>,
+    token:    String,
+    username: String,
+) -> AppResult<String> {
+    request_password_reset_inner(&state, token, username).await
 }
 
 // ── RESET PASSWORD ─────────────────────────────────────────────────────────────
@@ -521,12 +581,62 @@ pub async fn reset_password(
 pub async fn guard(state: &AppState, token: &str) -> AppResult<crate::models::auth::Claims> {
     let claims = decode_token(token, &state.jwt_secret)?;
 
-    if let Some(s) = state.sessions.write().await.get_mut(token) {
-        if s.expires_at < Utc::now() {
-            return Err(AppError::SessionExpired);
-        }
-        s.last_active = Utc::now();
+    // A refresh token is structurally a valid JWT but must never authorize an
+    // API call — it may only be exchanged at the /refresh endpoint. Rejecting it
+    // here closes the "use the long-lived refresh token as an access token" hole.
+    if claims.role_slug == "refresh" {
+        return Err(AppError::Unauthorized("Invalid access token".into()));
     }
+
+    // ── Fast path: session present in the in-memory map ───────────────────────
+    {
+        let mut sessions = state.sessions.write().await;
+        if let Some(s) = sessions.get_mut(token) {
+            if s.expires_at < Utc::now() {
+                return Err(AppError::SessionExpired);
+            }
+            s.last_active = Utc::now();
+            return Ok(claims);
+        }
+    }
+
+    // ── Slow path: memory miss (e.g. after an app restart) ────────────────────
+    // The in-memory map is volatile, so after a restart it is empty even though
+    // valid access tokens are still circulating. Without this check guard() would
+    // fall through and accept ANY structurally valid JWT — meaning a revoked or
+    // deactivated user's 7-day token keeps working until it naturally expires.
+    // Fall back to the durable active_sessions table (logout / deactivate_user /
+    // lock_pos_screen all expire the matching row) and rehydrate the memory map
+    // on a hit so subsequent calls take the fast path.
+    let pool = state.pool().await?;
+    let token_hash = crate::utils::crypto::hash_string(token);
+    let row = sqlx::query!(
+        "SELECT user_id, store_id, expires_at
+         FROM   active_sessions
+         WHERE  token_hash = $1 AND expires_at > NOW()",
+        token_hash,
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    let Some(row) = row else {
+        return Err(AppError::SessionExpired);
+    };
+
+    // Rehydrate the in-memory session from the durable record + token claims.
+    let session = SessionData {
+        user_id:     row.user_id,
+        username:    claims.username.clone(),
+        email:       claims.email.clone(),
+        role_id:     claims.role_id,
+        role_slug:   claims.role_slug.clone(),
+        store_id:    row.store_id,
+        is_global:   claims.is_global,
+        created_at:  Utc::now(),
+        last_active: Utc::now(),
+        expires_at:  row.expires_at,
+    };
+    state.sessions.write().await.insert(token.to_string(), session);
 
     Ok(claims)
 }

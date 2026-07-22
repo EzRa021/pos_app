@@ -53,36 +53,6 @@ pub struct BulkOperationResult {
     pub message:  String,
 }
 
-// ── Bulk item import ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct BulkItemRow {
-    pub item_name:     String,
-    pub sku:           Option<String>,
-    pub barcode:       Option<String>,
-    pub cost_price:    f64,
-    pub selling_price: f64,
-    pub category_id:   Option<i32>,
-    pub department_id: Option<i32>,
-    pub unit:          Option<String>,
-    pub min_stock_level: Option<i32>,
-    pub track_stock:   Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BulkItemImportDto {
-    pub store_id: i32,
-    pub items:    Vec<BulkItemRow>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BulkImportResult {
-    pub created:  u64,
-    pub updated:  u64,
-    pub failed:   u64,
-    pub errors:   Vec<String>,
-}
-
 // ── Bulk label printing ───────────────────────────────────────────────────────
 // Unified scope: explicit item_ids OR category/department scope.
 // When item_ids is supplied the other two fields are ignored.

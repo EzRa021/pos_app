@@ -10,18 +10,7 @@ use crate::{
 };
 use super::auth::guard_permission;
 
-// ── create_notification ───────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn create_notification(
-    state:   State<'_, AppState>,
-    token:   String,
-    payload: CreateNotificationDto,
-) -> AppResult<Notification> {
-    guard_permission(&state, &token, "stores.manage").await?;
-    let pool = state.pool().await?;
-    insert_notification(&pool, payload).await
-}
+// ── push_notification (internal) ──────────────────────────────────────────────
 
 /// Internal helper — push a notification without a token (from other commands).
 pub(crate) async fn push_notification(

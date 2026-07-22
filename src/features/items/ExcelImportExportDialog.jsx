@@ -20,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn }     from "@/lib/utils";
 import {
-  ITEM_COLUMNS, STOCK_COUNT_COLUMNS, IMPORT_MODES,
+  ITEM_COLUMNS, IMPORT_MODES,
   useExcelImport, useStockCountImport, useExcelExport,
 } from "./useExcel";
 import { getDepartmentsByStore } from "@/commands/departments";

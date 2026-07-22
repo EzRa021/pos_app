@@ -142,7 +142,7 @@ function ItemRow({ item, state, onChange, alreadyReturned = 0, highlighted = fal
             isFullyReturned
               ? "border-border/40 bg-muted/30 cursor-not-allowed"
               : state.enabled
-                ? "border-primary bg-primary text-white"
+                ? "border-primary bg-primary text-primary-foreground"
                 : "border-border/60 hover:border-primary/60",
           )}
         >
@@ -669,7 +669,7 @@ export function InitiateReturnModal({
             <Button
               onClick={handleSubmit}
               disabled={isLoading || !canSubmit}
-              className="flex-1 bg-warning hover:bg-warning/90 text-white"
+              className="flex-1 bg-warning hover:bg-warning/90 text-warning-foreground"
             >
               {isLoading ? (
                 <>

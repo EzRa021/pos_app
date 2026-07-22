@@ -35,7 +35,7 @@ const ONBOARDING_CACHE_KEY = "qpos_onboarding_done";
 function Section({ title, icon: Icon, children, right }) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border bg-muted/20">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-muted/20">
         <div className="flex items-center gap-2">
           {Icon && <Icon className="h-3.5 w-3.5 text-muted-foreground" />}
           <h2 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -44,7 +44,7 @@ function Section({ title, icon: Icon, children, right }) {
         </div>
         {right}
       </div>
-      <div className="p-5">{children}</div>
+      <div className="p-4">{children}</div>
     </div>
   );
 }
@@ -201,7 +201,7 @@ export function ConnectionSettingsPanel() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
 
       {/* ── Mode banner ───────────────────────────────────────────────────── */}
       <div

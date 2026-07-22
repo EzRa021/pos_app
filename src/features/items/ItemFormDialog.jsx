@@ -13,9 +13,9 @@
 
 import { useState, useEffect } from "react";
 import {
-  Package, RefreshCw, ShoppingCart, BarChart2,
-  Tag, Building2, DollarSign, Layers, Settings2,
-  Percent, Scale, AlertTriangle, CheckCircle2, XCircle,
+  Package, RefreshCw, BarChart2,
+  Tag, DollarSign, Settings2,
+  Percent, AlertTriangle, CheckCircle2, XCircle,
   ImagePlus, Trash2,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -220,7 +220,7 @@ function itemToForm(item) {
 
 // ── ItemFormDialog ─────────────────────────────────────────────────────────────
 
-export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation, storeId }) {
+export function ItemFormDialog({ open, onOpenChange, mode, initial, mutation }) {
   const isEdit = mode === "edit";
   const [form, setForm] = useState(DEFAULTS);
   const set = (field, val) => setForm((f) => ({ ...f, [field]: val }));

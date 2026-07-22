@@ -192,7 +192,8 @@ pub async fn generate_eod_report(
                   AND opened_at::date = $2::text::date
                 ORDER BY closed_at DESC LIMIT 1)          AS closing_cash,
                COALESCE(SUM(COALESCE(total_cash_in,  0)), 0) AS "cash_in!: Decimal",
-               COALESCE(SUM(COALESCE(total_cash_out, 0)), 0) AS "cash_out!: Decimal"
+               COALESCE(SUM(COALESCE(total_cash_out, 0)), 0) AS "cash_out!: Decimal",
+               COALESCE(SUM(COALESCE(total_cash_refunds, 0)), 0) AS "cash_refunds!: Decimal"
            FROM shifts
            WHERE store_id = $1 AND status = 'closed'
              AND opened_at::date = $2::text::date"#,
@@ -205,11 +206,14 @@ pub async fn generate_eod_report(
     let closing_cash:  Option<Decimal> = shift_row.closing_cash;
     let cash_in:       Decimal         = shift_row.cash_in;
     let cash_out:      Decimal         = shift_row.cash_out;
+    let cash_refunds:  Decimal         = shift_row.cash_refunds;
 
     // Compute variance only when we have both opening and closing figures.
+    // Same canonical drawer formula as close_shift / get_shift_summary —
+    // cash refunds handed out reduce what should be in the drawer.
     let cash_difference: Option<Decimal> = match (opening_float, closing_cash) {
         (Some(open), Some(close)) => {
-            let expected = open + cash_collected + cash_in - cash_out;
+            let expected = open + cash_collected + cash_in - cash_out - cash_refunds;
             Some(close - expected)
         }
         _ => None,
@@ -474,6 +478,7 @@ pub async fn get_eod_breakdown(
         EodCategorySummary,
         r#"SELECT
                c.category_name                             AS "category_name!",
+               COALESCE(rootc.category_name, c.category_name) AS "root_category_name!",
                d.department_name                           AS department_name,
                COUNT(DISTINCT t.id)::int                  AS "transaction_count!",
                COALESCE(SUM(ti.quantity),  0)             AS "qty_sold!",
@@ -484,10 +489,11 @@ pub async fn get_eod_breakdown(
            JOIN items         i ON i.id  = ti.item_id
            JOIN categories    c ON c.id  = i.category_id
            LEFT JOIN departments d ON d.id = c.department_id
+           LEFT JOIN categories rootc ON rootc.id = NULLIF(split_part(c.path, '/', 2), '')::int
            WHERE t.status = 'completed'
              AND t.store_id = $1
              AND t.created_at::date = $2::text::date
-           GROUP BY c.id, c.category_name, d.department_name
+           GROUP BY c.id, c.category_name, rootc.category_name, d.department_name
            ORDER BY 5 DESC"#,
         store_id, date,
     )

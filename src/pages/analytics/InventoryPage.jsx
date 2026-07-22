@@ -7,7 +7,7 @@ import { cn }         from "@/lib/utils";
 import { formatCurrency, formatCurrencyCompact, formatQuantity } from "@/lib/format";
 import { useStockVelocity, useDeadStock } from "@/features/analytics/useAnalytics";
 import { useAnalyticsDate }               from "@/features/analytics/AnalyticsLayout";
-import { ChartCard, SectionHeader, TopNSelector, CardShell } from "@/features/analytics/AnalyticsShared";
+import { ChartCard, SectionHeader, TopNSelector } from "@/features/analytics/AnalyticsShared";
 
 const URGENCY = {
   critical:    { label: "Critical",    bg: "bg-destructive/10", text: "text-destructive", border: "border-destructive/25" },

@@ -4,10 +4,8 @@
 // Import from here — never duplicate these in individual pages.
 // ─────────────────────────────────────────────────────────────────────────────
 import { AlertTriangle, ArrowUpRight, ArrowDownRight } from "lucide-react";
-import { Tooltip, ResponsiveContainer } from "recharts";
 import { cn } from "@/lib/utils";
-import { formatCurrency, formatCurrencyCompact } from "@/lib/format";
-import { EmptyState } from "@/components/shared/EmptyState";
+import { formatCurrency } from "@/lib/format";
 
 // ── TopN selector ─────────────────────────────────────────────────────────────
 export const TOPN_OPTIONS = [

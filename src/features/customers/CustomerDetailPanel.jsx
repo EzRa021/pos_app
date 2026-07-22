@@ -5,8 +5,8 @@ import { useState, useMemo } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   User, Phone, Mail, MapPin, CreditCard, Star, Edit3,
-  Power, PowerOff, ArrowUpRight, Receipt, TrendingUp,
-  Wallet, AlertTriangle, ChevronLeft, Banknote,
+  Power, PowerOff, ArrowUpRight, Receipt,
+  Wallet, AlertTriangle, ChevronLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -24,7 +24,7 @@ import { EmptyState }     from "@/components/shared/EmptyState";
 import { DataTable }      from "@/components/shared/DataTable";
 import { Button }         from "@/components/ui/button";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Input }          from "@/components/ui/input";
@@ -758,8 +758,8 @@ export function CustomerDetailPanel() {
             <Button variant="outline" size="sm" onClick={() => setToggleOpen(false)}>Keep</Button>
             <Button
               size="sm"
-              className={cn("text-white flex-1",
-                isActivating ? "bg-success hover:bg-success/90" : "bg-warning/90 hover:bg-warning"
+              className={cn("flex-1",
+                isActivating ? "bg-success hover:bg-success/90 text-success-foreground" : "bg-warning/90 hover:bg-warning text-warning-foreground"
               )}
               onClick={handleToggle}
               disabled={activate.isPending || deactivate.isPending}

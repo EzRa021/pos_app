@@ -28,7 +28,7 @@ function calcStrength(pw) {
 }
 
 const STRENGTH_LABEL = ["", "Very Weak", "Weak", "Fair", "Good", "Strong"];
-const STRENGTH_COLOR = ["", "bg-red-500", "bg-orange-500", "bg-yellow-500", "bg-blue-500", "bg-emerald-500"];
+const STRENGTH_COLOR = ["", "bg-destructive", "bg-destructive", "bg-warning", "bg-success", "bg-success"];
 
 function PasswordStrengthBar({ password }) {
   const score = calcStrength(password);
@@ -45,7 +45,7 @@ function PasswordStrengthBar({ password }) {
         ))}
       </div>
       <p className={cn("text-[10px] font-medium",
-        score >= 4 ? "text-emerald-400" : score >= 3 ? "text-yellow-400" : "text-muted-foreground/50")}>
+        score >= 4 ? "text-success" : score >= 3 ? "text-warning" : "text-muted-foreground/50")}>
         {STRENGTH_LABEL[score]}
       </p>
     </div>
@@ -57,9 +57,9 @@ function Requirement({ met, label }) {
     <div className="flex items-center gap-2">
       <div className={cn(
         "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-all duration-300",
-        met ? "border-emerald-500 bg-emerald-500/15" : "border-border bg-muted/20",
+        met ? "border-success bg-success/15" : "border-border bg-muted/20",
       )}>
-        {met && <Check className="h-2.5 w-2.5 text-emerald-400" strokeWidth={3} />}
+        {met && <Check className="h-2.5 w-2.5 text-success" strokeWidth={3} />}
       </div>
       <span className={cn("text-[11px] transition-colors duration-200",
         met ? "text-foreground" : "text-muted-foreground/50")}>

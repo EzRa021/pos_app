@@ -6,8 +6,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ClipboardList, Plus, CheckCircle2, Clock, Ban,
-  ChevronRight, BarChart3, Search, X, TrendingDown,
-  RotateCcw, AlertTriangle,
+  ChevronRight, Search, X, TrendingDown,
 } from "lucide-react";
 
 import { DataTable }  from "@/components/shared/DataTable";
@@ -24,7 +23,7 @@ import {
 
 import { useCountSessions, useStockCountStats } from "@/features/inventory/useInventory";
 import { useBranchStore }  from "@/stores/branch.store";
-import { formatDateTime, formatDate, formatCurrency } from "@/lib/format";
+import { formatDate, formatCurrency } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // ── Status badge ──────────────────────────────────────────────────────────────
@@ -258,7 +257,6 @@ export function StockCountList() {
     total:              statTotal,
     inProgressCount,
     completedCount,
-    cancelledCount,
     totalVarianceValue,
     totalItemsVariance,
     isLoading:          statsLoading,

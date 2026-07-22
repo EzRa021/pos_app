@@ -11,7 +11,6 @@ import {
   updateDepartment,
   activateDepartment,
   deactivateDepartment,
-  deleteDepartment,
   hardDeleteDepartment,
 } from "@/commands/departments";
 import { toastSuccess, onMutationError } from "@/lib/toast";
@@ -44,7 +43,7 @@ export function useDepartments(storeIdOverride) {
   const create = useMutation({
     mutationFn: (payload) => createDepartment({ store_id: storeId, ...payload }),
     onSuccess: (d) => {
-      toastSuccess("Department Created", `"${d.name}" is ready to organise your products.`);
+      toastSuccess("Department Created", `"${d.department_name}" is ready to organise your products.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Create Department", e),
@@ -54,7 +53,7 @@ export function useDepartments(storeIdOverride) {
   const update = useMutation({
     mutationFn: ({ id, ...payload }) => updateDepartment(id, payload),
     onSuccess: (d) => {
-      toastSuccess("Department Updated", `Changes to "${d.name}" have been saved.`);
+      toastSuccess("Department Updated", `Changes to "${d.department_name}" have been saved.`);
       invalidate();
     },
     onError: (e) => onMutationError("Couldn't Update Department", e),
@@ -64,7 +63,7 @@ export function useDepartments(storeIdOverride) {
   const activate = useMutation({
     mutationFn: (id) => activateDepartment(id),
     onSuccess: (d) => {
-      toastSuccess("Department Activated", `"${d.name}" is now active.`);
+      toastSuccess("Department Activated", `"${d.department_name}" is now active.`);
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Activate Department", e),
@@ -73,7 +72,7 @@ export function useDepartments(storeIdOverride) {
   const deactivate = useMutation({
     mutationFn: (id) => deactivateDepartment(id),
     onSuccess: (d) => {
-      toastSuccess("Department Deactivated", `"${d.name}" has been deactivated.`);
+      toastSuccess("Department Deactivated", `"${d.department_name}" has been deactivated.`);
       invalidateAll();
     },
     onError: (e) => onMutationError("Couldn't Deactivate Department", e),

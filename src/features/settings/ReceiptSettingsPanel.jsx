@@ -233,7 +233,7 @@ function LogoUploader({ value, onChange }) {
           onClick={() => inputRef.current?.click()}
           className={cn(
             "flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed",
-            "border-border bg-muted/10 p-5 cursor-pointer",
+            "border-border bg-muted/10 p-3 cursor-pointer",
             "hover:border-primary/40 hover:bg-muted/30 transition-colors",
           )}
         >
@@ -426,7 +426,7 @@ export function ReceiptSettingsPanel() {
   );
 
   const TabLayout = (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <PaperWidthPicker value={form.paper_width_mm} onChange={set("paper_width_mm")} />
       <FontSizePicker   value={form.font_size}       onChange={set("font_size")} />
       <CopiesPicker     value={form.receipt_copies}  onChange={set("receipt_copies")} />
@@ -513,12 +513,12 @@ export function ReceiptSettingsPanel() {
         </div>
 
         {/* Tab content */}
-        <div className="p-5">
+        <div className="p-4">
           {tabContent[activeTab]}
         </div>
 
         {/* Save bar */}
-        <div className="flex items-center justify-between gap-3 border-t border-border bg-muted/10 px-5 py-3.5">
+        <div className="flex items-center justify-between gap-3 border-t border-border bg-muted/10 px-3 py-2">
           {saved ? (
             <div className="flex items-center gap-1.5 text-xs font-semibold text-success">
               <CheckCircle2 className="h-3.5 w-3.5" />

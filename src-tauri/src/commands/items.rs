@@ -9,7 +9,7 @@ use crate::{
     error::{AppError, AppResult},
     models::item::{
         Item, ItemFilters, ItemSearchResult, ItemHistory,
-        CreateItemDto, UpdateItemDto, AdjustStockDto,
+        CreateItemDto, UpdateItemDto,
     },
     models::pagination::PagedResult,
     state::AppState,
@@ -144,32 +144,6 @@ pub(crate) async fn deactivate_item_inner(
     Ok(item)
 }
 
-#[allow(dead_code)]
-pub(crate) async fn count_items_inner(
-    state:       &AppState,
-    token:       String,
-    store_id:    Option<i32>,
-    category_id: Option<i32>,
-    is_active:   Option<bool>,
-) -> AppResult<i64> {
-    guard_permission(state, &token, "items.read").await?;
-    let pool = state.pool().await?;
-    let count: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*)
-           FROM   items i
-           LEFT JOIN item_settings ist ON ist.item_id = i.id
-           WHERE ist.archived_at IS NULL
-             AND ($1::int  IS NULL OR i.store_id    = $1)
-             AND ($2::int  IS NULL OR i.category_id = $2)
-             AND ($3::bool IS NULL OR ist.is_active = $3)"#,
-        store_id, category_id, is_active
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or(0);
-    Ok(count)
-}
-
 pub(crate) async fn get_items_inner(
     state: &AppState,
     token: String,
@@ -188,7 +162,7 @@ pub(crate) async fn get_items_inner(
            LEFT JOIN item_stock istock ON istock.item_id = i.id AND istock.store_id = i.store_id
            WHERE ist.archived_at IS NULL
              AND ($1::int  IS NULL OR i.store_id      = $1)
-             AND ($2::int  IS NULL OR i.category_id   = $2)
+             AND ($2::int  IS NULL OR i.category_id   = ANY(category_descendant_ids($2)))
              AND ($3::int  IS NULL OR i.department_id = $3)
              AND ($4::bool IS NULL OR ist.is_active   = $4)
              AND ($5::bool IS NULL OR ist.available_for_pos = $5)
@@ -227,7 +201,7 @@ pub(crate) async fn get_items_inner(
            LEFT JOIN item_stock istock ON istock.item_id = i.id AND istock.store_id = i.store_id
            WHERE ist.archived_at IS NULL
              AND ($1::int  IS NULL OR i.store_id      = $1)
-             AND ($2::int  IS NULL OR i.category_id   = $2)
+             AND ($2::int  IS NULL OR i.category_id   = ANY(category_descendant_ids($2)))
              AND ($3::int  IS NULL OR i.department_id = $3)
              AND ($4::bool IS NULL OR ist.is_active   = $4)
              AND ($5::bool IS NULL OR ist.available_for_pos = $5)
@@ -297,47 +271,6 @@ pub(crate) async fn get_item_by_barcode_inner(
     .map_err(AppError::from)
 }
 
-pub(crate) async fn get_item_by_sku_inner(
-    state: &AppState,
-    token: String,
-    sku: String,
-    store_id: Option<i32>,
-) -> AppResult<Option<Item>> {
-    guard_permission(state, &token, "items.read").await?;
-    let pool = state.pool().await?;
-    sqlx::query_as!(
-        Item,
-        r#"SELECT i.id, i.store_id, i.category_id, i.department_id,
-                  i.sku, i.barcode, i.item_name, i.description,
-                  i.cost_price, i.selling_price, i.discount_price,
-                  i.discount_price_enabled,
-                  s.store_name AS branch_name, c.category_name, d.department_name,
-                  ist.is_active, ist.sellable, ist.available_for_pos,
-                  ist.track_stock, ist.taxable, ist.min_stock_level,
-                  ist.allow_discount, ist.max_discount_percent,
-                  ist.measurement_type, ist.unit_type, ist.unit_value,
-                  ist.requires_weight, ist.allow_negative_stock, ist.archived_at,
-                  ist.max_stock_level, ist.min_increment, ist.default_qty,
-                  istock.quantity, istock.available_quantity, istock.reserved_quantity,
-                  i.image_data,
-                  i.created_at, i.updated_at
-           FROM   items i
-           LEFT JOIN stores s ON s.id = i.store_id
-           LEFT JOIN categories c ON c.id = i.category_id
-           LEFT JOIN departments d ON d.id = i.department_id
-           LEFT JOIN item_settings ist ON ist.item_id = i.id
-           LEFT JOIN item_stock istock ON istock.item_id = i.id AND istock.store_id = i.store_id
-           WHERE i.sku = $1
-             AND ($2::int IS NULL OR i.store_id = $2)
-             AND ist.archived_at IS NULL
-           LIMIT 1"#,
-        sku, store_id
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(AppError::from)
-}
-
 pub(crate) async fn delete_item_inner(
     state: &AppState,
     token: String,
@@ -362,112 +295,6 @@ pub(crate) async fn delete_item_inner(
     write_audit_log(&pool, claims.user_id, Some(item.store_id), "archive", "item",
         &format!("Archived item '{}' (id: {})", item.item_name, id), "warning").await;
     Ok(())
-}
-
-pub(crate) async fn adjust_stock_inner(
-    state: &AppState,
-    token: String,
-    payload: AdjustStockDto,
-) -> AppResult<Item> {
-    let claims = guard_permission(state, &token, "inventory.adjust").await?;
-    let pool   = state.pool().await?;
-
-    // Block manual stock adjustments while an active count session is in progress
-    // for this store. Allowing adjustments during a count produces phantom variances
-    // in the variance report because the expected quantities diverge mid-count.
-    let active_count: Option<i32> = sqlx::query_scalar!(
-        "SELECT id FROM stock_count_sessions
-         WHERE store_id = $1 AND status IN ('pending', 'in_progress')
-         LIMIT 1",
-        payload.store_id,
-    )
-    .fetch_optional(&pool)
-    .await?;
-
-    if active_count.is_some() {
-        return Err(AppError::Conflict(
-            "A stock count is currently in progress for this store. \
-             Manual stock adjustments are blocked until the count is completed or cancelled \
-             to prevent variance report discrepancies.".into()
-        ));
-    }
-
-    let mut tx = pool.begin().await?;
-
-    // Fetch measurement_type for qty validation
-    struct ItemMeta { item_name: String, measurement_type: Option<String> }
-    let meta = sqlx::query_as!(
-        ItemMeta,
-        "SELECT i.item_name, ist.measurement_type
-         FROM items i LEFT JOIN item_settings ist ON ist.item_id = i.id
-         WHERE i.id = $1",
-        payload.item_id,
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Item not found".into()))?;
-
-    let adj = crate::utils::qty::validate_qty_signed_opt(
-        to_dec(payload.adjustment),
-        meta.measurement_type.as_deref(),
-        &meta.item_name,
-    )?;
-
-    let qty_before: Decimal = sqlx::query_scalar!(
-        "SELECT quantity FROM item_stock WHERE item_id = $1 AND store_id = $2",
-        payload.item_id, payload.store_id,
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .unwrap_or_default();
-
-    let qty_after = qty_before + adj;
-    if qty_after < Decimal::ZERO {
-        return Err(AppError::Validation("Adjustment would result in negative stock".into()));
-    }
-
-    sqlx::query!(
-        r#"UPDATE item_stock SET quantity = quantity + $1, available_quantity = available_quantity + $1,
-           updated_at = NOW() WHERE item_id = $2 AND store_id = $3"#,
-        adj, payload.item_id, payload.store_id,
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    let event_type = payload.adjustment_type.as_deref().unwrap_or("ADJUSTMENT");
-    let description = format!("Stock {}", event_type.to_lowercase());
-
-    sqlx::query!(
-        r#"INSERT INTO item_history
-               (item_id, store_id, event_type, event_description,
-                quantity_before, quantity_after, quantity_change,
-                performed_by, notes)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
-        payload.item_id, payload.store_id, event_type, description,
-        qty_before, qty_after, adj,
-        claims.user_id,
-        payload.notes,
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    // Stock changes sync as signed deltas (stock_movements), never absolute
-    // quantities — concurrent offline adjustments on other devices must not
-    // be overwritten.
-    let movement = crate::database::sync::log_stock_movement(
-        &mut *tx, payload.item_id, payload.store_id, Some(adj), None, "adjustment",
-    ).await?;
-
-    tx.commit().await?;
-
-    crate::database::sync::queue_row(
-        &pool, "stock_movements", "INSERT",
-        &movement.0, movement.1, Some(payload.store_id),
-    ).await;
-
-    write_audit_log(&pool, claims.user_id, Some(payload.store_id), "stock_adjust", "item",
-        &format!("Stock adjusted by {} for item id {}", payload.adjustment, payload.item_id), "info").await;
-    fetch_item(&pool, payload.item_id).await
 }
 
 pub(crate) async fn get_item_history_inner(
@@ -555,16 +382,6 @@ pub async fn get_item_by_barcode(
     store_id: Option<i32>,
 ) -> AppResult<Option<Item>> {
     get_item_by_barcode_inner(&state, token, barcode, store_id).await
-}
-
-#[tauri::command]
-pub async fn get_item_by_sku(
-    state:    State<'_, AppState>,
-    token:    String,
-    sku:      String,
-    store_id: Option<i32>,
-) -> AppResult<Option<Item>> {
-    get_item_by_sku_inner(&state, token, sku, store_id).await
 }
 
 /// Search items by text query (for POS autocomplete / barcode scanner fallback).
@@ -1086,15 +903,6 @@ pub async fn deactivate_item(
 }
 
 #[tauri::command]
-pub async fn adjust_stock(
-    state:   State<'_, AppState>,
-    token:   String,
-    payload: AdjustStockDto,
-) -> AppResult<Item> {
-    adjust_stock_inner(&state, token, payload).await
-}
-
-#[tauri::command]
 pub async fn get_item_history(
     state:      State<'_, AppState>,
     token:      String,
@@ -1132,35 +940,4 @@ pub async fn remove_item_image(
     .execute(&pool)
     .await?;
     Ok(item)
-}
-
-
-/// Count items matching optional filters.
-/// Matches quantum-pos-app `itemService.count(filters)`.
-#[tauri::command]
-pub async fn count_items(
-    state:       State<'_, AppState>,
-    token:       String,
-    store_id:    Option<i32>,
-    category_id: Option<i32>,
-    is_active:   Option<bool>,
-) -> AppResult<i64> {
-    guard_permission(&state, &token, "items.read").await?;
-    let pool = state.pool().await?;
-
-    let count: i64 = sqlx::query_scalar!(
-        r#"SELECT COUNT(*)
-           FROM   items i
-           LEFT JOIN item_settings ist ON ist.item_id = i.id
-           WHERE ist.archived_at IS NULL
-             AND ($1::int  IS NULL OR i.store_id    = $1)
-             AND ($2::int  IS NULL OR i.category_id = $2)
-             AND ($3::bool IS NULL OR ist.is_active = $3)"#,
-        store_id, category_id, is_active
-    )
-    .fetch_one(&pool)
-    .await?
-    .unwrap_or(0);
-
-    Ok(count)
 }

@@ -6,7 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { usePaginationParams } from "@/hooks/usePaginationParams";
 import {
   Users, Search, X, UserPlus, Edit3, Power, PowerOff, Trash2,
-  CreditCard, Star, AlertTriangle, Phone, Mail,
+  Star, AlertTriangle, Phone, Mail,
 } from "lucide-react";
 
 import { useCustomers, useCustomerSummary }   from "./useCustomers";
@@ -17,11 +17,11 @@ import { StatusBadge }    from "@/components/shared/StatusBadge";
 import { Button }         from "@/components/ui/button";
 import { Input }          from "@/components/ui/input";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { cn }             from "@/lib/utils";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency } from "@/lib/format";
 import { useBranchStore } from "@/stores/branch.store";
 import { usePermission }  from "@/hooks/usePermission";
 import { toast }          from "sonner";
@@ -361,8 +361,8 @@ function ToggleStatusDialog({ open, onOpenChange, customer, onConfirm }) {
           <Button
             size="sm"
             disabled={loading}
-            className={cn("text-white flex-1",
-              isActivating ? "bg-success hover:bg-success/90" : "bg-warning/90 hover:bg-warning"
+            className={cn("flex-1",
+              isActivating ? "bg-success hover:bg-success/90 text-success-foreground" : "bg-warning/90 hover:bg-warning text-warning-foreground"
             )}
             onClick={handleConfirm}
           >
@@ -480,7 +480,7 @@ export function CustomersPanel() {
 
   const isActive = statusTab === "active" ? true : statusTab === "inactive" ? false : undefined;
 
-  const { items, total, totalPages, isLoading, error, create, update, activate, deactivate, remove } =
+  const { items, total, isLoading, error, create, update, activate, deactivate, remove } =
     useCustomers({ search: search || undefined, isActive, customerType: typeTab || undefined, page });
   const { summary } = useCustomerSummary(storeId);
 

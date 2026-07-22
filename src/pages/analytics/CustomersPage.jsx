@@ -4,7 +4,7 @@ import { Users, DollarSign, TrendingUp, AlertTriangle, Clock } from "lucide-reac
 import { DataTable }  from "@/components/shared/DataTable";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { cn }         from "@/lib/utils";
-import { formatCurrency, formatCurrencyCompact } from "@/lib/format";
+import { formatCurrency } from "@/lib/format";
 import { useCustomerAnalytics } from "@/features/analytics/useAnalytics";
 import { useAnalyticsDate }     from "@/features/analytics/AnalyticsLayout";
 import {

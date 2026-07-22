@@ -29,3 +29,9 @@ src-tauri/.env
 *.njsproj
 *.sln
 *.sw?
+
+# Generated knowledge graph (graphify skill) — regenerable, not source
+graphify-out/
+
+# Local environment — contains live credentials, never commit
+src-tauri/.env

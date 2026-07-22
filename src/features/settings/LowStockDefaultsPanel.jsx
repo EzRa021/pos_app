@@ -62,17 +62,17 @@ export function LowStockDefaultsPanel() {
   );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
 
       <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+        <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
           <Package className="h-3.5 w-3.5 text-muted-foreground" />
           <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
             Default Reorder Settings
           </h3>
         </div>
 
-        <div className="p-5 space-y-5">
+        <div className="p-4 space-y-2">
           <div className="space-y-1.5">
             <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Default Reorder Point (units)
@@ -122,7 +122,7 @@ export function LowStockDefaultsPanel() {
       </div>
 
       {/* Save bar */}
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card px-5 py-3.5">
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card px-3 py-2">
         {saved
           ? <div className="flex items-center gap-1.5 text-xs font-semibold text-success"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</div>
           : <p className="text-[11px] text-muted-foreground">Defaults apply to new items created after saving.</p>}

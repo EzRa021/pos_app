@@ -27,6 +27,7 @@ import {
 import { formatCurrency, formatCurrencyCompact, formatDateTime } from "@/lib/format";
 import { PAYMENT_METHOD_LABELS }  from "@/lib/constants";
 import { useAuthStore }    from "@/stores/auth.store";
+import { usePermission }   from "@/hooks/usePermission";
 import { useBranchStore }  from "@/stores/branch.store";
 import { useShiftStore }   from "@/stores/shift.store";
 import { ChartContainer, ChartTooltip, CurrencyTooltipContent, CHART_COLORS } from "@/components/ui/chart";
@@ -418,11 +419,11 @@ function AdminView({ user, health, lHealth }) {
           <ChartContainer config={ADM_BAR_CONFIG} className="h-[160px]">
             <BarChart data={topItemsData} layout="vertical">
               <XAxis type="number" tickFormatter={formatCurrencyCompact} tickLine={false} axisLine={false} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
-              <YAxis type="category" dataKey="name" width={90} tickLine={false} axisLine={false} tick={{ fontSize: 9, fill: "#a1a1aa" }} />
+              <YAxis type="category" dataKey="name" width={90} tickLine={false} axisLine={false} tick={{ fontSize: 9, fill: "var(--muted-foreground)" }} />
               <ChartTooltip content={<CurrencyTooltipContent formatFn={formatCurrency} />} />
               <Bar dataKey="rev" name="Revenue" radius={[0, 4, 4, 0]}>
                 {topItemsData.map((_, i) => (
-                  <Cell key={i} fill={i === 0 ? "#22c55e" : CHART_COLORS[i % CHART_COLORS.length]} />
+                  <Cell key={i} fill={i === 0 ? "var(--success)" : CHART_COLORS[i % CHART_COLORS.length]} />
                 ))}
               </Bar>
             </BarChart>
@@ -1121,7 +1122,11 @@ export default function AnalyticsDashboardPage() {
   const isCashier     = roleSlug === "cashier";
   const isStockKeeper = roleSlug === "stock_keeper";
 
-  const { data: health, isLoading: lHealth } = useBusinessHealthSummary();
+  // The business-health summary is an analytics.read query. Cashiers and
+  // stock keepers lack that permission, so only fire it for roles that have it
+  // (their role views read `health?.x ?? 0` and degrade gracefully to zero).
+  const canReadAnalytics = usePermission("analytics.read");
+  const { data: health, isLoading: lHealth } = useBusinessHealthSummary({ enabled: canReadAnalytics });
 
   const pageTitle = isAdmin       ? "Business Dashboard"
     : isManager     ? "Store Dashboard"

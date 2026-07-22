@@ -145,7 +145,7 @@ export function RestoreIdStep({ onVerified, onBack }) {
             Try a different ID
           </Button>
           <Button
-            className="flex-1 h-10 bg-success hover:bg-success/90 text-white"
+            className="flex-1 h-10 bg-success hover:bg-success/90 text-success-foreground"
             onClick={handleRestore}
           >
             <CloudDownload className="h-4 w-4" />

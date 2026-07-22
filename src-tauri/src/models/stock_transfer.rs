@@ -44,6 +44,10 @@ pub struct TransferItem {
 pub struct TransferItemDto {
     pub item_id:       Uuid,
     pub qty_requested: f64,
+    /// Existing item in the destination store to credit on approval.
+    /// None → approve_transfer auto-clones the source item.
+    #[serde(default)]
+    pub destination_item_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]

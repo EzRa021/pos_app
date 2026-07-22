@@ -226,7 +226,7 @@ pub async fn print_labels_escpos(
             r#"SELECT i.id::text FROM items i
                LEFT JOIN item_settings ist ON ist.item_id = i.id
                WHERE i.store_id      = $1
-                 AND ($2::int IS NULL OR i.category_id   = $2)
+                 AND ($2::int IS NULL OR i.category_id   = ANY(category_descendant_ids($2)))
                  AND ($3::int IS NULL OR i.department_id = $3)
                  AND (ist.is_active IS NULL OR ist.is_active = TRUE)
                  AND ist.archived_at IS NULL"#,

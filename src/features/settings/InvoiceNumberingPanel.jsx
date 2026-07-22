@@ -88,7 +88,7 @@ function SeriesRow({ series, storeId }) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
         <Hash className="h-3.5 w-3.5 text-muted-foreground" />
         <div className="flex-1 min-w-0">
           <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -103,7 +103,7 @@ function SeriesRow({ series, storeId }) {
         )}
       </div>
 
-      <div className="p-5">
+      <div className="p-4">
         <div className="grid grid-cols-4 gap-4">
           {/* Prefix */}
           <div className="space-y-1.5">
@@ -228,7 +228,7 @@ export function InvoiceNumberingPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-border/60 bg-primary/5 px-5 py-3.5">
+      <div className="rounded-xl border border-border/60 bg-primary/5 px-3 py-2">
         <div className="flex gap-3">
           <RefreshCw className="h-4 w-4 text-primary shrink-0 mt-0.5" />
           <p className="text-[11px] text-muted-foreground leading-relaxed">

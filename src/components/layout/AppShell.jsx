@@ -104,6 +104,9 @@ const ROUTE_META = {
   "/stores": { label: "Stores", group: "Admin" },
   "/stores/:id": { label: "Store", group: "Admin", parentPath: "/stores" },
   "/settings": { label: "Settings", group: "Admin" },
+  // Section slug is already shown in the Settings rail and content header —
+  // keep the breadcrumb stable at "Settings" rather than echoing it a third time.
+  "/settings/:section": { label: "Settings", group: "Admin" },
   "/audit": { label: "Audit Log", group: "Admin" },
 };
 

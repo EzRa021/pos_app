@@ -5,7 +5,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
   ShoppingCart, Plus, Search, X, Calendar, Truck,
-  CheckCircle2, Clock, Ban, Filter,
+  CheckCircle2, Filter,
 } from "lucide-react";
 
 import { usePurchaseOrders, usePoStats } from "./usePurchaseOrders";
@@ -129,7 +129,7 @@ export function PurchaseOrdersPanel() {
     return () => clearTimeout(id);
   }, [search]);
 
-  const { orders, total, totalPages, isLoading, isFetching } = usePurchaseOrders({
+  const { orders, total, isLoading, isFetching } = usePurchaseOrders({
     search:   debouncedSearch || undefined,
     status:   status         || undefined,
     dateFrom: dateFrom        || undefined,

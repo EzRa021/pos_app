@@ -38,7 +38,6 @@ export function useInventory({
   page = 1, limit = 25,
   search, categoryId, departmentId, lowStock, measurementType,
 } = {}) {
-  const qc      = useQueryClient();
   const storeId = useBranchStore((s) => s.activeStore?.id);
 
   const filters = useMemo(() => ({

@@ -242,10 +242,10 @@ export function PosShortcutsPanel() {
   const canAdd      = list.length < MAX_SLOTS;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <div className="rounded-xl border border-border bg-card overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-muted/20">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border bg-muted/20">
           <div className="flex items-center gap-2">
             <Zap className="h-3.5 w-3.5 text-muted-foreground" />
             <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">

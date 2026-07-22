@@ -17,7 +17,7 @@ import { useBranchStore } from "@/stores/branch.store";
 import {
   getItems, getItem, getItemHistory,
   createItem, updateItem,
-  activateItem, deactivateItem, archiveItem, adjustStock, removeItemImage,
+  activateItem, deactivateItem, archiveItem, removeItemImage,
 } from "@/commands/items";
 import { getInventorySummary } from "@/commands/inventory";
 import { invalidateStock } from "@/lib/invalidations";
@@ -127,16 +127,6 @@ export function useItems({
     onError: (e) => onMutationError("Couldn't Archive Item", e),
   });
 
-  const stockAdjust = useMutation({
-    mutationFn: (payload) => adjustStock({ store_id: branchStoreId, ...payload }),
-    onSuccess: (updated) => {
-      toastSuccess("Stock Updated", `New stock level saved for "${updated.name}".`);
-      qc.setQueryData(itemKey(updated.id), updated);
-      invalidateAll();
-    },
-    onError: (e) => onMutationError("Stock Adjustment Failed", e),
-  });
-
   const removeImage = useMutation({
     mutationFn: (id) => removeItemImage(id),
     onSuccess: (updated) => {
@@ -162,7 +152,6 @@ export function useItems({
     activate,
     deactivate,
     archive,
-    adjustStock: stockAdjust,
     removeImage,
     invalidateAll,
   };
@@ -224,17 +213,6 @@ export function useItem(id) {
     onError: (e) => onMutationError("Couldn't Archive Item", e),
   });
 
-  const stockAdjust = useMutation({
-    mutationFn: (payload) => adjustStock({ store_id: branchStoreId, ...payload }),
-    onSuccess: (updated) => {
-      toastSuccess("Stock Updated", `New stock level saved for "${updated.name}".`);
-      qc.setQueryData(itemKey(id), updated);
-      qc.invalidateQueries({ queryKey: ["item_history", id] });
-      invalidate();
-    },
-    onError: (e) => onMutationError("Stock Adjustment Failed", e),
-  });
-
   const removeImage = useMutation({
     mutationFn: () => removeItemImage(id),
     onSuccess: (updated) => {
@@ -254,7 +232,6 @@ export function useItem(id) {
     activate,
     deactivate,
     archive,
-    adjustStock: stockAdjust,
     removeImage,
   };
 }

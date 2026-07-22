@@ -24,7 +24,7 @@ use crate::{
     models::pagination::PagedResult,
     state::AppState,
 };
-use super::auth::{guard, guard_permission};
+use super::auth::guard_permission;
 use super::audit::write_audit_log;
 use crate::utils::ref_no::{next_txn_ref_no_exec, next_ret_ref_no, store_txn_slug};
 
@@ -213,7 +213,6 @@ pub async fn create_transaction(
         .collect();
 
     // ── STEP 5: Validate items and build line items ────────────────────────────
-    #[allow(dead_code)]
     struct LineItem {
         item_id:             Uuid,
         item_name:           String,
@@ -221,7 +220,6 @@ pub async fn create_transaction(
         quantity:            Decimal,
         unit_price:          Decimal,
         item_discount:       Decimal,
-        cost_price:          Decimal,
         net_amount:          Decimal,
         vat_amount:          Decimal,
         line_total:          Decimal,
@@ -294,7 +292,6 @@ pub async fn create_transaction(
             quantity:             qty,
             unit_price,
             item_discount,
-            cost_price:           cost_price_for_item,
             net_amount,
             vat_amount,
             line_total:           gross,
@@ -412,18 +409,34 @@ pub async fn create_transaction(
     let payment_status = if is_credit { "pending" } else { "paid" };
     let amount_paid    = if is_credit { Decimal::ZERO } else { total_amount };
 
+    // Resolve the cashier's live shift up front so the sale is durably linked
+    // to it (transactions.shift_id) instead of relying on time-window
+    // heuristics later. 'suspended' counts as live — the POS allows selling
+    // on a suspended shift and the shift totals below must match.
+    let active_shift_id: Option<i32> = sqlx::query_scalar!(
+        r#"SELECT id FROM shifts
+           WHERE opened_by = $1 AND store_id = $2
+             AND status IN ('open', 'active', 'suspended')
+           ORDER BY opened_at DESC
+           LIMIT 1"#,
+        claims.user_id, payload.store_id,
+    )
+    .fetch_optional(&mut *db_tx)
+    .await?;
+
     let tx_id: i32 = sqlx::query_scalar!(
         r#"INSERT INTO transactions
                (reference_no, store_id, cashier_id, customer_id,
                 subtotal, discount_amount, tax_amount, total_amount,
                 amount_tendered, change_amount, payment_method,
-                payment_status, status, notes, offline_sale, client_uuid)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'completed',$13,$14,$15)
+                payment_status, status, notes, offline_sale, client_uuid, shift_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'completed',$13,$14,$15,$16)
            RETURNING id"#,
         ref_no, payload.store_id, claims.user_id, payload.customer_id,
         subtotal, discount_amount, total_tax, total_amount,
         amount_tend, change_amount, payload.payment_method,
         payment_status, payload.notes, offline_sale, payload.client_uuid,
+        active_shift_id,
     )
     .fetch_one(&mut *db_tx)
     .await?;
@@ -671,24 +684,29 @@ pub async fn create_transaction(
         )
     };
 
-    sqlx::query!(
-        r#"UPDATE shifts SET
-            status             = CASE WHEN status = 'open' THEN 'active' ELSE status END,
-            transaction_count  = COALESCE(transaction_count,  0) + 1,
-            total_sales        = COALESCE(total_sales,        0) + $1,
-            total_cash_sales   = COALESCE(total_cash_sales,   0) + $2,
-            total_card_sales   = COALESCE(total_card_sales,   0) + $3,
-            total_transfers    = COALESCE(total_transfers,    0) + $4,
-            total_mobile_sales = COALESCE(total_mobile_sales, 0) + $5,
-            updated_at         = NOW()
-           WHERE opened_by = $6 AND store_id = $7
-             AND status IN ('open', 'active')"#,
-        total_amount, cash_inc, card_inc, xfer_inc, mobile_inc,
-        claims.user_id, payload.store_id,
-    )
-    .execute(&mut *db_tx)
-    .await
-    .ok();
+    // Target the exact shift the sale was stamped with. 'suspended' is
+    // included (a sale on a suspended shift resumes it) so the increment set
+    // matches the decrement set used by voids/refunds — previously suspended
+    // shifts absorbed decrements but never increments, corrupting totals.
+    if let Some(shift_id) = active_shift_id {
+        sqlx::query!(
+            r#"UPDATE shifts SET
+                status             = CASE WHEN status IN ('open', 'suspended') THEN 'active' ELSE status END,
+                transaction_count  = COALESCE(transaction_count,  0) + 1,
+                total_sales        = COALESCE(total_sales,        0) + $1,
+                total_cash_sales   = COALESCE(total_cash_sales,   0) + $2,
+                total_card_sales   = COALESCE(total_card_sales,   0) + $3,
+                total_transfers    = COALESCE(total_transfers,    0) + $4,
+                total_mobile_sales = COALESCE(total_mobile_sales, 0) + $5,
+                updated_at         = NOW()
+               WHERE id = $6"#,
+            total_amount, cash_inc, card_inc, xfer_inc, mobile_inc,
+            shift_id,
+        )
+        .execute(&mut *db_tx)
+        .await
+        .ok();
+    }
 
     db_tx.commit().await?;
 
@@ -1348,15 +1366,18 @@ pub async fn void_transaction(
         }
     };
 
+    // A VOID erases the sale from the shift: reverse the sales counters and
+    // stop. It is NOT a return — the old code also bumped total_returns,
+    // which the expected-cash formula subtracts too, double-counting every
+    // voided cash sale in the drawer expectation.
     sqlx::query!(
         "UPDATE shifts SET
-            return_count  = COALESCE(return_count,  0) + 1,
-            total_returns = COALESCE(total_returns, 0) + $1,
             total_sales        = GREATEST(0, COALESCE(total_sales, 0) - $1),
             total_cash_sales   = GREATEST(0, COALESCE(total_cash_sales, 0) - $2),
             total_card_sales   = GREATEST(0, COALESCE(total_card_sales, 0) - $3),
             total_transfers    = GREATEST(0, COALESCE(total_transfers, 0) - $4),
             total_mobile_sales = GREATEST(0, COALESCE(total_mobile_sales, 0) - $5),
+            transaction_count  = GREATEST(0, COALESCE(transaction_count, 0) - 1),
             updated_at    = NOW()
          WHERE opened_by = $6 AND store_id = $7
            AND status IN ('open', 'active', 'suspended')",
@@ -1667,14 +1688,37 @@ pub async fn partial_refund(
         }
     }
 
+    // Drawer impact: only refunds paid out in CASH reduce expected cash. For
+    // a cash sale the whole refund is cash; for a split sale the cash leg is
+    // capped at the refund amount; card/transfer/credit refunds never touch
+    // the drawer.
+    let cash_refunded: Decimal = match tx.payment_method.as_str() {
+        "cash"  => total_refund,
+        "split" => {
+            let cash_paid: Decimal = sqlx::query_scalar!(
+                r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+                   FROM payments
+                   WHERE transaction_id = $1
+                     AND payment_method = 'cash'
+                     AND status = 'completed'"#,
+                id
+            )
+            .fetch_one(&mut *db_tx)
+            .await?;
+            cash_paid.min(total_refund)
+        }
+        _ => Decimal::ZERO,
+    };
+
     sqlx::query!(
         "UPDATE shifts SET
-            return_count  = COALESCE(return_count,  0) + 1,
-            total_returns = COALESCE(total_returns, 0) + $1,
+            return_count       = COALESCE(return_count,       0) + 1,
+            total_returns      = COALESCE(total_returns,      0) + $1,
+            total_cash_refunds = COALESCE(total_cash_refunds, 0) + $2,
             updated_at    = NOW()
-         WHERE opened_by = $2 AND store_id = $3
+         WHERE opened_by = $3 AND store_id = $4
            AND status IN ('open', 'active', 'suspended')",
-        total_refund, claims.user_id, tx.store_id,
+        total_refund, cash_refunded, claims.user_id, tx.store_id,
     )
     .execute(&mut *db_tx)
     .await
@@ -1969,23 +2013,22 @@ pub async fn full_refund(
         }
     };
 
+    // A FULL REFUND is a return, not an erase: the sale stays in the shift's
+    // sales totals and the refund is tracked separately. Only the CASH leg
+    // physically leaves the drawer — card/transfer/mobile refunds must not
+    // reduce expected cash. (The old code both decremented the sales counters
+    // AND bumped total_returns, double-counting the drawer impact.)
+    let _ = (card_dec, xfer_dec, mobile_dec); // non-cash legs never touch the drawer
     sqlx::query!(
         "UPDATE shifts SET
-            return_count  = COALESCE(return_count,  0) + 1,
-            total_returns = COALESCE(total_returns, 0) + $1,
-            total_sales        = GREATEST(0, COALESCE(total_sales, 0) - $1),
-            total_cash_sales   = GREATEST(0, COALESCE(total_cash_sales, 0) - $2),
-            total_card_sales   = GREATEST(0, COALESCE(total_card_sales, 0) - $3),
-            total_transfers    = GREATEST(0, COALESCE(total_transfers, 0) - $4),
-            total_mobile_sales = GREATEST(0, COALESCE(total_mobile_sales, 0) - $5),
+            return_count       = COALESCE(return_count,       0) + 1,
+            total_returns      = COALESCE(total_returns,      0) + $1,
+            total_cash_refunds = COALESCE(total_cash_refunds, 0) + $2,
             updated_at    = NOW()
-         WHERE opened_by = $6 AND store_id = $7
+         WHERE opened_by = $3 AND store_id = $4
            AND status IN ('open', 'active', 'suspended')",
         tx.total_amount,
         cash_dec,
-        card_dec,
-        xfer_dec,
-        mobile_dec,
         claims.user_id,
         tx.store_id,
     )
@@ -2153,11 +2196,22 @@ pub async fn delete_held_transaction(
     token: String,
     id:    i32,
 ) -> AppResult<()> {
-    guard(&state, &token).await?;
+    // Require sell rights, and scope the delete to the caller's own holds.
+    // get_held_transactions/hold_transaction are already cashier-scoped; without
+    // the same scope here any authenticated user could delete another cashier's
+    // (or another store's) held cart just by guessing its id.
+    let claims = guard_permission(&state, &token, "pos.sale").await?;
     let pool = state.pool().await?;
-    sqlx::query!("DELETE FROM held_transactions WHERE id = $1", id)
-        .execute(&pool)
-        .await?;
+    let affected = sqlx::query!(
+        "DELETE FROM held_transactions WHERE id = $1 AND cashier_id = $2",
+        id, claims.user_id,
+    )
+    .execute(&pool)
+    .await?
+    .rows_affected();
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("Held transaction {id} not found")));
+    }
     Ok(())
 }
 

@@ -65,6 +65,8 @@ pub struct EodDeptSummary {
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct EodCategorySummary {
     pub category_name:     String,
+    /// Top-level ancestor (itself when a root) — for grouped subtotals.
+    pub root_category_name: String,
     pub department_name:   Option<String>,
     pub transaction_count: i32,
     pub qty_sold:          Decimal,

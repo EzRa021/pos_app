@@ -25,10 +25,9 @@ import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import {
   Banknote, AlertTriangle, CheckCircle2, Loader2,
-  ArrowUpRight, RefreshCw, Plus,
+  ArrowUpRight, RefreshCw,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 
 import { useAllSupplierPayables, useSupplierPayments } from "./useSupplierPayments";
 import { SupplierPaymentDialog } from "./SupplierPaymentDialog";
@@ -36,7 +35,7 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { Spinner }    from "@/components/shared/Spinner";
 import { Button }     from "@/components/ui/button";
 import { cn }         from "@/lib/utils";
-import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
+import { formatCurrency, formatDateTime } from "@/lib/format";
 import { useBranchStore } from "@/stores/branch.store";
 import { usePermission }  from "@/hooks/usePermission";
 import { getSupplierPayments } from "@/commands/supplier_payments";
@@ -203,7 +202,7 @@ function PayablesTable({ payables, canManage }) {
             {canManage && outstanding > 0 ? (
               <Button
                 size="sm"
-                className="h-7 gap-1 bg-success/90 hover:bg-success text-white text-[11px] px-2.5 w-full"
+                className="h-7 gap-1 bg-success/90 hover:bg-success text-success-foreground text-[11px] px-2.5 w-full"
                 onClick={() => setSelected(s)}
               >
                 <Banknote className="h-3 w-3" />Pay

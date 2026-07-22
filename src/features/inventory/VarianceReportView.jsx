@@ -3,10 +3,9 @@
 // ============================================================================
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
-  BarChart3, CheckCircle2, AlertTriangle, TrendingUp, TrendingDown,
-  ArrowUpRight, ArrowDownRight, Minus, RefreshCw, Download, ChevronLeft,
+  BarChart3, CheckCircle2, AlertTriangle,
+  ArrowUpRight, ArrowDownRight, Minus, RefreshCw,
   ClipboardList,
 } from "lucide-react";
 
@@ -28,9 +27,9 @@ import { cn }                from "@/lib/utils";
 function SummaryCard({ label, value, sub, icon: Icon, accent }) {
   const accents = {
     primary:     "border-primary/20 bg-primary/5 text-primary",
-    success:     "border-emerald-500/20 bg-emerald-500/5 text-emerald-400",
-    warning:     "border-amber-500/20 bg-amber-500/5 text-amber-400",
-    destructive: "border-red-500/20 bg-red-500/5 text-red-400",
+    success:     "border-success/20 bg-success/5 text-success",
+    warning:     "border-warning/20 bg-warning/5 text-warning",
+    destructive: "border-destructive/20 bg-destructive/5 text-destructive",
     muted:       "border-border/60 bg-muted/20 text-muted-foreground",
   };
   return (
@@ -58,7 +57,7 @@ function VarianceBadge({ qty, value, measurementType, unitType }) {
   );
   const isOver = q > 0;
   return (
-    <div className={cn("flex items-center gap-1 text-xs font-semibold tabular-nums", isOver ? "text-emerald-400" : "text-rose-400")}>
+    <div className={cn("flex items-center gap-1 text-xs font-semibold tabular-nums", isOver ? "text-success" : "text-destructive")}>
       {isOver ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
       {isOver ? "+" : ""}{formatQuantity(q, measurementType, unitType)}
       <span className="text-[10px] font-normal opacity-70">({formatCurrency(Math.abs(v))})</span>
@@ -71,12 +70,12 @@ function ApplyVariancesDialog({ open, onOpenChange, mutation, report }) {
   return (
     <Dialog open={open} onOpenChange={(v) => !mutation.isPending && onOpenChange(v)}>
       <DialogContent className="max-w-sm border-border bg-card p-0 overflow-hidden shadow-2xl">
-        <div className="h-[3px] bg-amber-500" />
+        <div className="h-[3px] bg-warning" />
         <div className="px-6 pt-5 pb-6">
           <DialogHeader className="mb-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-500/25 bg-amber-500/10">
-                <AlertTriangle className="h-4 w-4 text-amber-400" />
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-warning/25 bg-warning/10">
+                <AlertTriangle className="h-4 w-4 text-warning" />
               </div>
               <div>
                 <DialogTitle className="text-[15px] font-bold">Apply Variances?</DialogTitle>
@@ -89,7 +88,7 @@ function ApplyVariancesDialog({ open, onOpenChange, mutation, report }) {
           <div className="mb-4 space-y-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-3">
             <div className="flex justify-between text-xs">
               <span className="text-muted-foreground">Items with variance</span>
-              <span className="font-semibold text-amber-400">{report?.summary?.items_with_variance ?? 0}</span>
+              <span className="font-semibold text-warning">{report?.summary?.items_with_variance ?? 0}</span>
             </div>
             <div className="flex justify-between text-xs">
               <span className="text-muted-foreground">Total variance value</span>
@@ -104,7 +103,7 @@ function ApplyVariancesDialog({ open, onOpenChange, mutation, report }) {
           )}
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" disabled={mutation.isPending} onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button className="flex-1 bg-amber-500 hover:bg-amber-400 text-black font-semibold" disabled={mutation.isPending}
+            <Button className="flex-1 bg-warning hover:bg-warning/90 text-warning-foreground font-semibold" disabled={mutation.isPending}
               onClick={() => mutation.mutate(undefined, { onSuccess: () => onOpenChange(false) })}>
               {mutation.isPending ? "Applying…" : "Apply to Stock"}
             </Button>
@@ -117,7 +116,6 @@ function ApplyVariancesDialog({ open, onOpenChange, mutation, report }) {
 
 // ── VarianceReportView (main export) ─────────────────────────────────────────
 export function VarianceReportView({ sessionId }) {
-  const navigate  = useNavigate();
   const storeId   = useBranchStore((s) => s.activeStore?.id);
   const [applyOpen, setApplyOpen] = useState(false);
   const [filter, setFilter] = useState("all"); // all | overage | shortage | perfect
@@ -194,7 +192,7 @@ export function VarianceReportView({ sessionId }) {
         const pct = parseFloat(row.variance_percentage ?? 0);
         if (pct === 0) return <span className="text-xs text-muted-foreground">0%</span>;
         return (
-          <span className={cn("text-xs font-semibold tabular-nums", pct > 0 ? "text-emerald-400" : "text-rose-400")}>
+          <span className={cn("text-xs font-semibold tabular-nums", pct > 0 ? "text-success" : "text-destructive")}>
             {pct >= 0 ? "+" : ""}{pct.toFixed(1)}%
           </span>
         );
@@ -208,8 +206,8 @@ export function VarianceReportView({ sessionId }) {
         const hasVariance = parseFloat(row.variance_quantity ?? 0) !== 0;
         if (!hasVariance) return <span className="text-[10px] text-muted-foreground">—</span>;
         return row.is_adjusted
-          ? <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400"><CheckCircle2 className="h-2.5 w-2.5" />Applied</span>
-          : <span className="inline-flex items-center rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400">Pending</span>;
+          ? <span className="inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success"><CheckCircle2 className="h-2.5 w-2.5" />Applied</span>
+          : <span className="inline-flex items-center rounded-full border border-warning/25 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold text-warning">Pending</span>;
       },
     },
   ];
@@ -224,8 +222,8 @@ export function VarianceReportView({ sessionId }) {
           <span className={cn(
             "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
             session.status === "completed"
-              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-              : "border-amber-500/30 bg-amber-500/10 text-amber-400",
+              ? "border-success/30 bg-success/10 text-success"
+              : "border-warning/30 bg-warning/10 text-warning",
           )}>
             {session.status === "completed" ? <CheckCircle2 className="h-2.5 w-2.5" /> : <RefreshCw className="h-2.5 w-2.5" />}
             {session.status}
@@ -233,7 +231,7 @@ export function VarianceReportView({ sessionId }) {
         }
         action={
           hasUnadjusted && (
-            <Button size="sm" className="bg-amber-500 hover:bg-amber-400 text-black font-semibold" onClick={() => setApplyOpen(true)}>
+            <Button size="sm" className="bg-warning hover:bg-warning/90 text-warning-foreground font-semibold" onClick={() => setApplyOpen(true)}>
               <AlertTriangle className="h-3.5 w-3.5" /> Apply Variances
             </Button>
           )
@@ -252,20 +250,20 @@ export function VarianceReportView({ sessionId }) {
 
           {/* Overage / Shortage breakdown */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 flex items-center gap-3">
-              <ArrowUpRight className="h-5 w-5 text-emerald-400 shrink-0" />
+            <div className="rounded-xl border border-success/20 bg-success/5 p-4 flex items-center gap-3">
+              <ArrowUpRight className="h-5 w-5 text-success shrink-0" />
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400/70">Overage</p>
-                <p className="text-lg font-bold text-emerald-400 tabular-nums">{summary.overage_count ?? 0} items</p>
-                <p className="text-xs text-emerald-400/60">{formatCurrency(parseFloat(summary.overage_value ?? 0))} surplus</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-success/70">Overage</p>
+                <p className="text-lg font-bold text-success tabular-nums">{summary.overage_count ?? 0} items</p>
+                <p className="text-xs text-success/60">{formatCurrency(parseFloat(summary.overage_value ?? 0))} surplus</p>
               </div>
             </div>
-            <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4 flex items-center gap-3">
-              <ArrowDownRight className="h-5 w-5 text-rose-400 shrink-0" />
+            <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 flex items-center gap-3">
+              <ArrowDownRight className="h-5 w-5 text-destructive shrink-0" />
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-rose-400/70">Shortage</p>
-                <p className="text-lg font-bold text-rose-400 tabular-nums">{summary.shortage_count ?? 0} items</p>
-                <p className="text-xs text-rose-400/60">{formatCurrency(Math.abs(parseFloat(summary.shortage_value ?? 0)))} deficit</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-destructive/70">Shortage</p>
+                <p className="text-lg font-bold text-destructive tabular-nums">{summary.shortage_count ?? 0} items</p>
+                <p className="text-xs text-destructive/60">{formatCurrency(Math.abs(parseFloat(summary.shortage_value ?? 0)))} deficit</p>
               </div>
             </div>
           </div>

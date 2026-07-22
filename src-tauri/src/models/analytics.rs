@@ -32,46 +32,10 @@ pub struct RevenueByPeriod {
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct TopItem {
-    pub item_id: Option<Uuid>,
-    pub item_name: String,
-    pub sku: String,
-    pub qty_sold: Decimal,
-    pub revenue: Decimal,
-    pub measurement_type: Option<String>,
-    pub unit_type: Option<String>,
-}
-
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct TopCategory {
-    pub category_name: String,
-    pub qty_sold: Decimal,
-    pub revenue: Decimal,
-}
-
-#[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct PaymentMethodSummary {
     pub payment_method: String,
     pub count: i64,
     pub total: Decimal,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DailySummary {
-    pub date: String,
-    pub transaction_count: i64,
-    pub items_sold: Decimal,
-    pub gross_sales: Decimal,
-    pub total_discounts: Decimal,
-    pub net_sales: Decimal,
-    pub total_tax: Decimal,
-    pub total_expenses: Decimal,
-    pub gross_profit: Decimal,
-    pub net_profit: Decimal,
-    pub cash_sales: Decimal,
-    pub card_sales: Decimal,
-    pub transfer_sales: Decimal,
-    pub credit_sales: Decimal,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -85,6 +49,10 @@ pub struct DepartmentAnalytics {
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct CategoryAnalytics {
     pub category_name: String,
+    /// Top-level ancestor of this category (itself when it is a root).
+    /// Lets the UI group leaf rows under their parent and show subtotals
+    /// WITHOUT emitting parent rows too, which would double-count.
+    pub root_category_name: String,
     pub qty_sold: Decimal,
     pub revenue: Decimal,
     pub transaction_count: i64,
@@ -197,6 +165,10 @@ pub struct ProfitAnalysisItem {
 #[derive(Debug, Serialize)]
 pub struct CategoryProfitAnalysis {
     pub category_name: String,
+    /// Top-level ancestor of this category (itself when it is a root).
+    /// Lets the UI group leaf rows under their parent and show subtotals
+    /// WITHOUT emitting parent rows too, which would double-count.
+    pub root_category_name: String,
     pub qty_sold: Decimal,
     pub revenue: Decimal,
     pub cost_of_goods: Decimal,
@@ -428,32 +400,6 @@ pub struct DiscountAnalytics {
     pub by_cashier: Vec<DiscountByCashier>,
     /// Added in Phase 1 fix — was missing, causing Discounts tab to show empty.
     pub by_item: Vec<DiscountByItem>,
-}
-
-// ── Payment trends ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct PaymentTrend {
-    pub period: String,
-    pub payment_method: String,
-    pub count: i64,
-    pub total: Decimal,
-    /// Share of this method's total vs all methods in the same period (0–100)
-    pub percentage: Decimal,
-}
-
-// ── Supplier analytics ────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct SupplierAnalytics {
-    pub supplier_id: i32,
-    pub supplier_name: String,
-    pub total_orders: i64,
-    pub total_order_value: Decimal,
-    pub pending_orders: i64,
-    /// Average days from ordered_at → received_at (NULL if no received POs)
-    pub avg_lead_time_days: Option<Decimal>,
-    pub current_balance: Decimal,
 }
 
 // ── Tax report ────────────────────────────────────────────────────────────────

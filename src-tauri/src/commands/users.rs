@@ -71,20 +71,6 @@ async fn fetch_user_by_id(pool: &sqlx::PgPool, id: i32, include_avatar: bool) ->
     .ok_or_else(|| AppError::NotFound(format!("User {id} not found")))
 }
 
-fn user_sync_payload(u: &User) -> serde_json::Value {
-    serde_json::json!({
-        "id": u.id,
-        "username": u.username,
-        "email": u.email,
-        "first_name": u.first_name,
-        "last_name": u.last_name,
-        "phone": u.phone,
-        "role_id": u.role_id,
-        "store_id": u.store_id,
-        "is_active": u.is_active,
-    })
-}
-
 async fn validate_role_store(
     pool: &sqlx::PgPool,
     role_id: i32,
@@ -139,6 +125,59 @@ async fn ensure_role_assignable(pool: &sqlx::PgPool, caller_user_id: i32, target
         return Err(AppError::Forbidden);
     }
     Ok(())
+}
+
+/// Authorises the caller to act on an existing `target_id`:
+///   • non-global callers may only touch users in their own store
+///   • the caller must strictly outrank the target's CURRENT role
+///     (this also blocks acting on peers and on oneself, since same-role
+///      comparison fails the strict-outrank test in `ensure_role_assignable`)
+async fn ensure_can_manage_target(
+    pool:      &sqlx::PgPool,
+    claims:    &crate::models::auth::Claims,
+    target_id: i32,
+) -> AppResult<()> {
+    let target = sqlx::query!(
+        "SELECT store_id, role_id FROM users WHERE id = $1",
+        target_id
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("User {target_id} not found")))?;
+
+    if !claims.is_global {
+        let caller_store = claims.store_id.ok_or(AppError::Forbidden)?;
+        if target.store_id != Some(caller_store) {
+            return Err(AppError::Forbidden);
+        }
+    }
+
+    ensure_role_assignable(pool, claims.user_id, target.role_id).await
+}
+
+/// Best-effort revocation of every session belonging to `user_id`
+/// (durable session rows + the volatile in-memory map). Used after an
+/// admin resets a password or deletes an account.
+async fn revoke_all_sessions(state: &AppState, pool: &sqlx::PgPool, user_id: i32) {
+    sqlx::query!(
+        "UPDATE active_sessions SET expires_at = NOW() WHERE user_id = $1 AND expires_at > NOW()",
+        user_id
+    ).execute(pool).await.ok();
+    sqlx::query!(
+        "UPDATE user_sessions SET expires_at = NOW() WHERE user_id = $1 AND expires_at > NOW()",
+        user_id
+    ).execute(pool).await.ok();
+    state.sessions.write().await.retain(|_, s| s.user_id != user_id);
+}
+
+/// Queue a minimal users row for cloud sync. The push loop re-reads the
+/// authoritative row (fresh-read push), so only the id is required here.
+async fn queue_user_sync(pool: &sqlx::PgPool, id: i32, store_id: Option<i32>) {
+    crate::database::sync::queue_row(
+        pool, "users", "UPDATE", &id.to_string(),
+        serde_json::json!({ "id": id }),
+        store_id,
+    ).await;
 }
 
 #[tauri::command]
@@ -334,6 +373,22 @@ pub async fn create_user(
     let claims = guard_permission(&state, &token, "users.create").await?;
     validate_password(&payload.password).map_err(AppError::Validation)?;
     let pool = state.pool().await?;
+
+    // ── Store scope ───────────────────────────────────────────────────────────
+    // A non-global caller can only create users inside their own store; ignore
+    // any store_id they submit and pin the new user to the caller's store.
+    let target_store = if claims.is_global {
+        payload.store_id
+    } else {
+        Some(claims.store_id.ok_or(AppError::Forbidden)?)
+    };
+
+    // ── Privilege guards ──────────────────────────────────────────────────────
+    // The role/store must be real, and the caller must strictly outrank the role
+    // they are assigning — otherwise a manager could mint a super_admin.
+    validate_role_store(&pool, payload.role_id, target_store).await?;
+    ensure_role_assignable(&pool, claims.user_id, payload.role_id).await?;
+
     let hash = hash_password(&payload.password)?;
 
     let id: i32 = sqlx::query_scalar!(
@@ -342,7 +397,7 @@ pub async fn create_user(
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id"#,
         payload.username, payload.email, hash,
         payload.first_name, payload.last_name,
-        payload.phone, payload.role_id, payload.store_id
+        payload.phone, payload.role_id, target_store
     )
     .fetch_one(&pool)
     .await?;
@@ -356,10 +411,10 @@ pub async fn create_user(
             "id": id, "username": payload.username, "email": payload.email,
             "password_hash": hash, "first_name": payload.first_name,
             "last_name": payload.last_name, "phone": payload.phone,
-            "role_id": payload.role_id, "store_id": payload.store_id,
+            "role_id": payload.role_id, "store_id": target_store,
             "is_active": true,
         }),
-        payload.store_id,
+        target_store,
     ).await;
 
     get_user(state, token, id).await
@@ -375,6 +430,34 @@ pub async fn update_user(
     let claims = guard_permission(&state, &token, "users.update").await?;
     let pool = state.pool().await?;
 
+    // Caller must be allowed to touch this user (store scope + outrank current role).
+    ensure_can_manage_target(&pool, &claims, id).await?;
+
+    // If a new role is requested, the caller must strictly outrank the NEW role too.
+    if let Some(new_role) = payload.role_id {
+        ensure_role_assignable(&pool, claims.user_id, new_role).await?;
+    }
+
+    // ── Store handling ────────────────────────────────────────────────────────
+    // Distinguish "field omitted" (Option::None → keep existing) from
+    // "explicitly set" (Some(_)) so an omitted store_id no longer wipes the
+    // column. Non-global callers may never move a user out of their store, so
+    // their store field is ignored entirely.
+    let (store_provided, store_value): (bool, Option<i32>) = if claims.is_global {
+        (payload.store_id.is_some(), payload.store_id.flatten())
+    } else {
+        (false, None)
+    };
+    if let (true, Some(sid)) = (store_provided, store_value) {
+        // Validate the store is real/active when one is being assigned.
+        let ok: bool = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1 AND is_active = TRUE)", sid
+        ).fetch_one(&pool).await?.unwrap_or(false);
+        if !ok {
+            return Err(AppError::Validation(format!("Store {sid} does not exist or is inactive.")));
+        }
+    }
+
     sqlx::query!(
         r#"UPDATE users SET
            email      = COALESCE($1, email),
@@ -382,12 +465,12 @@ pub async fn update_user(
            last_name  = COALESCE($3, last_name),
            phone      = COALESCE($4, phone),
            role_id    = COALESCE($5, role_id),
-           store_id   = $6,
-           is_active  = COALESCE($7, is_active),
+           store_id   = CASE WHEN $6 THEN $7 ELSE store_id END,
+           is_active  = COALESCE($8, is_active),
            updated_at = NOW()
-           WHERE id = $8"#,
+           WHERE id = $9"#,
         payload.email, payload.first_name, payload.last_name,
-        payload.phone, payload.role_id, payload.store_id.flatten(),
+        payload.phone, payload.role_id, store_provided, store_value,
         payload.is_active, id
     )
     .execute(&pool)
@@ -396,16 +479,7 @@ pub async fn update_user(
     write_audit_log(&pool, claims.user_id, claims.store_id, "update", "user",
         &format!("Updated user id {id}"), "info").await;
 
-    crate::database::sync::queue_row(
-        &pool, "users", "UPDATE", &id.to_string(),
-        serde_json::json!({
-            "id": id, "email": payload.email, "first_name": payload.first_name,
-            "last_name": payload.last_name, "phone": payload.phone,
-            "role_id": payload.role_id, "store_id": payload.store_id,
-            "is_active": payload.is_active,
-        }),
-        payload.store_id.flatten(),
-    ).await;
+    queue_user_sync(&pool, id, store_value).await;
 
     get_user(state, token, id).await
 }
@@ -419,11 +493,20 @@ pub async fn delete_user(
     let claims = guard_permission(&state, &token, "users.delete").await?;
     let pool = state.pool().await?;
 
+    ensure_can_manage_target(&pool, &claims, id).await?;
+
     sqlx::query!("UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id)
         .execute(&pool)
         .await?;
+
+    // Deleting (soft) must also log the account out everywhere, mirroring
+    // deactivate_user — otherwise their live tokens keep working.
+    revoke_all_sessions(&state, &pool, id).await;
+
     write_audit_log(&pool, claims.user_id, claims.store_id, "delete", "user",
         &format!("Deactivated user id {id}"), "warning").await;
+
+    queue_user_sync(&pool, id, claims.store_id).await;
     Ok(())
 }
 
@@ -454,10 +537,12 @@ pub async fn search_users(
     query: String,
     limit: Option<i64>,
 ) -> AppResult<Vec<User>> {
-    guard_permission(&state, &token, "users.read").await?;
+    let claims  = guard_permission(&state, &token, "users.read").await?;
     let pool    = state.pool().await?;
     let lim     = limit.unwrap_or(10).clamp(1, 50);
     let pattern = format!("%{query}%");
+    // Non-global callers only see users within their own store.
+    let scoped_store_id = if claims.is_global { None } else { claims.store_id };
 
     sqlx::query_as!(
         User,
@@ -469,13 +554,14 @@ pub async fn search_users(
            FROM   users u
            JOIN   roles r ON r.id = u.role_id
            LEFT JOIN stores s ON s.id = u.store_id
-           WHERE  u.username   ILIKE $1
-              OR  u.email      ILIKE $1
-              OR  u.first_name ILIKE $1
-              OR  u.last_name  ILIKE $1
+           WHERE  ($1::int IS NULL OR u.store_id = $1)
+             AND  (u.username   ILIKE $2
+              OR   u.email      ILIKE $2
+              OR   u.first_name ILIKE $2
+              OR   u.last_name  ILIKE $2)
            ORDER BY u.username
-           LIMIT $2"#,
-        pattern, lim
+           LIMIT $3"#,
+        scoped_store_id, pattern, lim
     )
     .fetch_all(&pool)
     .await
@@ -490,14 +576,18 @@ pub async fn activate_user(
     token: String,
     id:    i32,
 ) -> AppResult<User> {
-    guard_permission(&state, &token, "users.update").await?;
+    let claims = guard_permission(&state, &token, "users.update").await?;
     let pool = state.pool().await?;
+
+    ensure_can_manage_target(&pool, &claims, id).await?;
 
     sqlx::query!(
         "UPDATE users SET is_active = TRUE, updated_at = NOW() WHERE id = $1", id
     )
     .execute(&pool)
     .await?;
+
+    queue_user_sync(&pool, id, claims.store_id).await;
 
     get_user(state, token, id).await
 }
@@ -508,8 +598,10 @@ pub async fn deactivate_user(
     token: String,
     id:    i32,
 ) -> AppResult<User> {
-    guard_permission(&state, &token, "users.update").await?;
+    let claims = guard_permission(&state, &token, "users.update").await?;
     let pool = state.pool().await?;
+
+    ensure_can_manage_target(&pool, &claims, id).await?;
 
     sqlx::query!(
         "UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1", id
@@ -517,29 +609,12 @@ pub async fn deactivate_user(
     .execute(&pool)
     .await?;
 
-    // ── Force immediate logout for the deactivated user ──────────────────────
-    // 1. Expire their active_sessions rows so the sessions panel clears.
-    sqlx::query!(
-        "UPDATE active_sessions SET expires_at = NOW() WHERE user_id = $1 AND expires_at > NOW()",
-        id
-    )
-    .execute(&pool)
-    .await
-    .ok();
+    // Force immediate logout for the deactivated user: expire durable sessions
+    // (active_sessions + refresh tokens) and evict the in-memory session so their
+    // very next API call returns 401 rather than waiting for the JWT to expire.
+    revoke_all_sessions(&state, &pool, id).await;
 
-    // 2. Expire their user_sessions (refresh tokens). refresh_token_inner now
-    //    validates these, so the client cannot silently obtain a new access token.
-    sqlx::query!(
-        "UPDATE user_sessions SET expires_at = NOW() WHERE user_id = $1 AND expires_at > NOW()",
-        id
-    )
-    .execute(&pool)
-    .await
-    .ok();
-
-    // 3. Evict from the in-memory session cache so their very next API call
-    //    returns 401 without waiting for the JWT to naturally expire.
-    state.sessions.write().await.retain(|_, s| s.user_id != id);
+    queue_user_sync(&pool, id, claims.store_id).await;
 
     get_user(state, token, id).await
 }
@@ -553,9 +628,15 @@ pub async fn reset_user_password(
     id:           i32,
     new_password: String,
 ) -> AppResult<()> {
-    guard_permission(&state, &token, "users.update").await?;
+    let claims = guard_permission(&state, &token, "users.update").await?;
     validate_password(&new_password).map_err(AppError::Validation)?;
     let pool = state.pool().await?;
+
+    // An admin resetting a password is only allowed on users they outrank and,
+    // for non-global admins, only inside their own store — otherwise a manager
+    // could hijack an admin account by resetting its password.
+    ensure_can_manage_target(&pool, &claims, id).await?;
+
     let hash = hash_password(&new_password)?;
 
     sqlx::query!(
@@ -564,6 +645,12 @@ pub async fn reset_user_password(
     )
     .execute(&pool)
     .await?;
+
+    // A reset invalidates the target's existing sessions everywhere.
+    revoke_all_sessions(&state, &pool, id).await;
+
+    write_audit_log(&pool, claims.user_id, claims.store_id, "reset_password", "user",
+        &format!("Reset password for user id {id}"), "warning").await;
 
     Ok(())
 }
@@ -678,7 +765,7 @@ pub async fn set_role_permissions(
     role_id:        i32,
     permission_ids: Vec<i32>,
 ) -> AppResult<()> {
-    guard_permission(&state, &token, "users.update").await?;
+    let claims = guard_permission(&state, &token, "users.update").await?;
     let pool = state.pool().await?;
 
     // Prevent editing the super_admin role's permissions
@@ -691,6 +778,30 @@ pub async fn set_role_permissions(
     .unwrap_or(false);
 
     if is_global {
+        return Err(AppError::Forbidden);
+    }
+
+    // ── Prevent privilege self-escalation ─────────────────────────────────────
+    // The caller may not edit their own role, nor any role at or above their own
+    // rank — otherwise they could simply grant their own role every permission.
+    if role_id == claims.role_id {
+        return Err(AppError::Forbidden);
+    }
+    let caller_level = sqlx::query_scalar!(
+        r#"SELECT r.hierarchy_level FROM users u
+           JOIN roles r ON r.id = u.role_id WHERE u.id = $1"#,
+        claims.user_id
+    )
+    .fetch_optional(&pool)
+    .await?
+    .ok_or(AppError::Forbidden)?;
+    let target_level = sqlx::query_scalar!(
+        "SELECT hierarchy_level FROM roles WHERE id = $1", role_id
+    )
+    .fetch_optional(&pool)
+    .await?
+    .ok_or_else(|| AppError::Validation(format!("Role {role_id} does not exist.")))?;
+    if target_level <= caller_level {
         return Err(AppError::Forbidden);
     }
 

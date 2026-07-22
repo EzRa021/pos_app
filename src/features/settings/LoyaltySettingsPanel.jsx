@@ -46,11 +46,11 @@ function SectionCard({ title, icon: Icon, children, accent }) {
   const borderCls = accent === "success" ? "border-success/30" : "border-border";
   return (
     <div className={cn("rounded-xl border bg-card overflow-hidden", borderCls)}>
-      <div className="flex items-center gap-2.5 px-5 py-3 border-b border-border bg-muted/20">
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-border bg-muted/20">
         {Icon && <Icon className="h-3.5 w-3.5 text-muted-foreground" />}
         <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{title}</h3>
       </div>
-      <div className="p-5 space-y-4">{children}</div>
+      <div className="p-4 space-y-4">{children}</div>
     </div>
   );
 }
@@ -242,7 +242,7 @@ export function LoyaltySettingsPanel() {
   const daysToMin = ppr > 0 ? Math.ceil(minPts / (ppr * 1000)) : null;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
 
       {/* ── Programme toggle ──────────────────────────────────────────── */}
       <div className={cn(
@@ -454,7 +454,7 @@ export function LoyaltySettingsPanel() {
 
       {/* ── Save bar ──────────────────────────────────────────────────── */}
       <div className={cn(
-        "flex items-center justify-between gap-3 rounded-xl border px-5 py-3.5 transition-colors",
+        "flex items-center justify-between gap-3 rounded-xl border px-3 py-2 transition-colors",
         dirty ? "border-warning/30 bg-warning/[0.04]" : "border-border bg-card",
       )}>
         <div className="flex items-center gap-2 min-w-0">

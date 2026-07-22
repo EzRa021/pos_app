@@ -214,12 +214,6 @@ export const useCartStore = create(
   clearCart() {
     set({ ...EMPTY_CART, heldTransactions: get().heldTransactions });
   },
-
-  // ── Derived totals (call in components via useMemo or directly) ───────────
-  getTotals() {
-    const { cartItems, cartDiscount, cartDiscountPct } = get();
-    return calcCartTotals(cartItems, cartDiscount, cartDiscountPct);
-  },
     }),
     {
       name: "qpos_cart",

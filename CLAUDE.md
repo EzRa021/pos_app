@@ -190,6 +190,32 @@ src-tauri/
 
 ## Do / Don't
 
+---
+
+## Knowledge Graph (graphify)
+
+A graphify knowledge graph of this codebase lives in `graphify-out/`
+(3,894 nodes · 7,948 edges · 400 communities; scoped to `src/` + `src-tauri/`).
+
+**For any codebase question — how something works, what calls what, tracing a flow,
+or a cross-cutting audit — query the graph first instead of grepping module-by-module:**
+
+```bash
+graphify query "which commands mutate data but never call guard_permission?"
+graphify path "PosPage" "create_transaction"
+graphify explain "AppState"
+```
+
+- A graph result is a **hypothesis, not a finding** — always verify against source before
+  reporting. Path-qualified calls (`super::auth::guard`) don't always resolve, which
+  produces false positives.
+- Rebuild after large refactors: `/graphify . --update`
+- Exclude `.claude/` from rebuilds — `.claude/worktrees/` holds a duplicate copy of
+  `src/` and `src-tauri/` that pollutes clustering.
+- Code-only corpus → pure AST extraction: zero LLM tokens, no API key required.
+
+---
+
 | Do | Don't |
 |----|-------|
 | Use `rpc(method, params)` for all API calls | Call `invoke()` outside App.jsx startup |

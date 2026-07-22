@@ -139,7 +139,7 @@ export function RestoreProgressStep({ businessId, businessName, onSuccess, onBac
           </div>
 
           <Button
-            className="w-full h-10 bg-success hover:bg-success/90 text-white"
+            className="w-full h-10 bg-success hover:bg-success/90 text-success-foreground"
             onClick={() => onSuccess(restoredName, businessId)}
           >
             <CheckCircle2 className="h-4 w-4" />

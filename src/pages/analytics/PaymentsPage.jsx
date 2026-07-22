@@ -4,13 +4,12 @@ import { CreditCard, DollarSign, Tag } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { DataTable }  from "@/components/shared/DataTable";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { cn }         from "@/lib/utils";
 import { formatCurrency, formatCurrencyCompact } from "@/lib/format";
 import { CHART_COLORS } from "@/components/ui/chart";
 import { usePaymentMethodSummary, useDiscountAnalytics } from "@/features/analytics/useAnalytics";
 import { useAnalyticsDate }  from "@/features/analytics/AnalyticsLayout";
 import {
-  CardShell, ChartCard, SectionHeader, getPaymentMeta,
+  ChartCard, SectionHeader, getPaymentMeta,
 } from "@/features/analytics/AnalyticsShared";
 
 export default function PaymentsPage() {

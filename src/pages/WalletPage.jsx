@@ -11,7 +11,7 @@ import { useQuery }          from "@tanstack/react-query";
 import { useNavigate }       from "react-router-dom";
 import {
   Wallet, Plus, Search, ArrowUpRight, Loader2,
-  Users, TrendingUp, DollarSign, SlidersHorizontal,
+  Users, TrendingUp, SlidersHorizontal,
 } from "lucide-react";
 import { toast }         from "sonner";
 
@@ -21,11 +21,11 @@ import { DataTable }     from "@/components/shared/DataTable";
 import { Button }        from "@/components/ui/button";
 import { Input }         from "@/components/ui/input";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { cn }            from "@/lib/utils";
-import { formatCurrency, formatDateTime } from "@/lib/format";
+import { formatCurrency } from "@/lib/format";
 import { useBranchStore }  from "@/stores/branch.store";
 import { useWalletActions } from "@/features/wallet/useWallet";
 import { getCustomers }     from "@/commands/customers";
@@ -130,7 +130,7 @@ function QuickDepositDialog({ open, onOpenChange, customer }) {
             size="sm"
             onClick={handleSave}
             disabled={deposit.isPending || !amount || parseFloat(amount) <= 0}
-            className="bg-success hover:bg-success/90 text-white gap-1.5"
+            className="bg-success hover:bg-success/90 text-success-foreground gap-1.5"
           >
             {deposit.isPending
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</>

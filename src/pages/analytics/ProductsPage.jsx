@@ -13,7 +13,7 @@ import {
 } from "@/features/analytics/useAnalytics";
 import { useAnalyticsDate }  from "@/features/analytics/AnalyticsLayout";
 import {
-  ChartCard, SectionHeader, TopNSelector, CurrencyFmtTooltip, CardShell,
+  ChartCard, SectionHeader, TopNSelector, CurrencyFmtTooltip,
 } from "@/features/analytics/AnalyticsShared";
 
 export default function ProductsPage() {

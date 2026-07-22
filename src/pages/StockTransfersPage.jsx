@@ -1,5 +1,5 @@
 // pages/StockTransfersPage.jsx
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowLeftRight, Plus, Loader2, X, Search,
@@ -16,9 +16,10 @@ import { cn }          from "@/lib/utils";
 import {
   Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
-import { useStockTransfers, useExecuteTransfer } from "@/features/stock_transfers/useStockTransfers";
+import { useStockTransfers, useExecuteTransfer, useCreateTransfer } from "@/features/stock_transfers/useStockTransfers";
 import { usePermission }  from "@/hooks/usePermission";
 import { useBranchStore } from "@/stores/branch.store";
+import { useAuthStore }   from "@/stores/auth.store";
 import { getStores }      from "@/commands/stores";
 import { searchItems }    from "@/commands/items";
 import { useQuery }       from "@tanstack/react-query";
@@ -295,7 +296,7 @@ function Step2_Items({ fromStoreId, items, setItems, onBack, onNext }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 3 — Map each source item to a destination item (or auto-create)
 // ─────────────────────────────────────────────────────────────────────────────
-function Step3_Mapping({ toStoreId, items, setItems, onBack, onSubmit, busy }) {
+function Step3_Mapping({ toStoreId, items, setItems, onBack, onSubmit, busy, instant = true }) {
   const setMapping = (sourceId, destItem) =>
     setItems((prev) =>
       prev.map((i) =>
@@ -448,11 +449,11 @@ function Step3_Mapping({ toStoreId, items, setItems, onBack, onSubmit, busy }) {
           size="sm"
           onClick={onSubmit}
           disabled={!allMapped || busy}
-          className="gap-1.5 bg-success hover:bg-success/90 text-white"
+          className="gap-1.5 bg-success hover:bg-success/90 text-success-foreground"
         >
           {busy
-            ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Transferring…</>
-            : <><PackageCheck className="h-3.5 w-3.5" />Complete Transfer</>}
+            ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />{instant ? "Transferring…" : "Submitting…"}</>
+            : <><PackageCheck className="h-3.5 w-3.5" />{instant ? "Complete Transfer" : "Submit for Approval"}</>}
         </Button>
       </DialogFooter>
     </div>
@@ -466,12 +467,15 @@ const STEP_LABELS = ["Stores", "Items", "Mapping"];
 
 function NewTransferWizard({ open, onOpenChange }) {
   const storeId    = useBranchStore((s) => s.activeStore?.id);
+  const isGlobal   = useAuthStore((s) => s.user?.is_global ?? false);
   const [step, setStep]   = useState(0);
   const [toStoreId, setToStoreId] = useState(null);
   const [notes,     setNotes]     = useState("");
   const [items,     setItems]     = useState([]);
 
   const executeTransfer = useExecuteTransfer();
+  const createTransfer  = useCreateTransfer();
+  const submitting      = executeTransfer.isPending || createTransfer.isPending;
 
   const { data: stores = [] } = useQuery({
     queryKey: ["stores"],
@@ -489,17 +493,31 @@ function NewTransferWizard({ open, onOpenChange }) {
   };
 
   const handleSubmit = async () => {
-    const payload = {
-      from_store_id: storeId,
-      to_store_id:   toStoreId,
-      notes:         notes || undefined,
-      items: items.map((i) => ({
-        source_item_id:      i.source_item_id,
-        qty:                 parseFloat(i.qty),
-        destination_item_id: i.destination_item_id ?? undefined,
-      })),
-    };
-    await executeTransfer.mutateAsync(payload);
+    if (isGlobal) {
+      // Admins move stock immediately.
+      await executeTransfer.mutateAsync({
+        from_store_id: storeId,
+        to_store_id:   toStoreId,
+        notes:         notes || undefined,
+        items: items.map((i) => ({
+          source_item_id:      i.source_item_id,
+          qty:                 parseFloat(i.qty),
+          destination_item_id: i.destination_item_id ?? undefined,
+        })),
+      });
+    } else {
+      // Non-admins submit a request into the pending_approval queue.
+      await createTransfer.mutateAsync({
+        from_store_id: storeId,
+        to_store_id:   toStoreId,
+        notes:         notes || undefined,
+        items: items.map((i) => ({
+          item_id:             i.source_item_id,
+          qty_requested:       parseFloat(i.qty),
+          destination_item_id: i.destination_item_id ?? undefined,
+        })),
+      });
+    }
     handleOpenChange(false);
   };
 
@@ -583,7 +601,8 @@ function NewTransferWizard({ open, onOpenChange }) {
               setItems={setItems}
               onBack={() => setStep(1)}
               onSubmit={handleSubmit}
-              busy={executeTransfer.isPending}
+              busy={submitting}
+              instant={isGlobal}
             />
           )}
         </div>
@@ -597,7 +616,7 @@ function NewTransferWizard({ open, onOpenChange }) {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function StockTransfersPage() {
   const navigate  = useNavigate();
-  const canCreate = usePermission("inventory.create");
+  const canCreate = usePermission("inventory.adjust");
   const [status,  setStatus]  = useState("");
   const [page,    setPage]    = useState(1);
   const [search,  setSearch]  = useState("");
@@ -689,7 +708,7 @@ export default function StockTransfersPage() {
         />
 
         <div className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-5xl px-6 py-5 space-y-4">
+          <div className="mx-auto max-w-5xl px-6 py-5 space-y-5">
 
             {/* Toolbar */}
             <div className="flex items-center gap-3 flex-wrap">

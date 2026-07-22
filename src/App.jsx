@@ -32,6 +32,7 @@ import router                      from './router';
 import { OnboardingFlow }          from './features/onboarding/OnboardingFlow';
 import { useAuthStore }  from './stores/auth.store';
 import { apiClient, setApiBaseUrl } from './lib/apiClient';
+import { initSyncEventBridge }      from './lib/syncEvents';
 import { TitleBar }                from './components/layout/TitleBar';
 import { UpdateBanner }            from './components/layout/UpdateBanner';
 import { Button }                  from './components/ui/button';
@@ -312,6 +313,13 @@ export default function App() {
       setIsChecking(false);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Sync event bridge ────────────────────────────────────────────────
+  // Pulled cloud changes invalidate the matching React Query caches app-wide,
+  // so remote edits appear on screen without a manual refresh.
+  useEffect(() => {
+    initSyncEventBridge(queryClient);
+  }, [queryClient]);
 
   // ── F12 opens native WebView devtools ────────────────────────────────
   // Available everywhere, not just the connection-error screen — useful for

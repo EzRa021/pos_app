@@ -2,7 +2,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { depositToWallet, getWalletBalance, getWalletHistory, adjustWallet } from "@/commands/customer_wallet";
 import { useBranchStore } from "@/stores/branch.store";
-import { toastSuccess, onMutationError } from "@/lib/toast";
 
 export function useWalletBalance(customerId) {
   const { data, isLoading, error } = useQuery({
@@ -21,8 +20,8 @@ export function useWalletHistory(customerId, { page = 1, limit = 50 } = {}) {
     enabled:  !!customerId,
     staleTime: 60_000,
   });
-  const history = Array.isArray(data) ? data : (data?.data ?? []);
-  const total = Array.isArray(data) ? history.length : (data?.total ?? 0);
+  const history = data?.data ?? [];
+  const total   = data?.total ?? 0;
   return { history, total, isLoading };
 }
 
@@ -37,22 +36,16 @@ export function useWalletActions(customerId) {
     qc.invalidateQueries({ queryKey: ["customers"] });
   };
 
+  // Callers (WalletPanel dialogs, WalletPage quick-deposit) own their own
+  // success/error toasts — the hook only invalidates to avoid double toasts.
   const deposit = useMutation({
     mutationFn: (p) => depositToWallet({ customer_id: customerId, store_id: storeId, ...p }),
-    onSuccess: (_, vars) => {
-      toastSuccess("Wallet Funded", `₦${Number(vars.amount).toLocaleString()} has been added to the customer's wallet.`);
-      invalidate();
-    },
-    onError: (e) => onMutationError("Wallet Deposit Failed", e),
+    onSuccess: invalidate,
   });
 
   const adjust = useMutation({
     mutationFn: (p) => adjustWallet({ customer_id: customerId, store_id: storeId, ...p }),
-    onSuccess: () => {
-      toastSuccess("Wallet Adjusted", "The customer's wallet balance has been updated.");
-      invalidate();
-    },
-    onError: (e) => onMutationError("Wallet Adjustment Failed", e),
+    onSuccess: invalidate,
   });
 
   return { deposit, adjust };

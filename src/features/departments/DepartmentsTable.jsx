@@ -280,8 +280,8 @@ function ToggleStatusDialog({ open, onOpenChange, department, isActivating, muta
             </Button>
             <Button
               className={cn(
-                "flex-1 text-white",
-                isActivating ? "bg-success hover:bg-success/90" : "bg-warning/90 hover:bg-warning",
+                "flex-1",
+                isActivating ? "bg-success hover:bg-success/90 text-success-foreground" : "bg-warning/90 hover:bg-warning text-warning-foreground",
               )}
               disabled={mutation.isPending}
               onClick={() => mutation.mutate(department.id, { onSuccess: () => onOpenChange(false) })}

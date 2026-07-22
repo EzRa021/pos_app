@@ -117,7 +117,7 @@ pub async fn print_price_tags(
            LEFT JOIN item_stock istock ON istock.item_id=i.id AND istock.store_id=i.store_id
            LEFT JOIN item_settings ist ON ist.item_id=i.id
            WHERE i.store_id=$1
-             AND ($2::int IS NULL OR i.category_id=$2)
+             AND ($2::int IS NULL OR i.category_id = ANY(category_descendant_ids($2)))
              AND ($3::int IS NULL OR i.department_id=$3)
              AND (ist.is_active IS NULL OR ist.is_active=TRUE)
            ORDER BY i.item_name"#,

@@ -21,7 +21,9 @@ export function useNotifications({ type, unread, limit = 30 } = {}) {
       store_id: storeId,
       user_id:  userId,
       type:     type   || undefined,
-      unread:   unread || undefined,
+      // `?? undefined` not `|| undefined` — `unread: false` ("Read" filter) is
+      // a meaningful value and must not be collapsed to undefined.
+      unread:   unread ?? undefined,
       limit,
     }),
     enabled:         !!storeId,

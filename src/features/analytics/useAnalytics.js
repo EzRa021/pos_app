@@ -16,12 +16,15 @@ import { useBranchStore } from "@/stores/branch.store";
 // ── Base hook factory ─────────────────────────────────────────────────────────
 function makeHook(queryKey, fn, params = {}, staleMs = 2 * 60_000) {
   return function useAnalyticsQuery(extraParams = {}) {
+    // `enabled` is a control flag, not a query param — pull it out so callers
+    // can gate a query (e.g. by permission) without it leaking into the RPC body.
+    const { enabled: enabledOverride, ...restParams } = extraParams;
     const storeId = useBranchStore((s) => s.activeStore?.id);
-    const merged  = { ...params, ...extraParams };
+    const merged  = { ...params, ...restParams };
     const { data, isLoading, error } = useQuery({
       queryKey:  [queryKey, storeId, merged],
       queryFn:   () => fn(storeId, merged),
-      enabled:   !!storeId,
+      enabled:   !!storeId && (enabledOverride ?? true),
       staleTime: staleMs,
     });
     return { data, isLoading, error: error ?? null };

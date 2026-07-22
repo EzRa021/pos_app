@@ -162,7 +162,7 @@ function PalettePanel({ onClose }) {
   const inputRef   = useRef(null);
   const panelRef   = useRef(null);
 
-  const { items, customers, suppliers, transactions, purchaseOrders, returns, transfers, isLoading } = useCommandSearch(query);
+  const { items, customers, suppliers, transactions, purchaseOrders, returns, transfers, categories, departments, isLoading } = useCommandSearch(query);
 
   // Auto-focus input on mount.
   useEffect(() => {
@@ -260,8 +260,28 @@ function PalettePanel({ onClose }) {
       action:   () => navigate(`/stock-transfers/${t.id}`),
     }));
 
+    // Categories (no detail route — jump to the Categories page)
+    categories.forEach(c => rows.push({
+      key:      `cat-${c.id}`,
+      group:    "Categories",
+      icon:     FolderTree,
+      label:    c.label,
+      subtitle: c.subtitle,
+      action:   () => navigate("/categories"),
+    }));
+
+    // Departments (no detail route — jump to the Departments page)
+    departments.forEach(d => rows.push({
+      key:      `dept-${d.id}`,
+      group:    "Departments",
+      icon:     Building2,
+      label:    d.label,
+      subtitle: d.subtitle,
+      action:   () => navigate("/departments"),
+    }));
+
     return rows;
-  }, [query, roleSlug, items, customers, suppliers, transactions, purchaseOrders, returns, transfers, navigate]);
+  }, [query, roleSlug, items, customers, suppliers, transactions, purchaseOrders, returns, transfers, categories, departments, navigate]);
 
   // ── Activate ──────────────────────────────────────────────────────────────
   const activate = useCallback((index) => {

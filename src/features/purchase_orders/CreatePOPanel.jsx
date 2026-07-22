@@ -19,7 +19,7 @@ import { PageHeader }        from "@/components/shared/PageHeader";
 import { Button }            from "@/components/ui/button";
 import { Input }             from "@/components/ui/input";
 import { cn }                from "@/lib/utils";
-import { formatCurrency, stepForType, unitLabel, measurementTypeLabel } from "@/lib/format";
+import { formatCurrency, stepForType, unitLabel } from "@/lib/format";
 import { useBranchStore }    from "@/stores/branch.store";
 import { Link }              from "react-router-dom";
 

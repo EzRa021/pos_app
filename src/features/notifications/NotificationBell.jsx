@@ -1,31 +1,16 @@
 // features/notifications/NotificationBell.jsx — Header badge + dropdown
 import { useState, useRef, useEffect } from "react";
-import { Bell, Check, CheckCheck, AlertTriangle, Info, Package, TrendingDown, X, ChevronRight } from "lucide-react";
+import { Bell, CheckCheck, Package, X, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useNotifications, useUnreadCount, useReorderAlertCount } from "./useNotifications";
+import { notifIcon, notifStyle } from "./notificationMeta";
 import { formatDateTime } from "@/lib/format";
 import { toast } from "sonner";
 
-const TYPE_ICONS = {
-  low_stock: TrendingDown,
-  reorder:   Package,
-  info:      Info,
-  warning:   AlertTriangle,
-  alert:     AlertTriangle,
-};
-
-const TYPE_STYLES = {
-  low_stock: "text-warning bg-warning/10",
-  reorder:   "text-primary bg-primary/10",
-  info:      "text-primary bg-primary/10",
-  warning:   "text-warning bg-warning/10",
-  alert:     "text-destructive bg-destructive/10",
-};
-
 function NotificationItem({ n, onRead }) {
-  const Icon  = TYPE_ICONS[n.type] ?? Bell;
-  const style = TYPE_STYLES[n.type] ?? "text-muted-foreground bg-muted/30";
+  const Icon  = notifIcon(n.type);
+  const style = notifStyle(n.type);
 
   return (
     <div
@@ -93,7 +78,7 @@ export function NotificationBell() {
       >
         <Bell className="h-4 w-4 text-muted-foreground" />
         {totalBadge > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-white">
+          <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-destructive-foreground">
             {totalBadge > 99 ? "99+" : totalBadge}
           </span>
         )}

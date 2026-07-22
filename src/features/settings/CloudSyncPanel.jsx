@@ -7,13 +7,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getSupabaseConfig,
-  saveSupabaseConfig,
   clearSupabaseConfig,
   getSyncStatus,
   setCloudSyncEnabled,
   triggerBackfillSync,
   retryFailedSync,
   getFailedSyncRows,
+  getSyncConflicts,
 } from "@/commands/cloud_sync";
 import {
   initSupabaseClient,
@@ -22,18 +22,20 @@ import {
   unsubscribeFromSyncChanges,
 } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
-import { Input }  from "@/components/ui/input";
+import { SyncLogPanel } from "@/features/settings/SyncLogPanel";
 import { cn }     from "@/lib/utils";
 import {
-  Cloud, CloudOff, CheckCircle, AlertTriangle, Loader2,
+  CloudOff, AlertTriangle, Loader2,
   RefreshCw, Trash2, RotateCcw, ChevronDown, ChevronUp,
-  Wifi, WifiOff, Database, Zap,
+  Wifi, WifiOff, Database, Zap, Upload, Download, GitMerge,
 } from "lucide-react";
 
 // ── Tables the frontend subscribes to for realtime invalidation ───────────────
 const REALTIME_TABLES = [
-  "items", "item_stock", "categories", "departments",
-  "customers", "transactions", "shifts", "stores",
+  "items", "item_stock", "categories", "departments", "suppliers",
+  "tax_categories", "customers", "transactions", "transaction_items",
+  "payments", "credit_sales", "returns", "purchase_orders", "expenses",
+  "shifts", "stores", "reorder_alerts", "notifications",
 ];
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -41,12 +43,12 @@ const REALTIME_TABLES = [
 function Section({ title, children }) {
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center px-5 py-3.5 border-b border-border bg-muted/20">
+      <div className="flex items-center px-4 py-2.5 border-b border-border bg-muted/20">
         <h2 className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
           {title}
         </h2>
       </div>
-      <div className="p-5">{children}</div>
+      <div className="p-4">{children}</div>
     </div>
   );
 }
@@ -165,15 +167,90 @@ function FailedRowsPanel({ onRetry }) {
   );
 }
 
+function ConflictsPanel() {
+  const [open, setOpen] = useState(false);
+
+  const { data: rows = [], isLoading, refetch } = useQuery({
+    queryKey:  ["sync-conflicts"],
+    queryFn:   getSyncConflicts,
+    enabled:   open,
+    staleTime: 10_000,
+  });
+
+  return (
+    <div className="rounded-xl border border-warning/25 bg-warning/[0.04] overflow-hidden">
+      <button
+        type="button"
+        onClick={() => { setOpen((o) => !o); if (!open) refetch(); }}
+        className="flex w-full items-center justify-between px-4 py-3 hover:bg-warning/[0.04] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <GitMerge className="h-3.5 w-3.5 text-warning shrink-0" />
+          <span className="text-[11px] font-semibold text-warning">
+            Show resolved conflicts
+          </span>
+        </div>
+        {open
+          ? <ChevronUp className="h-3.5 w-3.5 text-warning/60" />
+          : <ChevronDown className="h-3.5 w-3.5 text-warning/60" />}
+      </button>
+
+      {open && (
+        <div className="border-t border-warning/15 px-4 pb-4 pt-3 space-y-1.5 max-h-52 overflow-y-auto">
+          {isLoading ? (
+            <div className="flex items-center gap-2 py-2">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+              <span className="text-[11px] text-muted-foreground">Loading…</span>
+            </div>
+          ) : rows.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground py-1">No conflicts recorded.</p>
+          ) : (
+            rows.map((row) => (
+              <div
+                key={row.id}
+                className="rounded-lg border border-warning/15 bg-card px-3 py-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-foreground">
+                    {row.table_name}
+                    <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">
+                      row {row.row_id} · {row.direction}
+                    </span>
+                  </span>
+                  <span className="text-[10px] text-muted-foreground shrink-0">
+                    {row.resolved_at ? new Date(row.resolved_at).toLocaleString() : ""}
+                  </span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  Newer copy kept (v{row.current_version ?? "?"}); incoming write
+                  (v{row.incoming_version ?? "?"}) was discarded and logged.
+                </p>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main panel ─────────────────────────────────────────────────────────────────
 
 export function CloudSyncPanel() {
   const qc = useQueryClient();
 
-  const [form, setForm]   = useState({ url: "", anon_key: "", db_url: "" });
-  const [saved, setSaved] = useState(false);
   /** Timestamp of the last realtime event received (for the live indicator). */
   const [lastRealtimeAt, setLastRealtimeAt] = useState(null);
+  /**
+   * Live worker activity from Tauri `sync:cycle` events (server device only).
+   * Push and pull are tracked SEPARATELY: they are independent workers, and
+   * the old single-slot state let a pull finishing mid-push overwrite the push
+   * status with "idle" while the push was still running.
+   */
+  const [livePush, setLivePush] = useState(null);
+  const [livePull, setLivePull] = useState(null);
+  /** Ticks every few seconds purely so the staleness check below re-evaluates. */
+  const [, setNow] = useState(0);
   const realtimeSetupRef = useRef(false);
 
   // ── Queries ──────────────────────────────────────────────────────────────────
@@ -201,14 +278,24 @@ export function CloudSyncPanel() {
     setLastRealtimeAt(new Date());
     // Invalidate whichever query cache matches the table that just changed
     const keyMap = {
-      items:        [["items"], ["inventory"]],
-      item_stock:   [["inventory"], ["item-stock"]],
-      categories:   [["categories"]],
-      departments:  [["departments"]],
-      customers:    [["customers"]],
-      transactions: [["transactions"], ["analytics"]],
-      shifts:       [["shifts"]],
-      stores:       [["stores"]],
+      items:            [["items"], ["inventory"], ["pos-items"]],
+      item_stock:       [["inventory"], ["item-stock"], ["pos-items"]],
+      categories:       [["categories"]],
+      departments:      [["departments"]],
+      suppliers:        [["suppliers"]],
+      tax_categories:   [["tax-categories"]],
+      customers:        [["customers"]],
+      transactions:     [["transactions"], ["analytics"]],
+      transaction_items:[["transactions"], ["analytics"]],
+      payments:         [["payments"], ["transactions"]],
+      credit_sales:     [["credit-sales"], ["customers"]],
+      returns:          [["returns"]],
+      purchase_orders:  [["purchase-orders"]],
+      expenses:         [["expenses"]],
+      shifts:           [["shifts"]],
+      stores:           [["stores"]],
+      reorder_alerts:   [["reorder-alerts"]],
+      notifications:    [["notifications"]],
     };
     const keys = keyMap[table] ?? [[table]];
     keys.forEach((key) => qc.invalidateQueries({ queryKey: key }));
@@ -239,32 +326,63 @@ export function CloudSyncPanel() {
   // Cleanup on unmount
   useEffect(() => () => { unsubscribeFromSyncChanges(); }, []);
 
-  // ── Sync form with loaded config ──────────────────────────────────────────
-
+  // ── Live sync worker events (Tauri, server device only) ──────────────────
+  // The workers emit `sync:cycle` at cycle start/progress/end, and `sync:applied`
+  // after pulled rows land. Every cycle event carries a cycle_id and a direction,
+  // so push and pull are routed to separate state slots and can no longer
+  // clobber each other. Client-mode devices simply keep the polling path.
   useEffect(() => {
-    if (config) {
-      setForm({
-        url:      config.url      ?? "",
-        anon_key: config.anon_key ?? "",
-        db_url:   "",           // never round-trip the password
+    if (!window.__TAURI_INTERNALS__) return undefined;
+    let mounted = true;
+    let unsubs = [];
+
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const unCycle = await listen("sync:cycle", (e) => {
+        if (!mounted) return;
+        const payload = { ...e.payload, at: Date.now() };
+        if (payload.direction === "pull") setLivePull(payload);
+        else                              setLivePush(payload);
+
+        // Keep the polled counters in step immediately.
+        qc.setQueryData(["sync-status"], (old) =>
+          old
+            ? { ...old, pending: payload.pending, failed: payload.failed_total }
+            : old,
+        );
+        // A finished cycle means new log rows and settled counters.
+        if (payload.phase === "end") {
+          qc.invalidateQueries({ queryKey: ["sync-status"] });
+          qc.invalidateQueries({ queryKey: ["sync-log"] });
+          qc.invalidateQueries({ queryKey: ["sync-log-tables"] });
+        }
       });
-    }
-  }, [config]);
+      const unApplied = await listen("sync:applied", (e) => {
+        if (!mounted) return;
+        (e.payload?.tables ?? []).forEach((t) =>
+          handleRealtimeEvent({ table: t, eventType: "pull" })
+        );
+      });
+      unsubs = [unCycle, unApplied];
+      if (!mounted) unsubs.forEach((u) => u());
+    })();
+
+    return () => {
+      mounted = false;
+      unsubs.forEach((u) => u());
+    };
+  }, [qc, handleRealtimeEvent]);
+
+  // Re-render every 5s so LIVE_TTL_MS below is actually evaluated. Without this
+  // a stuck "Pushing…" would never clear: the old code stamped `at` on each
+  // event and then never read it, so a worker that died mid-cycle left the
+  // panel claiming a push was in flight indefinitely.
+  useEffect(() => {
+    const t = setInterval(() => setNow((n) => n + 1), 5_000);
+    return () => clearInterval(t);
+  }, []);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
-
-  const saveMutation = useMutation({
-    mutationFn: saveSupabaseConfig,
-    onSuccess: async (result) => {
-      setSaved(true);
-      qc.invalidateQueries({ queryKey: ["supabase-config"] });
-      qc.invalidateQueries({ queryKey: ["sync-status"] });
-      if (result?.is_connected) {
-        await initSupabaseClient();
-      }
-      setTimeout(() => setSaved(false), 3000);
-    },
-  });
 
   const clearMutation = useMutation({
     mutationFn: clearSupabaseConfig,
@@ -273,7 +391,6 @@ export function CloudSyncPanel() {
       qc.invalidateQueries({ queryKey: ["sync-status"] });
       resetSupabaseClient();
       realtimeSetupRef.current = false;
-      setForm({ url: "", anon_key: "", db_url: "" });
     },
   });
 
@@ -300,16 +417,62 @@ export function CloudSyncPanel() {
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const isConfigured  = config?.is_configured ?? false;
-  const isConnected   = config?.is_connected  ?? false;
   const isEmbedded    = config?.is_embedded   ?? false;
-  const pending       = status?.pending       ?? 0;
-  const failed        = status?.failed        ?? 0;
+  const isOverride    = config?.is_override   ?? false;
+
+  // ── Live-state staleness ────────────────────────────────────────────────
+  // A cycle event is only trusted for a short window. If the worker dies, the
+  // machine sleeps, or the app is backgrounded, the last event would otherwise
+  // stay on screen forever — which is exactly how the old panel ended up
+  // showing "Pushing 12 changes…" long after nothing was running.
+  const LIVE_TTL_MS = 15_000;
+  const fresh = (l) => (l && Date.now() - l.at < LIVE_TTL_MS ? l : null);
+  const push  = fresh(livePush);
+  const pull  = fresh(livePull);
+  // Whichever side reported most recently wins for the headline pill.
+  const live  = (push && pull) ? (push.at > pull.at ? push : pull) : (push ?? pull);
+
+  const pending       = live?.pending      ?? status?.pending ?? 0;
+  const failed        = live?.failed_total ?? status?.failed  ?? 0;
   const syncedToday   = status?.synced_today  ?? 0;
+  const conflicts     = status?.conflicts     ?? 0;
   const cloudOnline   = status?.is_cloud_connected ?? false;
   const syncEnabled   = status?.cloud_sync_enabled ?? false;
   const lastSynced    = status?.last_synced_at;
   const hasFailed     = failed > 0;
   const hasPending    = pending > 0;
+
+  // A cycle is in flight when it has started but not yet reported its end.
+  const isPushing     = push?.phase === "start" || push?.phase === "progress";
+  const isPulling     = pull?.phase === "start" || pull?.phase === "progress";
+  const isBusy        = isPushing || isPulling;
+  // Errors come from the LAST COMPLETED cycle's real failure count, not from a
+  // hardcoded sentence emitted whenever any tier failed.
+  const liveError     = live?.phase === "end" && (live?.failed ?? 0) > 0;
+  const liveOffline   = live?.phase === "offline";
+
+  /** Human summary of the current/most recent cycle — built from real counts. */
+  const liveDetail = (() => {
+    if (!live) return null;
+    if (live.phase === "offline") return "Cloud unreachable";
+    const verb   = live.direction === "pull" ? "Pulling" : "Pushing";
+    const tables = live.tables?.length ? ` — ${live.tables.join(", ")}` : "";
+    if (isBusy) {
+      return live.attempted > 0
+        ? `${verb} ${live.attempted} row(s)${tables}`
+        : `${verb}${tables}`;
+    }
+    if (live.phase === "end") {
+      const bits = [];
+      if (live.succeeded) bits.push(`${live.succeeded} applied`);
+      if (live.failed)    bits.push(`${live.failed} failed`);
+      if (live.skipped)   bits.push(`${live.skipped} deferred`);
+      if (live.noop)      bits.push(`${live.noop} no-op`);
+      if (!bits.length)   return null;
+      return `${bits.join(" · ")} in ${live.duration_ms}ms`;
+    }
+    return null;
+  })();
 
   const formatLastSynced = (isoStr) => {
     if (!isoStr) return null;
@@ -321,16 +484,6 @@ export function CloudSyncPanel() {
     }
   };
 
-  const handleSave = (e) => {
-    e.preventDefault();
-    if (!form.url.trim() || !form.db_url.trim()) return;
-    saveMutation.mutate({
-      url:      form.url.trim(),
-      anon_key: form.anon_key.trim(),
-      db_url:   form.db_url.trim(),
-    });
-  };
-
   if (configLoading) {
     return (
       <div className="flex items-center justify-center py-10">
@@ -340,7 +493,7 @@ export function CloudSyncPanel() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
 
       {/* ── Enable / disable background sync ─────────────────────────────── */}
       <Section title="Background Cloud Replication">
@@ -350,9 +503,10 @@ export function CloudSyncPanel() {
               Enable automatic background sync
             </p>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              When on, local writes are pushed to Supabase and remote changes
-              are pulled every 5 seconds. The POS always works offline — this
-              flag only controls background replication.
+              When on, local writes push to Supabase the moment they happen and
+              remote changes stream in near-realtime (with a 5-second fallback
+              poll). The POS always works offline — this flag only controls
+              background replication.
             </p>
           </div>
           <button
@@ -399,7 +553,9 @@ export function CloudSyncPanel() {
         <div className="flex-1 min-w-0">
           <p className={cn(
             "text-sm font-semibold",
-            cloudOnline && syncEnabled
+            liveError
+              ? "text-destructive"
+              : cloudOnline && syncEnabled
               ? "text-success"
               : isConfigured && !cloudOnline
               ? "text-warning"
@@ -407,22 +563,35 @@ export function CloudSyncPanel() {
           )}>
             {!isConfigured
               ? "Cloud sync not configured"
-              : !cloudOnline
+              : liveOffline || !cloudOnline
               ? "Reconnecting to Supabase…"
               : !syncEnabled
               ? "Connected — sync paused"
-              : "Syncing"}
+              : liveError
+              ? "Sync issue — retrying automatically"
+              : isBusy
+              ? (isPushing && isPulling
+                  ? "Pushing and pulling…"
+                  : isPushing ? "Pushing changes…" : "Pulling changes…")
+              : "Synced & live"}
           </p>
-          <p className="text-[11px] text-muted-foreground mt-0.5">
-            {!isConfigured
-              ? "Enter your Supabase credentials below to enable multi-location sync."
-              : !cloudOnline
-              ? "The sync worker retries automatically every 5 s when the host is reachable."
-              : !syncEnabled
-              ? "Background push and pull are paused. Toggle the switch above to start."
-              : lastSynced
-              ? `Last synced today at ${formatLastSynced(lastSynced)}`
-              : "Connected and ready — waiting for data to sync."}
+          <p className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
+            {isBusy    && <Loader2  className="h-3 w-3 animate-spin shrink-0" />}
+            {isPushing && <Upload   className="h-3 w-3 shrink-0 text-primary" />}
+            {isPulling && <Download className="h-3 w-3 shrink-0 text-primary" />}
+            <span className="truncate">
+              {!isConfigured
+                ? "Enter your Supabase credentials below to enable multi-location sync."
+                : liveOffline || !cloudOnline
+                ? "The sync worker retries automatically when the host is reachable."
+                : !syncEnabled
+                ? "Background push and pull are paused. Toggle the switch above to start."
+                : liveDetail
+                ? liveDetail
+                : lastSynced
+                ? `Changes push instantly · last synced at ${formatLastSynced(lastSynced)}`
+                : "Connected and ready — local changes push the moment they happen."}
+            </span>
           </p>
         </div>
 
@@ -437,11 +606,12 @@ export function CloudSyncPanel() {
           </div>
         )}
 
-        {isConfigured && !isEmbedded && (
+        {isConfigured && (isOverride || !isEmbedded) && (
           <Button
             variant="ghost"
             size="sm"
             className="shrink-0 text-muted-foreground hover:text-destructive"
+            title={isEmbedded ? "Remove override — revert to built-in credentials" : "Clear credentials"}
             onClick={() => clearMutation.mutate()}
             disabled={clearMutation.isPending}
           >
@@ -455,12 +625,12 @@ export function CloudSyncPanel() {
       {/* ── Stats + actions ───────────────────────────────────────────────── */}
       {isConfigured && syncEnabled && (
         <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <StatCard
               label="Pending"
               value={pending}
               accent={hasPending ? "warning" : "default"}
-              sub={hasPending ? "Waiting to push" : "Queue empty"}
+              sub={hasPending ? (isBusy ? "Syncing now…" : "Waiting to push") : "Queue empty"}
             />
             <StatCard
               label="Failed"
@@ -474,7 +644,17 @@ export function CloudSyncPanel() {
               accent={syncedToday > 0 ? "success" : "default"}
               sub={formatLastSynced(lastSynced) ? `Last: ${formatLastSynced(lastSynced)}` : "None yet today"}
             />
+            <StatCard
+              label="Conflicts"
+              value={conflicts}
+              accent={conflicts > 0 ? "warning" : "default"}
+              sub={conflicts > 0 ? "Auto-resolved — see below" : "None recorded"}
+            />
           </div>
+
+          {/* Sync event log — both directions, real errors, filterable.
+              Replaces the old push-only "Recently synced" list. */}
+          <SyncLogPanel />
 
           {/* Action row */}
           <div className="flex items-center gap-2 flex-wrap">
@@ -539,118 +719,12 @@ export function CloudSyncPanel() {
               onRetry={() => retryMutation.mutate()}
             />
           )}
+
+          {/* Resolved conflicts audit (collapsible) */}
+          {conflicts > 0 && <ConflictsPanel />}
         </div>
       )}
 
-      {/* ── Credentials form ──────────────────────────────────────────────── */}
-      {isEmbedded ? (
-        <Section title="Supabase Configuration">
-          <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
-            <Cloud className="h-4 w-4 text-primary shrink-0" />
-            <div>
-              <p className="text-xs font-semibold text-foreground">Managed credentials</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">
-                Supabase credentials are embedded in this build. No manual configuration needed.
-              </p>
-            </div>
-            {cloudOnline && (
-              <CheckCircle className="h-4 w-4 text-success ml-auto shrink-0" />
-            )}
-          </div>
-        </Section>
-      ) : (
-        <Section title="Supabase Configuration">
-          <form onSubmit={handleSave} className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                Project URL
-              </label>
-              <Input
-                placeholder="https://xyzcompany.supabase.co"
-                value={form.url}
-                onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
-              />
-              <p className="text-[10px] text-muted-foreground">
-                Found in Supabase Settings → API.
-              </p>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                Anon / Public Key
-              </label>
-              <Input
-                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"
-                value={form.anon_key}
-                onChange={(e) => setForm((f) => ({ ...f, anon_key: e.target.value }))}
-              />
-              <p className="text-[10px] text-muted-foreground">
-                Public key — used only for Realtime subscriptions.
-              </p>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                Database Connection URL
-              </label>
-              <Input
-                type="password"
-                placeholder="postgresql://postgres.xxx:password@aws-0-eu-west-2.pooler.supabase.com:6543/postgres"
-                value={form.db_url}
-                onChange={(e) => setForm((f) => ({ ...f, db_url: e.target.value }))}
-              />
-              <p className="text-[10px] text-muted-foreground">
-                Use the <strong>Transaction pooler</strong> URL (port 6543) from
-                Supabase Settings → Database. Stored server-side only — never
-                returned to the frontend.
-              </p>
-            </div>
-
-            {saveMutation.isError && (
-              <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/[0.08] px-3 py-2.5">
-                <AlertTriangle className="h-3.5 w-3.5 text-destructive mt-0.5 shrink-0" />
-                <p className="text-[11px] text-destructive">
-                  {String(saveMutation.error)}
-                </p>
-              </div>
-            )}
-
-            <div className="flex items-center gap-3 pt-1">
-              <Button
-                type="submit"
-                disabled={saveMutation.isPending || !form.url || !form.db_url}
-                className="gap-1.5"
-              >
-                {saveMutation.isPending ? (
-                  <Loader2      className="h-3.5 w-3.5 animate-spin" />
-                ) : saved ? (
-                  <CheckCircle  className="h-3.5 w-3.5" />
-                ) : (
-                  <Cloud        className="h-3.5 w-3.5" />
-                )}
-                {saveMutation.isPending
-                  ? "Connecting…"
-                  : saved
-                  ? "Connected!"
-                  : "Save & Connect"}
-              </Button>
-
-              {isConnected && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5"
-                  onClick={() => qc.invalidateQueries({ queryKey: ["sync-status"] })}
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Refresh Status
-                </Button>
-              )}
-            </div>
-          </form>
-        </Section>
-      )}
 
       {/* ── How it works ──────────────────────────────────────────────────── */}
       <Section title="How Cloud Sync Works">

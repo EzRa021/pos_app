@@ -648,15 +648,49 @@ pub async fn create_return(
         }
     }
 
-    // FAULT #7 fix: update active shift return counters (non-fatal)
+    // FAULT #7 fix: update active shift return counters (non-fatal).
+    // Drawer impact: only refunds handed out as CASH reduce expected cash —
+    // store credit / wallet / card refunds never touch the drawer.
+    let cash_refunded: Decimal = match payload.refund_method.as_str() {
+        "cash" => total_amount,
+        "original_method" => {
+            let orig_method: String = sqlx::query_scalar!(
+                "SELECT payment_method FROM transactions WHERE id = $1",
+                payload.original_tx_id
+            )
+            .fetch_one(&mut *db_tx)
+            .await?;
+            match orig_method.as_str() {
+                "cash"  => total_amount,
+                "split" => {
+                    let cash_paid: Decimal = sqlx::query_scalar!(
+                        r#"SELECT COALESCE(SUM(amount), 0) AS "amt!: Decimal"
+                           FROM payments
+                           WHERE transaction_id = $1
+                             AND payment_method = 'cash'
+                             AND status = 'completed'"#,
+                        payload.original_tx_id
+                    )
+                    .fetch_one(&mut *db_tx)
+                    .await?;
+                    cash_paid.min(total_amount)
+                }
+                _ => Decimal::ZERO,
+            }
+        }
+        _ => Decimal::ZERO,
+    };
+
     sqlx::query!(
         "UPDATE shifts SET
-             return_count  = COALESCE(return_count,  0) + 1,
-             total_returns = COALESCE(total_returns, 0) + $1,
+             return_count       = COALESCE(return_count,       0) + 1,
+             total_returns      = COALESCE(total_returns,      0) + $1,
+             total_cash_refunds = COALESCE(total_cash_refunds, 0) + $2,
              updated_at    = NOW()
-         WHERE opened_by = $2 AND store_id = $3
+         WHERE opened_by = $3 AND store_id = $4
            AND status IN ('open', 'active', 'suspended')",
         total_amount,
+        cash_refunded,
         claims.user_id,
         orig.store_id,
     )
@@ -1145,15 +1179,23 @@ Adjust inventory manually before voiding.",
         }
     }
 
-    // Keep shift reconciliation consistent (non-fatal).
+    // Keep shift reconciliation consistent (non-fatal). Reverse the cash-
+    // drawer impact only if the voided return had paid out cash.
+    let cash_refund_reversal: Decimal = if ret.refund_method == "cash" {
+        ret.total_amount
+    } else {
+        Decimal::ZERO
+    };
     sqlx::query!(
         "UPDATE shifts SET
-             return_count  = GREATEST(0, COALESCE(return_count, 0) - 1),
-             total_returns = GREATEST(0, COALESCE(total_returns, 0) - $1),
+             return_count       = GREATEST(0, COALESCE(return_count, 0) - 1),
+             total_returns      = GREATEST(0, COALESCE(total_returns, 0) - $1),
+             total_cash_refunds = GREATEST(0, COALESCE(total_cash_refunds, 0) - $2),
              updated_at    = NOW()
-         WHERE opened_by = $2 AND store_id = $3
+         WHERE opened_by = $3 AND store_id = $4
            AND status IN ('open', 'active', 'suspended')",
         ret.total_amount,
+        cash_refund_reversal,
         claims.user_id,
         ret.store_id,
     )

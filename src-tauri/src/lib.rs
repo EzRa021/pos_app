@@ -144,27 +144,36 @@ pub fn run() {
                 }
 
                 // ── Supabase cloud DB ─────────────────────────────────────────
-                // Priority: embedded build-time credentials > user-configured settings.json.
-                // Migrations always run — create_cloud_pool_with_migrations is unconditional
-                // so the cloud schema tracks the binary on every launch automatically.
+                // Priority: user-configured settings.json > embedded build-time
+                // defaults. The old order (embedded first) silently overrode
+                // whatever the user saved in Settings → Cloud Sync on every
+                // restart — the app kept syncing to the .env-baked project
+                // while the Settings page claimed something else. Embedded
+                // credentials are now only the out-of-the-box default for
+                // installs where the user has never configured anything.
                 let is_embedded = EMBEDDED_SUPABASE_DB_URL.is_some();
-                let supa_cfg: Option<SupabaseConfig> =
-                    if let Some(db_url) = EMBEDDED_SUPABASE_DB_URL {
-                        Some(SupabaseConfig {
-                            url:      EMBEDDED_SUPABASE_URL.unwrap_or_default().to_string(),
-                            anon_key: EMBEDDED_SUPABASE_ANON_KEY.unwrap_or_default().to_string(),
-                            db_url:   db_url.to_string(),
-                        })
-                    } else {
-                        app_handle
-                            .store(STORE_FILE)
-                            .ok()
-                            .and_then(|store| store.get(SUPABASE_CFG_KEY))
-                            .and_then(|val| serde_json::from_value(val).ok())
-                    };
+                let user_cfg: Option<SupabaseConfig> = app_handle
+                    .store(STORE_FILE)
+                    .ok()
+                    .and_then(|store| store.get(SUPABASE_CFG_KEY))
+                    .and_then(|val| serde_json::from_value(val).ok())
+                    .filter(|c: &SupabaseConfig| !c.db_url.trim().is_empty());
+                let supa_cfg: Option<SupabaseConfig> = user_cfg.or_else(|| {
+                    EMBEDDED_SUPABASE_DB_URL.map(|db_url| SupabaseConfig {
+                        url:      EMBEDDED_SUPABASE_URL.unwrap_or_default().to_string(),
+                        anon_key: EMBEDDED_SUPABASE_ANON_KEY.unwrap_or_default().to_string(),
+                        db_url:   db_url.to_string(),
+                    })
+                });
 
-                if let Some(supa) = supa_cfg {
+                if let Some(mut supa) = supa_cfg {
+                    supa.db_url = database::sync::normalize_supabase_db_url(&supa.db_url);
                     if !supa.db_url.is_empty() {
+                        // Log the target host (never the credentials) so "which
+                        // database am I actually syncing to?" is answerable
+                        // from the log alone.
+                        let host = supa.db_url.split('@').nth(1).unwrap_or("<unparseable>");
+                        tracing::info!("Cloud sync target: {host}");
                         // ── Always auto-migrate the cloud schema ──────────────
                         // All 79 migrations are idempotent. Running them against
                         // an already up-to-date DB costs only one SELECT per
@@ -181,15 +190,20 @@ pub fn run() {
                         match cloud_pool_result {
                             Ok(cloud_pool) => {
                                 *auto_state.cloud_db.lock().await = Some(cloud_pool);
+                                let db_url_for_identity = supa.db_url.clone();
                                 *auto_state.supabase_config.write().await = Some(supa);
                                 tracing::info!(
                                     "Supabase connected and schema is up to date."
                                 );
 
-                                // Auto-enable background sync on first successful connect.
-                                // INSERT ... ON CONFLICT DO NOTHING — never overrides a
-                                // user who explicitly disabled sync.
                                 if let Ok(pool) = auto_state.pool().await {
+                                    // Reset sync bookkeeping if this is a DIFFERENT
+                                    // database than last session (covers .env/embedded
+                                    // switches that never pass through the Settings UI).
+                                    database::sync::ensure_cloud_identity(&pool, &db_url_for_identity).await;
+                                    // Auto-enable background sync on first successful connect.
+                                    // INSERT ... ON CONFLICT DO NOTHING — never overrides a
+                                    // user who explicitly disabled sync.
                                     database::sync::auto_enable_sync_if_needed(&pool).await;
                                 }
                             }
@@ -264,6 +278,24 @@ pub fn run() {
                 }
             });
 
+            // ── Scheduled price auto-apply (every 60s) ────────────────────────
+            // Pushes any due scheduled price change live without the user having
+            // to open the panel and click "Apply". changed_by = None (background).
+            let price_apply_state = app_state.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    if let Ok(pool) = price_apply_state.pool().await {
+                        match commands::price_scheduling::apply_due_scheduled_prices(&pool, None).await {
+                            Ok((_due, applied)) if applied > 0 =>
+                                tracing::info!("Auto-applied {applied} scheduled price change(s)."),
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("Scheduled price auto-apply failed: {e}"),
+                        }
+                    }
+                }
+            });
+
             // Store AppHandle in AppState for use by HTTP-dispatched commands
             {
                 let handle_state = app_state.clone();
@@ -320,48 +352,32 @@ pub fn run() {
             commands::stores::update_store,
             commands::stores::get_store_users,
             commands::departments::get_departments,
-            commands::departments::get_department,
             commands::departments::create_department,
             commands::departments::update_department,
-            commands::departments::delete_department,
             commands::departments::hard_delete_department,
             commands::departments::search_departments,
             commands::departments::get_departments_by_store,
-            commands::departments::get_global_departments,
-            commands::departments::get_department_by_code,
-            commands::departments::get_department_categories,
             commands::departments::activate_department,
             commands::departments::deactivate_department,
-            commands::departments::count_departments,
             commands::categories::get_categories,
-            commands::categories::get_category,
             commands::categories::create_category,
             commands::categories::update_category,
-            commands::categories::delete_category,
             commands::categories::hard_delete_category,
             commands::categories::search_categories,
-            commands::categories::get_category_by_code,
             commands::categories::get_pos_categories,
-            commands::categories::get_subcategories,
-            commands::categories::get_category_items,
             commands::categories::activate_category,
             commands::categories::deactivate_category,
-            commands::categories::assign_category_department,
-            commands::categories::count_categories,
             commands::items::get_items,
             commands::items::get_item,
             commands::items::get_item_by_barcode,
-            commands::items::get_item_by_sku,
             commands::items::search_items,
             commands::items::create_item,
             commands::items::update_item,
             commands::items::delete_item,
             commands::items::activate_item,
             commands::items::deactivate_item,
-            commands::items::adjust_stock,
             commands::items::get_item_history,
             commands::items::remove_item_image,
-            commands::items::count_items,
             commands::inventory::get_inventory,
             commands::inventory::get_inventory_item,
             commands::inventory::get_low_stock,
@@ -380,7 +396,6 @@ pub fn run() {
             commands::inventory::get_session_count_items,
             commands::inventory::cancel_count_session,
             commands::inventory::get_inventory_for_count,
-            commands::inventory::get_stock_counts,
             commands::transactions::create_transaction,
             commands::transactions::get_transactions,
             commands::transactions::get_transaction,
@@ -463,10 +478,7 @@ pub fn run() {
             commands::expenses::get_expense_breakdown,
             commands::analytics::get_sales_summary,
             commands::analytics::get_revenue_by_period,
-            commands::analytics::get_top_items,
-            commands::analytics::get_top_categories,
             commands::analytics::get_payment_method_summary,
-            commands::analytics::get_daily_summary,
             commands::analytics::get_department_analytics,
             commands::analytics::get_category_analytics,
             commands::analytics::get_item_analytics,
@@ -481,8 +493,6 @@ pub fn run() {
             commands::analytics::get_return_analysis,
             commands::analytics::get_comparison_report,
             commands::analytics::get_discount_analytics,
-            commands::analytics::get_payment_trends,
-            commands::analytics::get_supplier_analytics,
             commands::analytics::get_tax_report,
             commands::analytics::get_low_margin_items,
             commands::analytics::get_business_health_summary,
@@ -506,7 +516,6 @@ pub fn run() {
             commands::price_management::reject_price_change,
             commands::price_management::get_price_changes,
             commands::price_management::get_price_change_stats,
-            commands::price_management::get_price_history,
             commands::excel::import_items,
             commands::excel::import_customers,
             commands::excel::import_stock_count,
@@ -520,8 +529,6 @@ pub fn run() {
             commands::audit::log_action,
             commands::reorder_alerts::check_reorder_alerts,
             commands::reorder_alerts::get_reorder_alerts,
-            commands::reorder_alerts::acknowledge_reorder_alert,
-            commands::reorder_alerts::link_po_to_alert,
             commands::stock_transfers::create_transfer,
             commands::stock_transfers::send_transfer,
             commands::stock_transfers::receive_transfer,
@@ -547,7 +554,6 @@ pub fn run() {
             commands::loyalty::get_loyalty_history,
             commands::loyalty::get_loyalty_balance,
             commands::loyalty::expire_old_points,
-            commands::notifications::create_notification,
             commands::notifications::get_notifications,
             commands::notifications::mark_notification_read,
             commands::notifications::mark_all_notifications_read,
@@ -566,7 +572,6 @@ pub fn run() {
             commands::bulk_operations::bulk_activate_items,
             commands::bulk_operations::bulk_deactivate_items,
             commands::bulk_operations::bulk_apply_discount,
-            commands::bulk_operations::bulk_item_import,
             commands::bulk_operations::bulk_print_labels,
             commands::price_scheduling::get_item_price_history,
             commands::price_scheduling::schedule_price_change,
@@ -604,6 +609,9 @@ pub fn run() {
             commands::cloud_sync::trigger_backfill_sync,
             commands::cloud_sync::retry_failed_sync,
             commands::cloud_sync::get_failed_sync_rows,
+            commands::cloud_sync::get_sync_conflicts,
+            commands::cloud_sync::get_sync_log,
+            commands::cloud_sync::get_sync_log_tables,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Zera");

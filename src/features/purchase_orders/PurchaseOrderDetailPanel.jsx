@@ -2,7 +2,7 @@
 // features/purchase_orders/PurchaseOrderDetailPanel.jsx
 // PO detail, workflow actions, and receive-goods modal (updates item stock)
 // ============================================================================
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   Package, Truck, ChevronLeft, AlertTriangle, CheckCircle2,
@@ -20,7 +20,7 @@ import { EmptyState }    from "@/components/shared/EmptyState";
 import { Button }        from "@/components/ui/button";
 import { Input }         from "@/components/ui/input";
 import {
-  Dialog, DialogContent, DialogHeader,
+  Dialog, DialogContent,
   DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { cn }            from "@/lib/utils";
@@ -189,8 +189,8 @@ function ReceiveGoodsModal({ open, onOpenChange, poItems, onConfirm }) {
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5">
             <CheckCircle2 className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />
             <p className="text-[11px] text-primary leading-relaxed">
-              Receiving goods will mark this PO as <strong>received</strong> and add the quantities to your stock.
-              This action cannot be undone.
+              The entered quantities are added to stock immediately. Receive a partial delivery now and
+              the rest later — the PO stays <strong>partially received</strong> until every line is fulfilled.
             </p>
           </div>
 
@@ -272,7 +272,7 @@ function ReceiveGoodsModal({ open, onOpenChange, poItems, onConfirm }) {
 
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)} disabled={saving}>Cancel</Button>
-          <Button size="sm" className="bg-success hover:bg-success/90 text-white flex-1" onClick={handleConfirm} disabled={saving}>
+          <Button size="sm" className="bg-success hover:bg-success/90 text-success-foreground flex-1" onClick={handleConfirm} disabled={saving}>
             {saving ? "Receiving…" : "Confirm Receipt"}
           </Button>
         </DialogFooter>
@@ -426,7 +426,7 @@ function RecordPaymentDialog({ open, onOpenChange, supplierName, suggestedAmount
         <DialogFooter className="px-6 py-4 border-t border-border bg-muted/10 gap-2">
           <Button variant="outline" size="sm" onClick={() => handleOpenChange(false)} disabled={busy}>Cancel</Button>
           <Button size="sm" onClick={handleSave} disabled={busy}
-            className="bg-success hover:bg-success/90 text-white gap-1.5">
+            className="bg-success hover:bg-success/90 text-success-foreground gap-1.5">
             {busy
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</>
               : <><Banknote className="h-3.5 w-3.5" />Record Payment</>}
@@ -570,7 +570,7 @@ export function PurchaseOrderDetailPanel() {
                   <ThumbsDown className="h-3.5 w-3.5 mr-1.5" />
                   Reject
                 </Button>
-                <Button size="sm" className="bg-success hover:bg-success/90 text-white"
+                <Button size="sm" className="bg-success hover:bg-success/90 text-success-foreground"
                   onClick={handleApprove} disabled={approve.isPending}>
                   <ThumbsUp className="h-3.5 w-3.5 mr-1.5" />
                   Approve
@@ -579,7 +579,7 @@ export function PurchaseOrderDetailPanel() {
             )}
             {/* Approved / Pending → Receive */}
             {canReceiveNow && (
-              <Button size="sm" className="bg-success hover:bg-success/90 text-white"
+              <Button size="sm" className="bg-success hover:bg-success/90 text-success-foreground"
                 onClick={() => setReceiveOpen(true)}>
                 <Package className="h-3.5 w-3.5 mr-1.5" />
                 Receive Goods
@@ -675,7 +675,7 @@ export function PurchaseOrderDetailPanel() {
                     />
                     {outstanding > 0 && canUpdate && (
                       <Button size="sm"
-                        className="mt-2 w-full gap-1.5 bg-success hover:bg-success/90 text-white"
+                        className="mt-2 w-full gap-1.5 bg-success hover:bg-success/90 text-success-foreground"
                         onClick={() => setPayOpen(true)}>
                         <Banknote className="h-3.5 w-3.5" />Record Payment
                       </Button>
@@ -697,7 +697,7 @@ export function PurchaseOrderDetailPanel() {
                       Received
                     </span>
                   ) : canReceiveNow ? (
-                    <Button size="xs" className="h-6 px-2.5 text-[10px] bg-success hover:bg-success/90 text-white"
+                    <Button size="xs" className="h-6 px-2.5 text-[10px] bg-success hover:bg-success/90 text-success-foreground"
                       onClick={() => setReceiveOpen(true)}>
                       <Package className="h-3 w-3 mr-1" />
                       Receive
@@ -800,7 +800,7 @@ export function PurchaseOrderDetailPanel() {
               action={
                 canUpdate && (isApproved || isReceived) && (
                   <Button size="sm"
-                    className="h-7 gap-1 bg-success hover:bg-success/90 text-white text-xs px-2.5"
+                    className="h-7 gap-1 bg-success hover:bg-success/90 text-success-foreground text-xs px-2.5"
                     onClick={() => setPayOpen(true)}>
                     <Banknote className="h-3 w-3" />Record Payment
                   </Button>

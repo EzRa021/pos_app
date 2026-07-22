@@ -171,6 +171,11 @@ async fn resolve_department(
             .execute(pool)
             .await?;
             reactivated.push(name.to_string());
+            crate::database::sync::queue_row(
+                pool, "departments", "UPDATE", &r.id.to_string(),
+                serde_json::json!({ "id": r.id, "store_id": store_id }),
+                Some(store_id),
+            ).await;
         }
         cache.insert(key, r.id);
         return Ok(Some(r.id));
@@ -186,6 +191,15 @@ async fn resolve_department(
     )
     .fetch_one(pool)
     .await?;
+
+    // Queue for cloud sync BEFORE any item that references this department —
+    // tier ordering (departments < items) then guarantees the parent lands
+    // first and imports produce zero FK churn on the cloud.
+    crate::database::sync::queue_row(
+        pool, "departments", "INSERT", &new_id.to_string(),
+        serde_json::json!({ "id": new_id, "store_id": store_id }),
+        Some(store_id),
+    ).await;
 
     cache.insert(key, new_id);
     created.push(name.to_string());
@@ -228,6 +242,11 @@ async fn resolve_category(
             .execute(pool)
             .await?;
             reactivated.push(name.to_string());
+            crate::database::sync::queue_row(
+                pool, "categories", "UPDATE", &r.id.to_string(),
+                serde_json::json!({ "id": r.id, "store_id": store_id }),
+                Some(store_id),
+            ).await;
         }
         cache.insert(key, r.id);
         return Ok(Some(r.id));
@@ -248,6 +267,13 @@ async fn resolve_category(
     )
     .fetch_one(pool)
     .await?;
+
+    // Queue before dependent items — see resolve_department.
+    crate::database::sync::queue_row(
+        pool, "categories", "INSERT", &new_id.to_string(),
+        serde_json::json!({ "id": new_id, "store_id": store_id }),
+        Some(store_id),
+    ).await;
 
     cache.insert(key, new_id);
     created.push(name.to_string());
@@ -605,6 +631,13 @@ async fn create_item_from_row(
 
     tx.commit().await.map_err(|e| e.to_string())?;
 
+    // Queue the item itself (push worker fresh-reads the full row) — without
+    // this, imported items only reached the cloud via FK-failure recovery.
+    crate::database::sync::queue_row(
+        pool, "items", "INSERT", &item_id.to_string(),
+        serde_json::json!({ "id": item_id, "store_id": store_id }),
+        Some(store_id),
+    ).await;
     if let Some((mv_id, mv_row)) = movement {
         crate::database::sync::queue_row(
             pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(store_id),
@@ -772,6 +805,11 @@ async fn update_item_from_row(
 
     tx.commit().await.map_err(|e| e.to_string())?;
 
+    crate::database::sync::queue_row(
+        pool, "items", "UPDATE", &item_id.to_string(),
+        serde_json::json!({ "id": item_id, "store_id": store_id }),
+        Some(store_id),
+    ).await;
     if let Some((mv_id, mv_row)) = movement {
         crate::database::sync::queue_row(
             pool, "stock_movements", "INSERT", &mv_id, mv_row, Some(store_id),
@@ -1022,7 +1060,7 @@ pub async fn export_items_filtered(
            WHERE  i.store_id = $1
              AND  COALESCE(ist.archived_at, 'infinity'::timestamptz) > NOW()
              AND ($2::int  IS NULL OR i.department_id  = $2)
-             AND ($3::int  IS NULL OR i.category_id    = $3)
+             AND ($3::int  IS NULL OR i.category_id    = ANY(category_descendant_ids($3)))
              AND ($4::bool IS NULL OR ist.is_active     = $4)
              AND ($5::bool IS NULL OR (
                    $5 = FALSE

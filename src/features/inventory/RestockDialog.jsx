@@ -4,7 +4,7 @@
 
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { Package, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input }  from "@/components/ui/input";
@@ -47,12 +47,12 @@ export function RestockDialog({ open, onOpenChange, item, mutation }) {
   return (
     <Dialog open={open} onOpenChange={(v) => !mutation.isPending && onOpenChange(v)}>
       <DialogContent className="max-w-sm border-border bg-card p-0 overflow-hidden shadow-2xl shadow-black/60">
-        <div className="h-[3px] w-full bg-emerald-500" />
+        <div className="h-[3px] w-full bg-success" />
         <div className="px-6 pt-5 pb-6">
           <DialogHeader className="mb-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-500/25 bg-emerald-500/10">
-                <Plus className="h-4 w-4 text-emerald-400" />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-success/25 bg-success/10">
+                <Plus className="h-4 w-4 text-success" />
               </div>
               <div>
                 <DialogTitle className="text-[15px] font-bold text-foreground">Restock Item</DialogTitle>
@@ -83,7 +83,7 @@ export function RestockDialog({ open, onOpenChange, item, mutation }) {
               {qty && parseFloat(qty) > 0 && (
                 <p className="text-[11px] text-muted-foreground mt-1">
                   New total:{" "}
-                  <strong className="text-emerald-400">
+                  <strong className="text-success">
                     {formatQuantity(currentQty + parseFloat(qty), measureType, unitType)}
                   </strong>
                 </p>
@@ -98,7 +98,7 @@ export function RestockDialog({ open, onOpenChange, item, mutation }) {
             )}
             <div className="flex gap-2 pt-1">
               <Button type="button" variant="outline" className="flex-1" disabled={mutation.isPending} onClick={() => onOpenChange(false)}>Cancel</Button>
-              <Button type="submit" className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white" disabled={mutation.isPending || !qty || parseFloat(qty) <= 0}>
+              <Button type="submit" variant="success" className="flex-1" disabled={mutation.isPending || !qty || parseFloat(qty) <= 0}>
                 {mutation.isPending ? "Restocking…" : "Add Stock"}
               </Button>
             </div>

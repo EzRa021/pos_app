@@ -24,6 +24,8 @@ import { searchTransactions }     from "@/commands/transactions";
 import { searchPurchaseOrders }   from "@/commands/purchase_orders";
 import { searchReturns }          from "@/commands/returns";
 import { searchTransfers }        from "@/commands/stock_transfers";
+import { searchCategories }       from "@/commands/categories";
+import { searchDepartments }      from "@/commands/departments";
 
 const DEBOUNCE_MS   = 250;
 const MAX_PER_GROUP = 5;
@@ -49,6 +51,8 @@ export function useCommandSearch(query) {
   const [purchaseOrders,  setPurchaseOrders]  = useState([]);
   const [returns,         setReturns]         = useState([]);
   const [transfers,       setTransfers]       = useState([]);
+  const [categories,      setCategories]      = useState([]);
+  const [departments,     setDepartments]     = useState([]);
 
   // Track the latest request so stale responses from slower calls are dropped.
   const requestIdRef = useRef(0);
@@ -65,6 +69,8 @@ export function useCommandSearch(query) {
       setPurchaseOrders([]);
       setReturns([]);
       setTransfers([]);
+      setCategories([]);
+      setDepartments([]);
       setIsLoading(false);
       return;
     }
@@ -74,7 +80,7 @@ export function useCommandSearch(query) {
 
     const timerId = setTimeout(async () => {
       try {
-        const [rawItems, rawCustomers, rawSuppliers, rawTransactions, rawPOs, rawReturns, rawTransfers] =
+        const [rawItems, rawCustomers, rawSuppliers, rawTransactions, rawPOs, rawReturns, rawTransfers, rawCategories, rawDepartments] =
           await Promise.allSettled([
             searchItems(trimmed, storeId, MAX_PER_GROUP),
             searchCustomers(trimmed, storeId, MAX_PER_GROUP),
@@ -83,6 +89,8 @@ export function useCommandSearch(query) {
             searchPurchaseOrders(trimmed, storeId, MAX_PER_GROUP),
             searchReturns(trimmed, storeId, MAX_PER_GROUP),
             searchTransfers(trimmed, storeId, MAX_PER_GROUP),
+            searchCategories(trimmed, storeId, MAX_PER_GROUP),
+            searchDepartments(trimmed, MAX_PER_GROUP),
           ]);
 
         // Drop stale responses if a newer request fired while we were waiting.
@@ -207,6 +215,36 @@ export function useCommandSearch(query) {
           setTransfers([]);
         }
 
+        // ── Categories ────────────────────────────────────────────────────
+        if (rawCategories.status === "fulfilled") {
+          const arr = Array.isArray(rawCategories.value) ? rawCategories.value : (rawCategories.value?.data ?? []);
+          setCategories(
+            arr.slice(0, MAX_PER_GROUP).map((c) => ({
+              id:       c.id,
+              label:    c.category_name,
+              subtitle: c.department_name ? `Department: ${c.department_name}` : (c.category_code ?? ""),
+            }))
+          );
+        } else {
+          setCategories([]);
+        }
+
+        // ── Departments ───────────────────────────────────────────────────
+        if (rawDepartments.status === "fulfilled") {
+          const arr = Array.isArray(rawDepartments.value) ? rawDepartments.value : (rawDepartments.value?.data ?? []);
+          setDepartments(
+            arr.slice(0, MAX_PER_GROUP).map((d) => ({
+              id:       d.id,
+              label:    d.department_name,
+              subtitle: d.category_count != null
+                ? `${d.category_count} categor${Number(d.category_count) === 1 ? "y" : "ies"}`
+                : (d.department_code ?? ""),
+            }))
+          );
+        } else {
+          setDepartments([]);
+        }
+
       } catch {
         // Silently swallow — palette is best-effort, not mission-critical.
         if (myId === requestIdRef.current) {
@@ -217,6 +255,8 @@ export function useCommandSearch(query) {
           setPurchaseOrders([]);
           setReturns([]);
           setTransfers([]);
+          setCategories([]);
+          setDepartments([]);
         }
       } finally {
         if (myId === requestIdRef.current) setIsLoading(false);
@@ -226,5 +266,5 @@ export function useCommandSearch(query) {
     return () => clearTimeout(timerId);
   }, [query, storeId]);
 
-  return { items, customers, suppliers, transactions, purchaseOrders, returns, transfers, isLoading };
+  return { items, customers, suppliers, transactions, purchaseOrders, returns, transfers, categories, departments, isLoading };
 }

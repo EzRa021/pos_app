@@ -282,7 +282,7 @@ pub async fn create_purchase_order(
 
         let qty = crate::utils::qty::validate_qty_opt(
             to_dec(item.quantity),
-            Some(meta.measurement_type.as_str()),
+            meta.measurement_type.as_deref(),
             &meta.item_name,
         )?;
         let cost     = to_dec(item.unit_cost);

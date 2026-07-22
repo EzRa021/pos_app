@@ -24,10 +24,20 @@ use uuid::Uuid;
 use std::collections::HashSet;
 use crate::state::AppState;
 use chrono::Utc;
+use tokio::sync::Notify;
+
+/// Woken by `queue_row` the moment a change lands in sync_queue so the push
+/// worker starts replaying within milliseconds instead of waiting out the
+/// poll interval. The 5s tick remains as the reliability fallback.
+static PUSH_WAKE: Notify = Notify::const_new();
 
 const MAX_RETRIES:  i32 = 100; // FK-chain failures can cascade for many cycles; 100 gives ~8 min at 5s poll before permanent failure
 const POLL_SECS:    u64 = 5;
 const BATCH_SIZE:   i64 = 50;
+/// Housekeeping cadence, counted in idle cycles (~5s each). 720 ≈ once an hour
+/// of continuous idling — often enough to keep sync_queue/sync_event_log bounded,
+/// rare enough that the DELETE never competes with real sync traffic.
+const PRUNE_EVERY_N_CYCLES: u32 = 720;
 const PULL_BATCH:   i64 = 200;
 
 /// Tables we replicate in both directions. Order matters for FK deps:
@@ -40,6 +50,7 @@ const SYNC_TABLES: &[&str] = &[
     "departments",
     "categories",
     "suppliers",
+    "tax_categories",   // parent of items.tax_category_id — must precede items
     // ── catalog ───────────────────────────────────────────────────────────────
     "items",
     "item_stock",       // seed-only: pulled with ON CONFLICT DO NOTHING
@@ -57,6 +68,11 @@ const SYNC_TABLES: &[&str] = &[
     "purchase_orders",
     "purchase_order_items",
     "cash_movements",
+    // ── money/points ledgers (0102) — parents: customers, suppliers,
+    //    transactions, purchase_orders — all earlier in this list ────────────
+    "supplier_payments",
+    "customer_wallet_transactions",
+    "loyalty_transactions",
     "reorder_alerts",
     "notifications",
 ];
@@ -112,7 +128,7 @@ enum SyncStrategy {
 fn sync_strategy(table: &str) -> SyncStrategy {
     match table {
         "businesses" | "stores" | "users" | "departments" | "categories"
-        | "suppliers" | "items" | "customers" => SyncStrategy::Lww,
+        | "suppliers" | "tax_categories" | "items" | "customers" => SyncStrategy::Lww,
         "shifts" | "transactions" | "credit_sales" | "purchase_orders"
         | "returns" | "reorder_alerts" | "expenses" => SyncStrategy::StateMachine,
         "item_stock"      => SyncStrategy::StockSeed,
@@ -184,6 +200,92 @@ async fn load_biz_id(pool: &PgPool) -> Option<Uuid> {
 ///
 /// Defaults to `false` when the key is absent (safe for fresh installs that have
 /// not yet run migration 0078 or where the user has never toggled the setting).
+/// Detect a change of cloud database and reset the sync bookkeeping when it
+/// happens — regardless of HOW the credentials changed (Settings save, .env
+/// rebuild, embedded default flip). Stores the last-seen cloud host in
+/// app_config('cloud_identity'); when it differs from the current target:
+///   • 'synced' rows are purged (they are history about a DIFFERENT database
+///     and block backfill's dedupe, stranding children in FK retries),
+///   • 'failed' rows are re-queued (they failed against the old database),
+///   • the pull cursor restarts from epoch (new timeline; applies are
+///     idempotent so re-pulling is safe).
+/// Idempotent and cheap when the identity is unchanged.
+/// Supabase's Supavisor pooler exposes the SAME database on two ports:
+/// 5432 = session mode (supports `LISTEN/NOTIFY`), 6543 = transaction mode
+/// (does NOT — each query may land on a different backend connection, so a
+/// registered LISTEN is silently worthless). Supabase's own dashboard
+/// defaults the copy-paste "Connection Pooling" string to 6543, which is the
+/// wrong one for this app: the pull worker's `PgListener` needs 5432 to get
+/// instant wake-ups instead of falling back to the 5s poll on every cycle.
+/// Rewrite it automatically so users who paste the dashboard default still
+/// get realtime wake-ups.
+pub fn normalize_supabase_db_url(db_url: &str) -> String {
+    if db_url.contains(".pooler.supabase.com:6543") {
+        let fixed = db_url.replace(".pooler.supabase.com:6543", ".pooler.supabase.com:5432");
+        tracing::info!(
+            "Supabase DB URL used the transaction pooler (6543) — rewritten to the session pooler (5432) so LISTEN/NOTIFY realtime wake-ups work."
+        );
+        fixed
+    } else {
+        db_url.to_string()
+    }
+}
+
+pub async fn ensure_cloud_identity(local_pool: &PgPool, db_url: &str) {
+    // host:port/dbname — never the credentials.
+    let host = db_url.split('@').nth(1).unwrap_or("<unknown>");
+
+    let prev: Option<String> = sqlx::query_scalar!(
+        "SELECT value FROM app_config WHERE key = 'cloud_identity'"
+    )
+    .fetch_optional(local_pool)
+    .await
+    .ok()
+    .flatten();
+
+    if prev.as_deref() == Some(host) {
+        return; // same database as last time — nothing to do
+    }
+
+    if let Some(ref old) = prev {
+        tracing::info!("Cloud database changed ({old} → {host}) — resetting sync bookkeeping.");
+        match sqlx::query!("DELETE FROM sync_queue WHERE status = 'synced'")
+            .execute(local_pool).await
+        {
+            Ok(r) if r.rows_affected() > 0 =>
+                tracing::info!("Cloud switch: purged {} stale 'synced' rows.", r.rows_affected()),
+            Ok(_)  => {}
+            Err(e) => tracing::warn!("Cloud switch: synced purge failed: {e}"),
+        }
+        match sqlx::query!(
+            "UPDATE sync_queue SET status='pending', retries=0, error=NULL WHERE status='failed'"
+        )
+        .execute(local_pool).await
+        {
+            Ok(r) if r.rows_affected() > 0 =>
+                tracing::info!("Cloud switch: re-queued {} previously-failed rows.", r.rows_affected()),
+            Ok(_)  => {}
+            Err(e) => tracing::warn!("Cloud switch: failed-row reset failed: {e}"),
+        }
+        if let Err(e) = sqlx::query!(
+            "INSERT INTO app_config (key, value) VALUES ('cloud_pull_cursor', '1970-01-01T00:00:00Z')
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+        .execute(local_pool).await
+        {
+            tracing::warn!("Cloud switch: pull-cursor reset failed: {e}");
+        }
+    }
+
+    let _ = sqlx::query!(
+        "INSERT INTO app_config (key, value) VALUES ('cloud_identity', $1)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        host,
+    )
+    .execute(local_pool)
+    .await;
+}
+
 pub async fn is_cloud_sync_enabled(pool: &PgPool) -> bool {
     sqlx::query_scalar!("SELECT value FROM app_config WHERE key = 'cloud_sync_enabled'")
         .fetch_optional(pool)
@@ -286,13 +388,16 @@ pub async fn backfill_sync_queue(pool: &PgPool) -> Result<u64, sqlx::Error> {
         "businesses",
         "stores", "users",
         "departments", "categories", "suppliers",
+        "tax_categories",
         "items", "item_stock",
         "customers", "shifts",
         "transactions", "transaction_items", "payments",
         "expenses", "credit_sales",
         "returns", "return_items",
         "purchase_orders", "purchase_order_items",
-        "cash_movements", "reorder_alerts", "notifications",
+        "cash_movements",
+        "supplier_payments", "customer_wallet_transactions", "loyalty_transactions",
+        "reorder_alerts", "notifications",
     ];
 
     let biz_id_str = biz_id.to_string();
@@ -355,6 +460,9 @@ pub async fn backfill_sync_queue(pool: &PgPool) -> Result<u64, sqlx::Error> {
         total += n;
     }
 
+    if total > 0 {
+        PUSH_WAKE.notify_one();
+    }
     Ok(total)
 }
 
@@ -392,6 +500,8 @@ pub async fn queue_row(
 
     if let Err(e) = result {
         tracing::warn!("sync_queue insert failed (non-fatal): {e}");
+    } else {
+        PUSH_WAKE.notify_one();
     }
 }
 
@@ -410,8 +520,13 @@ fn table_backfill_meta(table: &str) -> Option<TableMeta> {
         "departments"          => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
         "categories"           => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
         "suppliers"            => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        // Business-global (no store_id) — same shape as businesses.
+        "tax_categories"       => TableMeta { pk_expr: "t.id::text",      store_expr: None },
         "items"                => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
-        "item_stock"           => TableMeta { pk_expr: "t.item_id::text", store_expr: Some("t.store_id") },
+        // Composite PK (item_id, store_id) — must match the `item_id:store_id`
+        // format that fresh_rows_for_push() parses, or every backfilled row is
+        // rejected as malformed and never pushed.
+        "item_stock"           => TableMeta { pk_expr: "(t.item_id::text || ':' || t.store_id::text)", store_expr: Some("t.store_id") },
         "customers"            => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
         "shifts"               => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
         "transactions"         => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
@@ -426,6 +541,9 @@ fn table_backfill_meta(table: &str) -> Option<TableMeta> {
         "cash_movements"       => TableMeta { pk_expr: "t.id::text",      store_expr: None },
         "reorder_alerts"       => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
         "notifications"        => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "supplier_payments"    => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
+        "customer_wallet_transactions" => TableMeta { pk_expr: "t.id::text", store_expr: Some("t.store_id") },
+        "loyalty_transactions" => TableMeta { pk_expr: "t.id::text",      store_expr: Some("t.store_id") },
         _ => return None,
     })
 }
@@ -450,7 +568,24 @@ fn fk_parent_table(error_msg: &str) -> Option<&'static str> {
     if error_msg.contains("_item_id_fkey")        { return Some("items"); }
     if error_msg.contains("_shift_id_fkey")       { return Some("shifts"); }
     if error_msg.contains("_transaction_id_fkey") { return Some("transactions"); }
+    // transaction_items.tx_id and returns.original_tx_id both end in _tx_id —
+    // this was the missing mapping that left transaction_items retrying an
+    // FK failure forever after a cloud-DB switch (no force-resync fired).
+    if error_msg.contains("_tax_category_id_fkey"){ return Some("tax_categories"); }
+    if error_msg.contains("_tx_id_fkey")          { return Some("transactions"); }
+    if error_msg.contains("_po_id_fkey")          { return Some("purchase_orders"); }
+    if error_msg.contains("_return_id_fkey")      { return Some("returns"); }
     if error_msg.contains("_user_id_fkey")        { return Some("users"); }
+    // Audit-style columns (opened_by, cashier_id, …) all reference users.
+    const USER_FK: &[&str] = &[
+        "_cashier_id_fkey",   "_opened_by_fkey",   "_closed_by_fkey",
+        "_created_by_fkey",   "_updated_by_fkey",  "_performed_by_fkey",
+        "_processed_by_fkey", "_recorded_by_fkey", "_paid_by_fkey",
+        "_ordered_by_fkey",   "_approved_by_fkey", "_voided_by_fkey",
+        "_cancelled_by_fkey", "_requested_by_fkey","_acknowledged_by_fkey",
+        "_sent_by_fkey",      "_received_by_fkey", "_changed_by_fkey",
+    ];
+    if USER_FK.iter().any(|s| error_msg.contains(s)) { return Some("users"); }
     None
 }
 
@@ -552,6 +687,399 @@ async fn force_resync_table(pool: &PgPool, table: &str) {
     }
 }
 
+/// Seed the CLOUD database's business scope. Runs once per app session, as
+/// soon as the push worker has a healthy cloud pool and a business_id.
+///
+/// Root-cause fix for "row created directly in Supabase never appears
+/// locally": every pull query filters `WHERE business_id = <uuid>`, and the
+/// 0075 auto-stamp trigger fills business_id from app_config — but the CLOUD
+/// app_config was never seeded, so rows inserted directly in Supabase (table
+/// editor / SQL) got business_id = NULL and were invisible to every device.
+///
+/// Two steps, both idempotent:
+///   1. Seed cloud app_config.business_id → the 0075 trigger now stamps all
+///      FUTURE direct inserts automatically.
+///   2. Repair EXISTING NULL business_id rows in synced tables. The 0098
+///      stamp trigger bumps cloud_synced_at on the repaired rows, so they
+///      land ahead of every device's pull cursor and sync down on the next
+///      cycle — the fix is self-healing, no manual resync needed.
+async fn seed_cloud_business_scope(cloud_pool: &PgPool, business_id: Uuid) {
+    let biz = business_id.to_string();
+
+    match sqlx::query(
+        "INSERT INTO app_config (key, value) VALUES ('business_id', $1)
+         ON CONFLICT (key) DO NOTHING",
+    )
+    .bind(&biz)
+    .execute(cloud_pool)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 => {
+            tracing::info!("Sync: seeded cloud app_config.business_id — direct cloud inserts will now be auto-stamped.");
+        }
+        Ok(_)  => {}
+        Err(e) => {
+            tracing::warn!("Sync: could not seed cloud business_id: {e}");
+            return;
+        }
+    }
+
+    for table in SYNC_TABLES {
+        if *table == "businesses" {
+            continue; // keyed by id, no business_id column
+        }
+        let stmt = format!("UPDATE {table} SET business_id = $1::uuid WHERE business_id IS NULL");
+        match sqlx::query(&stmt).bind(&biz).execute(cloud_pool).await {
+            Ok(r) if r.rows_affected() > 0 => {
+                tracing::info!(
+                    "Sync: claimed {} orphaned '{}' cloud row(s) (business_id was NULL — likely inserted directly in Supabase).",
+                    r.rows_affected(), table
+                );
+            }
+            Ok(_)  => {}
+            Err(e) => tracing::debug!("Sync: business_id repair skipped for {table}: {e}"),
+        }
+    }
+}
+
+// ── Live sync events (Tauri) ──────────────────────────────────────────────────
+// Emitted by the workers on state transitions so Settings → Sync renders live
+// progress instead of polling. Events only reach the UI on the server device;
+// client-mode devices keep the get_sync_status RPC.
+
+// ════════════════════════════════════════════════════════════════════════════
+// SYNC CYCLE INSTRUMENTATION
+// ════════════════════════════════════════════════════════════════════════════
+// Replaces the old `sync:status` event, which was a status indicator being
+// asked to do a log's job. Its specific failure modes, all fixed here:
+//
+//   • Push and pull both wrote to one channel with no coordination, so a pull
+//     finishing mid-push painted the UI "idle" while a push was still running.
+//     Every event is now tagged with `cycle_id` + `direction`; the frontend
+//     tracks the two independently and they can no longer overwrite each other.
+//
+//   • "Pushing N changes" was emitted BEFORE the work, using the count of rows
+//     claimed. Tier-gating then skipped most of them and nothing corrected the
+//     number. Totals are now reported at cycle END from actual outcomes.
+//
+//   • Every failure showed one hardcoded sentence. The real error was written
+//     to sync_queue.error and never surfaced. Errors are now classified into
+//     an error_code and the detail is carried through to the UI.
+//
+//   • Pull-side apply failures went to tracing::warn! and nowhere else — they
+//     were structurally invisible. Pull now runs through the same cycle
+//     recorder as push.
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SyncDirection { Push, Pull }
+
+impl SyncDirection {
+    fn as_str(self) -> &'static str {
+        match self { SyncDirection::Push => "push", SyncDirection::Pull => "pull" }
+    }
+}
+
+/// Coarse failure classification so the UI can group and explain failures
+/// rather than printing one sentence for every error class.
+///
+/// Matching is on message text because sqlx surfaces most of these as opaque
+/// `Database` errors; we check the most specific patterns first.
+fn classify_error(err: &str) -> &'static str {
+    let e = err.to_ascii_lowercase();
+    if e.contains("violates foreign key constraint")             { return "fk_violation"; }
+    if e.contains("violates unique constraint")
+        || e.contains("violates check constraint")
+        || e.contains("violates not-null constraint")            { return "constraint"; }
+    if e.contains("could not serialize")
+        || e.contains("deadlock detected")                       { return "serialization"; }
+    if e.contains("password authentication failed")
+        || e.contains("permission denied")
+        || e.contains("jwt")
+        || e.contains("not authorized")                          { return "auth"; }
+    if e.contains("connection")
+        || e.contains("timed out")
+        || e.contains("timeout")
+        || e.contains("dns")
+        || e.contains("broken pipe")
+        || e.contains("os error")                                { return "network"; }
+    "unknown"
+}
+
+/// One buffered row-level outcome. Held in memory for the duration of a cycle
+/// and flushed in a single batch INSERT — writing per-row would double the
+/// database traffic of the sync itself.
+struct SyncLogEntry {
+    table_name:   String,
+    row_id:       Option<String>,
+    operation:    Option<String>,
+    outcome:      &'static str,
+    error_code:   Option<&'static str>,
+    error_detail: Option<String>,
+    duration_ms:  Option<i32>,
+    attempt:      i32,
+}
+
+/// Accumulates one worker pass: per-row outcomes plus the counters the UI needs.
+pub struct SyncCycle {
+    id:        Uuid,
+    direction: SyncDirection,
+    started:   std::time::Instant,
+    attempted: u32,
+    succeeded: u32,
+    failed:    u32,
+    skipped:   u32,
+    conflicts: u32,
+    /// Idempotent no-ops: duplicate delivery, self-echo, or a row that lost a
+    /// conflict. Counted for an honest summary but deliberately NOT written to
+    /// sync_event_log — the pull worker re-reads rows this device just pushed, so
+    /// logging every no-op would bury real events under self-echo noise.
+    noop:      u32,
+    tables:    std::collections::BTreeSet<String>,
+    entries:   Vec<SyncLogEntry>,
+}
+
+impl SyncCycle {
+    fn new(direction: SyncDirection) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            direction,
+            started: std::time::Instant::now(),
+            attempted: 0, succeeded: 0, failed: 0, skipped: 0, conflicts: 0, noop: 0,
+            tables: std::collections::BTreeSet::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    /// True when nothing happened at all — no logged entries and no no-ops.
+    fn is_empty(&self) -> bool { self.entries.is_empty() && self.noop == 0 }
+
+    /// Count an idempotent no-op without writing a log row (see `noop` field).
+    fn noop(&mut self, table: &str) {
+        self.attempted += 1;
+        self.noop += 1;
+        self.tables.insert(table.to_string());
+    }
+
+    fn elapsed_ms(&self) -> i64 { self.started.elapsed().as_millis() as i64 }
+
+    /// Record a successful row apply.
+    fn ok(&mut self, table: &str, row_id: &str, op: &str, dur_ms: Option<i32>, attempt: i32) {
+        self.attempted += 1;
+        self.succeeded += 1;
+        self.tables.insert(table.to_string());
+        self.entries.push(SyncLogEntry {
+            table_name: table.to_string(),
+            row_id: Some(row_id.to_string()),
+            operation: Some(op.to_string()),
+            outcome: "ok",
+            error_code: None,
+            error_detail: None,
+            duration_ms: dur_ms,
+            attempt,
+        });
+    }
+
+    /// Record a failed row apply, classifying the error for the UI.
+    fn fail(&mut self, table: &str, row_id: &str, op: &str, err: &str, dur_ms: Option<i32>, attempt: i32) {
+        self.attempted += 1;
+        self.failed += 1;
+        self.tables.insert(table.to_string());
+        self.entries.push(SyncLogEntry {
+            table_name: table.to_string(),
+            row_id: Some(row_id.to_string()),
+            operation: Some(op.to_string()),
+            outcome: "failed",
+            error_code: Some(classify_error(err)),
+            // Cap the stored detail: some Postgres FK errors embed the whole
+            // offending row and would otherwise bloat the log table.
+            error_detail: Some(err.chars().take(500).collect()),
+            duration_ms: dur_ms,
+            attempt,
+        });
+    }
+
+    /// Record a row that was never attempted because a lower FK tier failed.
+    /// Previously these vanished — the UI showed them inside "Pushing N" and
+    /// then simply never mentioned them again.
+    fn skip(&mut self, table: &str, row_id: &str, op: &str, reason: &str) {
+        self.skipped += 1;
+        self.tables.insert(table.to_string());
+        self.entries.push(SyncLogEntry {
+            table_name: table.to_string(),
+            row_id: Some(row_id.to_string()),
+            operation: Some(op.to_string()),
+            outcome: "skipped",
+            error_code: None,
+            error_detail: Some(reason.to_string()),
+            duration_ms: None,
+            attempt: 0,
+        });
+    }
+
+    /// Persist the buffered entries in one round trip, then emit the summary.
+    async fn finish(mut self, local_pool: &PgPool, state: &AppState) {
+        if !self.entries.is_empty() {
+            let entries = std::mem::take(&mut self.entries);
+
+            let cycle_ids:  Vec<Uuid>           = vec![self.id; entries.len()];
+            let directions: Vec<String>         = vec![self.direction.as_str().to_string(); entries.len()];
+            let tables:     Vec<String>         = entries.iter().map(|e| e.table_name.clone()).collect();
+            let row_ids:    Vec<Option<String>> = entries.iter().map(|e| e.row_id.clone()).collect();
+            let ops:        Vec<Option<String>> = entries.iter().map(|e| e.operation.clone()).collect();
+            let outcomes:   Vec<String>         = entries.iter().map(|e| e.outcome.to_string()).collect();
+            let codes:      Vec<Option<String>> = entries.iter().map(|e| e.error_code.map(str::to_string)).collect();
+            let details:    Vec<Option<String>> = entries.iter().map(|e| e.error_detail.clone()).collect();
+            let durations:  Vec<Option<i32>>    = entries.iter().map(|e| e.duration_ms).collect();
+            let attempts:   Vec<i32>            = entries.iter().map(|e| e.attempt).collect();
+
+            if let Err(e) = sqlx::query(
+                r#"INSERT INTO sync_event_log
+                     (cycle_id, direction, table_name, row_id, operation,
+                      outcome, error_code, error_detail, duration_ms, attempt)
+                   SELECT * FROM UNNEST(
+                     $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[],
+                     $6::text[], $7::text[], $8::text[], $9::int[],  $10::int[]
+                   )"#,
+            )
+            .bind(&cycle_ids).bind(&directions).bind(&tables).bind(&row_ids).bind(&ops)
+            .bind(&outcomes).bind(&codes).bind(&details).bind(&durations).bind(&attempts)
+            .execute(local_pool)
+            .await
+            {
+                // Logging must never break syncing.
+                tracing::warn!("sync_event_log insert failed (non-fatal): {e}");
+            }
+        }
+
+        emit_cycle(state, &self, "end").await;
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+struct SyncCycleEvent {
+    cycle_id:  String,
+    direction: &'static str,
+    /// start | progress | end
+    phase:     &'static str,
+    attempted: u32,
+    succeeded: u32,
+    failed:    u32,
+    skipped:   u32,
+    conflicts: u32,
+    noop:      u32,
+    tables:    Vec<String>,
+    duration_ms: i64,
+    /// Live queue depth, so the UI never has to reconcile two sources.
+    pending:      i64,
+    failed_total: i64,
+}
+
+/// Emit a `sync:cycle` event. Never fails the caller.
+async fn emit_cycle(state: &AppState, cycle: &SyncCycle, phase: &'static str) {
+    use tauri::Emitter;
+    let handle = { state.app_handle.lock().await.clone() };
+    let Some(handle) = handle else { return };
+
+    let (pending, failed_total) = queue_depth(state).await;
+
+    let _ = handle.emit("sync:cycle", SyncCycleEvent {
+        cycle_id:  cycle.id.to_string(),
+        direction: cycle.direction.as_str(),
+        phase,
+        attempted: cycle.attempted,
+        succeeded: cycle.succeeded,
+        failed:    cycle.failed,
+        skipped:   cycle.skipped,
+        conflicts: cycle.conflicts,
+        noop:      cycle.noop,
+        tables:    cycle.tables.iter().cloned().collect(),
+        duration_ms: cycle.elapsed_ms(),
+        pending,
+        failed_total,
+    });
+}
+
+/// Current queue depth as (pending, failed).
+///
+/// This used to be two separate `COUNT(*)` scans fired on EVERY status event.
+/// One grouped scan replaces both — and since synced rows are now pruned
+/// (see prune_sync_queue), the table it scans no longer grows without bound.
+async fn queue_depth(state: &AppState) -> (i64, i64) {
+    let Ok(pool) = state.pool().await else { return (0, 0) };
+
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT status, COUNT(*) FROM sync_queue
+          WHERE status IN ('pending', 'failed')
+          GROUP BY status",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    let mut pending = 0;
+    let mut failed  = 0;
+    for (status, count) in rows {
+        match status.as_str() {
+            "pending" => pending = count,
+            "failed"  => failed  = count,
+            _ => {}
+        }
+    }
+    (pending, failed)
+}
+
+/// Emit a lightweight offline/idle notice with no cycle attached.
+async fn emit_simple_state(state: &AppState, phase: &'static str, direction: SyncDirection) {
+    let cycle = SyncCycle::new(direction);
+    emit_cycle(state, &cycle, phase).await;
+}
+
+/// Drop old terminal rows so sync_queue and sync_event_log stay bounded.
+///
+/// Before this, the only DELETE on sync_queue happened when the cloud database
+/// was switched — meaning 'synced' rows accumulated for the life of the
+/// install, slowing every status poll (see the index note in 0105_sync_event_log).
+async fn prune_sync_history(local_pool: &PgPool) {
+    // Keep a week of successful pushes: enough to investigate a report of
+    // "yesterday's sale is missing", far short of unbounded.
+    match sqlx::query(
+        "DELETE FROM sync_queue
+          WHERE status = 'synced' AND synced_at < NOW() - INTERVAL '7 days'",
+    )
+    .execute(local_pool)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 =>
+            tracing::info!("Sync prune: removed {} old synced queue row(s).", r.rows_affected()),
+        Err(e) => tracing::warn!("Sync prune (queue) failed: {e}"),
+        _ => {}
+    }
+
+    // The log is chattier than the queue, so it gets a shorter window.
+    match sqlx::query(
+        "DELETE FROM sync_event_log WHERE created_at < NOW() - INTERVAL '3 days'",
+    )
+    .execute(local_pool)
+    .await
+    {
+        Ok(r) if r.rows_affected() > 0 =>
+            tracing::info!("Sync prune: removed {} old sync_event_log row(s).", r.rows_affected()),
+        Err(e) => tracing::warn!("Sync prune (log) failed: {e}"),
+        _ => {}
+    }
+}
+
+/// Emit `sync:applied` after a pull cycle lands rows locally, so the frontend
+/// invalidates the matching React Query caches and pulled changes (new store,
+/// price edit, …) appear on screen without a manual refresh.
+async fn emit_sync_applied(state: &AppState, tables: &[&str]) {
+    use tauri::Emitter;
+    if let Some(handle) = state.app_handle.lock().await.clone() {
+        let _ = handle.emit("sync:applied", serde_json::json!({ "tables": tables }));
+    }
+}
+
 /// Spawn the background sync loop. Should be called once at app startup.
 ///
 /// # Tier-gated processing
@@ -568,9 +1096,23 @@ async fn force_resync_table(pool: &PgPool, table: &str) {
 /// 'synced' rows are reset to 'pending' so a stale parent that never really
 /// landed in Supabase is automatically re-pushed on the next cycle.
 pub async fn run_sync_loop(state: AppState) {
-    tracing::info!("Cloud sync worker started — polling every {POLL_SECS}s");
+    tracing::info!("Cloud sync worker started — instant wake + {POLL_SECS}s fallback poll");
+    // Once-per-session cloud scope seeding (see seed_cloud_business_scope).
+    let mut cloud_scope_seeded = false;
+    // Last emitted phase — quiet states (offline/idle) fire on transition only,
+    // so a terminal sitting idle overnight doesn't emit thousands of events.
+    // Real cycles always emit, because each one carries distinct results.
+    let mut last_quiet: &'static str = "";
+    // Prune runs on a slow counter rather than every cycle (every 5s would be
+    // pointless write traffic for a housekeeping job).
+    let mut cycles_since_prune: u32 = 0;
+
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await;
+        // Instant wake on queue_row, 5s tick as the reliability fallback.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)) => {}
+            _ = PUSH_WAKE.notified() => {}
+        }
 
         // Get local pool — if DB isn't connected yet, just wait
         let local_pool = match state.pool().await {
@@ -605,6 +1147,10 @@ pub async fn run_sync_loop(state: AppState) {
 
         if !super::pool::ping(&cloud_pool).await {
             tracing::debug!("Cloud DB unreachable — sync skipped this cycle.");
+            if last_quiet != "offline" {
+                last_quiet = "offline";
+                emit_simple_state(&state, "offline", SyncDirection::Push).await;
+            }
             continue;
         }
 
@@ -627,11 +1173,18 @@ pub async fn run_sync_loop(state: AppState) {
             continue;
         }
 
+        // One-time cloud scope seed + orphan repair (see fn docs — this is
+        // what makes rows inserted directly in Supabase reach the devices).
+        if !cloud_scope_seeded {
+            seed_cloud_business_scope(&cloud_pool, business_id).await;
+            cloud_scope_seeded = true;
+        }
+
         // Fetch a batch of pending rows, tier-ordered so parents come first.
         // We fetch more than BATCH_SIZE here so that tier-gating doesn't
         // accidentally leave parent rows out when a full batch is all one table.
         let rows = match sqlx::query!(
-            r#"SELECT id, table_name, operation, row_id, row_data, store_id
+            r#"SELECT id, table_name, operation, row_id, row_data, store_id, retries
                FROM sync_queue
                WHERE status = 'pending'
                  AND retries < $1
@@ -644,6 +1197,7 @@ pub async fn run_sync_loop(state: AppState) {
                    WHEN 'departments'          THEN 2
                    WHEN 'categories'           THEN 2
                    WHEN 'suppliers'            THEN 2
+                   WHEN 'tax_categories'       THEN 2
                    WHEN 'items'                THEN 3
                    WHEN 'customers'            THEN 3
                    WHEN 'item_stock'           THEN 4
@@ -659,6 +1213,9 @@ pub async fn run_sync_loop(state: AppState) {
                    WHEN 'purchase_order_items' THEN 7
                    WHEN 'cash_movements'       THEN 7
                    WHEN 'return_items'         THEN 8
+                   WHEN 'supplier_payments'    THEN 9
+                   WHEN 'customer_wallet_transactions' THEN 9
+                   WHEN 'loyalty_transactions' THEN 9
                    WHEN 'reorder_alerts'       THEN 9
                    WHEN 'notifications'        THEN 9
                    ELSE 10
@@ -677,10 +1234,27 @@ pub async fn run_sync_loop(state: AppState) {
         };
 
         if rows.is_empty() {
+            // Transition back to idle after a busy/offline stretch. Housekeeping
+            // happens here, on a quiet cycle, so it never delays real work.
+            if last_quiet != "idle" && !last_quiet.is_empty() {
+                last_quiet = "idle";
+                emit_simple_state(&state, "idle", SyncDirection::Push).await;
+            }
+            cycles_since_prune += 1;
+            if cycles_since_prune >= PRUNE_EVERY_N_CYCLES {
+                cycles_since_prune = 0;
+                prune_sync_history(&local_pool).await;
+            }
             continue;
         }
 
         tracing::debug!("Cloud sync: processing {} row(s)", rows.len());
+
+        // A real cycle is starting — anything we emit from here is attributable
+        // to this cycle_id, so the pull worker can no longer overwrite it.
+        last_quiet = "";
+        let mut cycle = SyncCycle::new(SyncDirection::Push);
+        emit_cycle(&state, &cycle, "start").await;
 
         // ── Tier-gated processing ─────────────────────────────────────────────
         // Group by tier, then process each tier completely before moving to the
@@ -706,8 +1280,17 @@ pub async fn run_sync_loop(state: AppState) {
         let mut tables_to_resync: HashSet<&'static str> = HashSet::new();
 
         for (tier, row) in tier_rows {
-            // If a lower tier failed, just leave this row as-is (still 'pending')
+            // If a lower tier failed, just leave this row as-is (still 'pending').
+            // These used to disappear silently: counted in the up-front "Pushing
+            // N" figure, then never mentioned again. Now they are recorded as
+            // 'skipped' with the reason, so the numbers reconcile.
             if failed_at_tier.map_or(false, |ft| tier > ft) {
+                cycle.skip(
+                    &row.table_name,
+                    &row.row_id,
+                    &row.operation,
+                    "Parent table failed earlier in this cycle — deferred to next cycle",
+                );
                 continue;
             }
 
@@ -716,6 +1299,7 @@ pub async fn run_sync_loop(state: AppState) {
             let operation  = row.operation.clone();
             let row_id_str = row.row_id.clone();
             let data       = row.row_data.clone();
+            let attempt    = row.retries + 1;
 
             // Atomic claim: only one worker processes each row
             let claimed = sqlx::query!(
@@ -731,7 +1315,9 @@ pub async fn run_sync_loop(state: AppState) {
                 continue;
             }
 
+            let row_started = std::time::Instant::now();
             let result = replay_row(&cloud_pool, &local_pool, &table, &operation, &row_id_str, &data).await;
+            let row_ms = row_started.elapsed().as_millis() as i32;
 
             match result {
                 Ok(()) => {
@@ -742,10 +1328,15 @@ pub async fn run_sync_loop(state: AppState) {
                     .execute(&local_pool)
                     .await;
                     tracing::debug!("Synced {table} row {row_id_str} to cloud.");
+                    cycle.ok(&table, &row_id_str, &operation, Some(row_ms), attempt);
                 }
                 Err(e) => {
                     let err_str = e.to_string();
                     tracing::warn!("Cloud sync failed for {table} row {row_id_str}: {err_str}");
+                    // The real error text reaches the UI from here. Previously it
+                    // was written to sync_queue.error and then replaced with the
+                    // fixed string "Some changes failed to push".
+                    cycle.fail(&table, &row_id_str, &operation, &err_str, Some(row_ms), attempt);
 
                     // Gate: don't attempt higher tiers this cycle
                     if failed_at_tier.map_or(true, |ft| tier < ft) {
@@ -786,6 +1377,11 @@ pub async fn run_sync_loop(state: AppState) {
         for parent in tables_to_resync {
             force_resync_table(&local_pool, parent).await;
         }
+
+        // End of cycle: persist every row outcome and emit the real totals.
+        // These numbers come from what actually happened, not from the batch
+        // size guessed before the work started.
+        cycle.finish(&local_pool, &state).await;
     }
 }
 
@@ -796,7 +1392,8 @@ fn table_tier(table: &str) -> u8 {
     match table {
         "businesses"                                    => 0,
         "stores" | "users"                              => 1,
-        "departments" | "categories" | "suppliers"      => 2,
+        "departments" | "categories" | "suppliers"
+            | "tax_categories"                          => 2,
         "items" | "customers"                          => 3,
         "item_stock"                                    => 4, // depends on items — must be a higher tier
         "stock_movements"                               => 5, // must replay AFTER item_stock seeds
@@ -807,6 +1404,9 @@ fn table_tier(table: &str) -> u8 {
             | "returns" | "purchase_order_items"
             | "cash_movements"                          => 7,
         "return_items"                                  => 8,
+        // Ledgers depend on customers(3)/suppliers(2)/transactions(6)/POs(6)
+        "supplier_payments" | "customer_wallet_transactions"
+            | "loyalty_transactions"                    => 9,
         "reorder_alerts" | "notifications"              => 9,
         _                                               => 10,
     }
@@ -1305,7 +1905,14 @@ pub async fn run_pull_loop(state: AppState) {
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
 
         let biz_id_str = business_id.to_string();
+        // Pull gets the same cycle recorder as push. Before this, an apply
+        // failure here went to tracing::warn! and nowhere else — inbound
+        // failures were structurally invisible to the UI.
+        let mut cycle = SyncCycle::new(SyncDirection::Pull);
         let mut any_pulled = false;
+        // Tables that had at least one row applied this cycle — drives the
+        // sync:applied event so the frontend refreshes the right screens.
+        let mut pulled_tables: Vec<&str> = Vec::new();
         // Track the maximum row timestamp seen across all pulled tables.
         // We advance the cursor to this value — NOT to Utc::now() — so rows
         // that arrive at Supabase with a timestamp behind the wall clock are
@@ -1347,6 +1954,8 @@ pub async fn run_pull_loop(state: AppState) {
 
             tracing::debug!("Pull: {} row(s) from {table}", cloud_rows.len());
             any_pulled = true;
+            pulled_tables.push(table);
+            emit_cycle(&state, &cycle, "progress").await;
 
             for row_val in cloud_rows {
                 let obj = match row_val.as_object() {
@@ -1369,11 +1978,33 @@ pub async fn run_pull_loop(state: AppState) {
                     }
                 }
 
+                // Identify the row for the log. Most synced tables use `id`;
+                // items use a UUID under the same column, so this covers both.
+                let row_key = obj
+                    .get("id")
+                    .map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))
+                    .unwrap_or_else(|| "?".to_string());
+
                 // Strategy-aware apply — same engine as the push side:
                 // append-only dedupe, LWW/state-machine guards with conflict
                 // logging, item_stock seeding, stock movement folding.
-                if let Err(e) = apply_synced_row(&local_pool, &local_pool, table, &row_val, "pull").await {
-                    tracing::warn!("Pull apply failed for {table}: {e}");
+                let row_started = std::time::Instant::now();
+                match apply_synced_row(&local_pool, &local_pool, table, &row_val, "pull").await {
+                    Ok(ApplyOutcome::Applied) => cycle.ok(
+                        table, &row_key, "PULL",
+                        Some(row_started.elapsed().as_millis() as i32), 1,
+                    ),
+                    // Duplicate delivery / self-echo / lost conflict — counted,
+                    // not logged.
+                    Ok(ApplyOutcome::Skipped) => cycle.noop(table),
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        tracing::warn!("Pull apply failed for {table}: {err_str}");
+                        cycle.fail(
+                            table, &row_key, "PULL", &err_str,
+                            Some(row_started.elapsed().as_millis() as i32), 1,
+                        );
+                    }
                 }
             }
         }
@@ -1395,6 +2026,17 @@ pub async fn run_pull_loop(state: AppState) {
             )
             .execute(&local_pool)
             .await;
+
+            // Tell the frontend which caches to refresh. `sync:applied` is
+            // consumed by lib/syncEvents.js for global cache invalidation and
+            // is deliberately left unchanged.
+            emit_sync_applied(&state, &pulled_tables).await;
+        }
+
+        // Emit even when nothing was pulled but rows failed to apply — that is
+        // exactly the case the old code hid completely.
+        if any_pulled || !cycle.is_empty() {
+            cycle.finish(&local_pool, &state).await;
         }
     }
 }
@@ -1420,6 +2062,7 @@ async fn replay_row(
     let allowed_tables = [
         "businesses",
         "stores", "users", "departments", "categories", "suppliers",
+        "tax_categories",
         "items", "item_stock", "stock_movements",
         "customers", "shifts",
         "transactions", "transaction_items", "payments",
@@ -1427,6 +2070,7 @@ async fn replay_row(
         "returns", "return_items",
         "purchase_orders", "purchase_order_items",
         "cash_movements", "reorder_alerts", "notifications",
+        "supplier_payments", "customer_wallet_transactions", "loyalty_transactions",
     ];
     if !allowed_tables.contains(&table_name) {
         return Err(format!("Table '{table_name}' is not in the sync allowlist").into());
@@ -1447,29 +2091,89 @@ async fn replay_row(
             Ok(())
         }
         "INSERT" | "UPDATE" => {
-            let fresh;
-            let row = match sync_strategy(table_name) {
-                SyncStrategy::Lww | SyncStrategy::StateMachine => {
-                    let stmt = format!(
-                        "SELECT row_to_json(t.*)::jsonb FROM {table_name} t WHERE t.id::text = $1"
-                    );
-                    match sqlx::query_scalar::<_, Value>(&stmt)
-                        .bind(row_id)
-                        .fetch_optional(local_pool)
-                        .await?
-                    {
-                        Some(v) => { fresh = v; &fresh }
-                        // Row no longer exists locally (hard-deleted outside
-                        // the app?) — nothing meaningful to push.
-                        None => return Ok(()),
-                    }
-                }
-                _ => row_data,
-            };
-
-            apply_synced_row(cloud_pool, local_pool, table_name, row, "push").await?;
+            let _ = row_data; // queued payload is only a trigger — never applied
+            for row in fresh_rows_for_push(local_pool, table_name, row_id).await? {
+                apply_synced_row(cloud_pool, local_pool, table_name, &row, "push").await?;
+            }
             Ok(())
         }
         _ => Err(format!("Unknown operation: {operation}").into()),
     }
+}
+
+/// Resolve the authoritative full row(s) for a queued push by re-reading the
+/// LOCAL table at replay time.
+///
+/// The queued row_data is NEVER applied: historical call sites stored ad-hoc
+/// partial JSON (some without even the `id` column), which violates NOT NULL
+/// constraints when inserted on the cloud, and a snapshot is stale by
+/// definition for mutable rows. The queue entry is purely a "this row
+/// changed" trigger; this function turns its row_id back into fresh
+/// row_to_json output.
+///
+/// Legacy row_id formats are honoured per table:
+///   • transaction_items       → "{tx_id}:{item_id}"
+///   • purchase_order_items    → "{po_id}:{item_id}"
+///   • payments / credit_sales → "tx:{transaction_id}" (or a plain id)
+///   • item_stock               → "{item_id}:{store_id}"
+///   • everything else          → the primary-key id as text
+///
+/// An empty result (row deleted locally, unparseable legacy id) is not an
+/// error — there is simply nothing left to push and the queue row completes.
+async fn fresh_rows_for_push(
+    local_pool: &PgPool,
+    table:      &str,
+    row_id:     &str,
+) -> Result<Vec<Value>, SyncError> {
+    // (sql, binds) — all comparisons are ::text so legacy ids never need
+    // type-sniffing; these are single-row lookups on tiny result sets.
+    let (stmt, binds): (String, Vec<&str>) = match table {
+        "item_stock" => {
+            let Some((item_id, store_id)) = row_id.split_once(':') else {
+                tracing::warn!("Sync: malformed item_stock row_id '{row_id}' — skipping.");
+                return Ok(vec![]);
+            };
+            (
+                "SELECT row_to_json(t.*)::jsonb FROM item_stock t \
+                 WHERE t.item_id::text = $1 AND t.store_id::text = $2".into(),
+                vec![item_id, store_id],
+            )
+        }
+        "transaction_items" if row_id.contains(':') => {
+            let (tx_id, item_id) = row_id.split_once(':').unwrap();
+            (
+                "SELECT row_to_json(t.*)::jsonb FROM transaction_items t \
+                 WHERE t.tx_id::text = $1 AND t.item_id::text = $2".into(),
+                vec![tx_id, item_id],
+            )
+        }
+        "purchase_order_items" if row_id.contains(':') => {
+            let (po_id, item_id) = row_id.split_once(':').unwrap();
+            (
+                "SELECT row_to_json(t.*)::jsonb FROM purchase_order_items t \
+                 WHERE t.po_id::text = $1 AND t.item_id::text = $2".into(),
+                vec![po_id, item_id],
+            )
+        }
+        "payments" if row_id.starts_with("tx:") => (
+            "SELECT row_to_json(t.*)::jsonb FROM payments t \
+             WHERE t.transaction_id::text = $1".into(),
+            vec![&row_id[3..]],
+        ),
+        "credit_sales" if row_id.starts_with("tx:") => (
+            "SELECT row_to_json(t.*)::jsonb FROM credit_sales t \
+             WHERE t.transaction_id::text = $1".into(),
+            vec![&row_id[3..]],
+        ),
+        _ => (
+            format!("SELECT row_to_json(t.*)::jsonb FROM {table} t WHERE t.id::text = $1"),
+            vec![row_id],
+        ),
+    };
+
+    let mut query = sqlx::query_scalar::<_, Value>(&stmt);
+    for b in binds {
+        query = query.bind(b);
+    }
+    Ok(query.fetch_all(local_pool).await?)
 }

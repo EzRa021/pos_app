@@ -12,12 +12,6 @@ export const bulkPriceUpdate = (payload) =>
 export const bulkStockAdjustment = (payload) =>
   rpc("bulk_stock_adjustment", payload);
 
-// BulkItemImportDto: { store_id,
-//   items: [{ item_name, sku?, barcode?, cost_price, selling_price,
-//             category_id?, department_id?, unit? }] }
-export const bulkItemImport = (payload) =>
-  rpc("bulk_item_import", payload);
-
 // BulkToggleItemsDto: { store_id, item_ids?: UUID[], category_id?, department_id? }
 export const bulkActivateItems = (payload) =>
   rpc("bulk_activate_items", payload);
